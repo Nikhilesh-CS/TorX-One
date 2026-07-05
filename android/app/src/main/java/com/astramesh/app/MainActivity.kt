@@ -144,7 +144,7 @@ class MainActivity : ComponentActivity() {
                         val openChatKey = intent.getStringExtra("open_chat")
                         if (openChatKey != null) {
                             com.astramesh.app.service.NotificationHelper.clearContactNotifications(this@MainActivity, openChatKey)
-                            kotlinx.coroutines.Dispatchers.IO.invoke {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                 service.db.messageDao().markMessagesAsRead(openChatKey)
                             }
                             navController.navigate("chat/$openChatKey")
