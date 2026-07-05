@@ -165,6 +165,28 @@ object NotificationHelper {
         nm.notify(NOTIFICATION_ID_SUMMARY, summaryBuilder.build())
     }
 
+    fun showUpdateNotification(context: Context, version: String) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val openPendingIntent = PendingIntent.getActivity(
+            context, "update".hashCode(), openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Update Available")
+            .setContentText("AstraMesh version $version is now available! Tap to install.")
+            .setContentIntent(openPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+
+        nm.notify("astra_update".hashCode(), builder.build())
+    }
+
     fun clearContactNotifications(context: Context, contactKey: String) {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.cancel(contactKey.hashCode())

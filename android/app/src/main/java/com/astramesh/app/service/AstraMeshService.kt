@@ -25,6 +25,7 @@ import com.astramesh.app.identity.IdentityManager
 import com.astramesh.app.network.MessageRouter
 import com.astramesh.app.network.NearbyConnectionManager
 import com.astramesh.app.network.TorManager
+import com.astramesh.app.updater.GitHubUpdater
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 
@@ -100,6 +101,7 @@ class AstraMeshService : Service() {
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager)
 
         wireNetworking()
+        startUpdateChecker()
         Log.d(TAG, "[INIT] All networking components initialized")
     }
 
@@ -183,6 +185,23 @@ class AstraMeshService : Service() {
 
     private fun createNotification(title: String, text: String): Notification {
         return NotificationHelper.buildForegroundServiceNotification(this, title, text)
+    }
+
+    private fun startUpdateChecker() {
+        val updater = GitHubUpdater(this)
+        serviceScope.launch {
+            while (isActive) {
+                try {
+                    val info = updater.checkForUpdates(manual = false)
+                    if (info != null && info.isUpdateAvailable) {
+                        NotificationHelper.showUpdateNotification(this@AstraMeshService, info.version)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "[UPDATER] Error checking for updates in background", e)
+                }
+                delay(60 * 60 * 1000L) // Check every hour (GitHubUpdater rate limits it internally to 24h)
+            }
+        }
     }
 
     private val autoRecoveryReceiver = object : BroadcastReceiver() {
