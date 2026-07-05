@@ -43,20 +43,26 @@ import java.io.File
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
+import com.astramesh.app.data.SettingsManager
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     identityManager: IdentityManager,
     navController: NavController,
     onionAddress: String,
-    db: AppDatabase // Assuming we can pass DB or inject it
+    db: AppDatabase,
+    settingsManager: SettingsManager
 ) {
     val context = LocalContext.current
     var identity by remember { mutableStateOf(identityManager.loadIdentity()) }
     val scope = rememberCoroutineScope()
 
-    var torModeEnabled by remember { mutableStateOf(true) }
-    var hideOnlineStatus by remember { mutableStateOf(false) }
+    val torModeEnabled by settingsManager.torEnabledFlow.collectAsState(initial = true)
+    val hideOnlineStatus by settingsManager.hideOnlineStatusFlow.collectAsState(initial = false)
+    val reduceMotion by settingsManager.reduceMotionFlow.collectAsState(initial = false)
+    val showTransportIcons by settingsManager.showTransportIconsFlow.collectAsState(initial = true)
+    val darkMode by settingsManager.darkModeFlow.collectAsState(initial = true)
     
     // Dialog States
     var showEditProfileDialog by remember { mutableStateOf(false) }
@@ -203,7 +209,9 @@ fun SettingsScreen(
                     title = "Tor Network",
                     subtitle = "Always active",
                     checked = torModeEnabled,
-                    onCheckedChange = { torModeEnabled = it }
+                    onCheckedChange = { 
+                        scope.launch { settingsManager.setTorEnabled(it) } 
+                    }
                 )
             }
             item {
@@ -248,7 +256,39 @@ fun SettingsScreen(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Hide Online Status",
                     checked = hideOnlineStatus,
-                    onCheckedChange = { hideOnlineStatus = it }
+                    onCheckedChange = { 
+                        scope.launch { settingsManager.setHideOnlineStatus(it) }
+                    }
+                )
+            }
+            item {
+                SettingsSwitchItem(
+                    icon = Icons.Rounded.Animation,
+                    title = "Reduce Motion",
+                    checked = reduceMotion,
+                    onCheckedChange = { 
+                        scope.launch { settingsManager.setReduceMotion(it) }
+                    }
+                )
+            }
+            item {
+                SettingsSwitchItem(
+                    icon = Icons.Rounded.SwapHoriz,
+                    title = "Show Transport Icons",
+                    checked = showTransportIcons,
+                    onCheckedChange = { 
+                        scope.launch { settingsManager.setShowTransportIcons(it) }
+                    }
+                )
+            }
+            item {
+                SettingsSwitchItem(
+                    icon = Icons.Rounded.Brightness4,
+                    title = "Dark Mode",
+                    checked = darkMode,
+                    onCheckedChange = { 
+                        scope.launch { settingsManager.setDarkMode(it) }
+                    }
                 )
             }
 

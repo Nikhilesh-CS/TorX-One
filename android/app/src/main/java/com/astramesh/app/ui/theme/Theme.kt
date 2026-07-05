@@ -62,11 +62,19 @@ fun AstraMeshTheme(
 ) {
     val view = LocalView.current
     if (!view.isInEditMode) {
+tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = DeepSpace.toArgb()
-            window.navigationBarColor = DeepSpace.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            val window = view.context.findActivity()?.window
+            if (window != null) {
+                window.statusBarColor = DeepSpace.toArgb()
+                window.navigationBarColor = DeepSpace.toArgb()
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            }
         }
     }
 

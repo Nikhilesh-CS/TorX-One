@@ -30,6 +30,9 @@ class TorManager(private val context: Context) {
 
     private val _onionAddress = MutableStateFlow("")
     val onionAddress: StateFlow<String> = _onionAddress
+    
+    private val _activeConnections = MutableStateFlow<List<String>>(emptyList())
+    val activeConnections: StateFlow<List<String>> = _activeConnections
 
     private val _isTorReady = MutableStateFlow(false)
     val isTorReady: StateFlow<Boolean> = _isTorReady

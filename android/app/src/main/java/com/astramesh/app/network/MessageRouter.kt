@@ -46,7 +46,8 @@ class MessageRouter(
 
         when (json.optString("type")) {
             MeshProtocol.TYPE_HELLO -> handleHello(endpointId, json.optString("contact"))
-            MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId) }
+            MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, MeshProtocol.TYPE_MSG) }
+            MeshProtocol.TYPE_MEDIA_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, MeshProtocol.TYPE_MEDIA_CHUNK) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(endpointId, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json) }
@@ -59,7 +60,8 @@ class MessageRouter(
         val json = MeshProtocol.parse(raw) ?: return
         Log.d(TAG, "[TOR] Received payload type=${json.optString("type")}")
         when (json.optString("type")) {
-            MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null) }
+            MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, MeshProtocol.TYPE_MSG) }
+            MeshProtocol.TYPE_MEDIA_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, MeshProtocol.TYPE_MEDIA_CHUNK) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(null, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json) }
@@ -138,21 +140,22 @@ class MessageRouter(
     private fun attemptDelivery(
         contact: ContactEntity,
         payload: MeshProtocol.EncryptedPayload,
-        messageId: String
+        messageId: String,
+        messageType: String = MeshProtocol.TYPE_MSG
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
 
         // 1. Try direct Nearby
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             Log.d(TAG, "[NEARBY] Sending direct to ${contact.endpointId}")
-            nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId))
+            nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
             return SendResult(true, Transport.NEARBY_DIRECT)
         }
 
         // 2. Try Nearby relay (flood to all connected peers)
         if (connected.isNotEmpty()) {
             Log.d(TAG, "[NEARBY] Relaying to ${connected.size} peers")
-            val wire = MeshProtocol.encodeRelayMessage(payload, messageId = messageId, senderOnion = myOnionAddress)
+            val wire = MeshProtocol.encodeRelayMessage(payload, messageId = messageId, senderOnion = myOnionAddress, type = if (messageType == MeshProtocol.TYPE_MSG) MeshProtocol.TYPE_RELAY else messageType)
             connected.forEach { nearbyManager.sendRaw(it, wire) }
             return SendResult(true, Transport.NEARBY_RELAY)
         }
@@ -161,7 +164,7 @@ class MessageRouter(
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             Log.d(TAG, "[TOR] Sending message: ${payload.ciphertextHex.take(20)}...")
-            val ok = torManager.sendToOnion(onion, MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress))
+            val ok = torManager.sendToOnion(onion, MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType))
             if (ok) {
                 Log.d(TAG, "[TOR] Message $messageId delivered to $onion")
                 return SendResult(true, Transport.TOR)
@@ -172,6 +175,22 @@ class MessageRouter(
 
         Log.w(TAG, "[SEND] No transport available for ${contact.name}")
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
+    }
+
+    suspend fun sendRawPayload(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): SendResult = withContext(Dispatchers.IO) {
+        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
+        val contact = db.contactDao().getContact(contactKey)
+            ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
+
+        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) {
+            return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
+        }
+
+        val payload = buildEncryptedPayload(identity, contact, rawText)
+            ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
+
+        val messageId = UUID.randomUUID().toString()
+        attemptDelivery(contact, payload, messageId, messageType)
     }
 
     // ──────────────────────── RETRY LOOP ────────────────────────
@@ -365,7 +384,7 @@ class MessageRouter(
         val fingerprint = "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}"
 
         if (dest == mySigningKeyHex) {
-            handleEncrypted(json, fromEndpointId)
+            handleEncrypted(json, fromEndpointId, json.optString("type"))
             return
         }
 
@@ -379,7 +398,7 @@ class MessageRouter(
 
     // ──────────────────────── DECRYPTION ────────────────────────
 
-    private suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?) {
+    private suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?, messageType: String) {
         val payload = MeshProtocol.parseEncrypted(json) ?: return
         val identity = identity ?: return
         val messageId = json.optString("msgId", "")
@@ -424,6 +443,15 @@ class MessageRouter(
             CryptoManager.decryptMessage(ciphertext, nonce, senderEncPub, identity.encryptionSecretKey)
         } catch (e: Exception) {
             Log.w(TAG, "[RECV] Decryption failed from ${contact.name}", e)
+            return
+        }
+
+        if (messageType == MeshProtocol.TYPE_MEDIA_CHUNK) {
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.mediaTransferManager?.receiveChunk(plaintext, senderKey)
+            if (messageId.isNotBlank()) {
+                sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            }
             return
         }
 

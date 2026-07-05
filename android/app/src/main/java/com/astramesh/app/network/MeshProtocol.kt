@@ -11,6 +11,16 @@ object MeshProtocol {
     const val TYPE_READ = "read"
     const val TYPE_PING = "ping"
     const val TYPE_PONG = "pong"
+    
+    // Media Transfer Protocol Types
+    const val TYPE_MEDIA_OFFER = "media_offer"
+    const val TYPE_MEDIA_CHUNK = "media_chunk"
+    const val TYPE_MEDIA_ACK = "media_ack"
+    const val TYPE_MEDIA_CANCEL = "media_cancel"
+    const val TYPE_MEDIA_RESUME = "media_resume"
+    const val TYPE_MEDIA_COMPLETE = "media_complete"
+    const val TYPE_MEDIA_ERROR = "media_error"
+    
     const val DEFAULT_TTL = 5
     const val MAX_FRAME_BYTES = 64 * 1024
 
@@ -35,9 +45,9 @@ object MeshProtocol {
             .toString()
     }
 
-    fun encodeDirectMessage(payload: EncryptedPayload, messageId: String? = null, senderOnion: String? = null): String {
+    fun encodeDirectMessage(payload: EncryptedPayload, messageId: String? = null, senderOnion: String? = null, type: String = TYPE_MSG): String {
         val json = JSONObject()
-            .put("type", TYPE_MSG)
+            .put("type", type)
             .put("from", payload.fromSigningKey)
             .put("to", payload.toSigningKey)
             .put("ciphertext", payload.ciphertextHex)
@@ -85,10 +95,11 @@ object MeshProtocol {
         payload: EncryptedPayload,
         ttl: Int = DEFAULT_TTL,
         messageId: String? = null,
-        senderOnion: String? = null
+        senderOnion: String? = null,
+        type: String = TYPE_RELAY
     ): String {
         val json = JSONObject()
-            .put("type", TYPE_RELAY)
+            .put("type", type)
             .put("dest", payload.toSigningKey)
             .put("from", payload.fromSigningKey)
             .put("ttl", ttl)

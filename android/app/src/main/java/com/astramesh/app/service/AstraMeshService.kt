@@ -66,6 +66,10 @@ class AstraMeshService : Service() {
         private set
     lateinit var identityManager: IdentityManager
         private set
+    lateinit var mediaTransferManager: com.astramesh.app.transfer.MediaTransferManager
+        private set
+    lateinit var settingsManager: com.astramesh.app.data.SettingsManager
+        private set
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val binder = LocalBinder()
@@ -99,6 +103,8 @@ class AstraMeshService : Service() {
         nearbyManager = NearbyConnectionManager(this)
         torManager = TorManager(this)
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager)
+        mediaTransferManager = com.astramesh.app.transfer.MediaTransferManager(this, db, messageRouter)
+        settingsManager = com.astramesh.app.data.SettingsManager(this)
 
         wireNetworking()
         startUpdateChecker()

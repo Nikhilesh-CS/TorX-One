@@ -29,7 +29,8 @@ fun MainScreen(
     db: AppDatabase,
     nearbyManager: NearbyConnectionManager,
     torManager: TorManager,
-    messageRouter: MessageRouter
+    messageRouter: MessageRouter,
+    settingsManager: com.astramesh.app.data.SettingsManager
 ) {
     val bottomNavController = rememberNavController()
     val navBackStackEntry by bottomNavController.currentBackStackEntryAsState()
@@ -68,10 +69,12 @@ fun MainScreen(
                 )
             }
             composable("contacts") {
-                // Placeholder for Contacts Screen
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                    Text("Contacts", color = TextPrimary)
-                }
+                ContactsScreen(
+                    navController = rootNavController,
+                    db = db,
+                    nearbyManager = nearbyManager,
+                    torManager = torManager
+                )
             }
             composable("universe") {
                 NetworkUniverseScreen(
@@ -81,7 +84,10 @@ fun MainScreen(
                 )
             }
             composable("security") {
-                SecurityCenterScreen()
+                SecurityCenterScreen(
+                    identityManager = identityManager,
+                    torManager = torManager
+                )
             }
             composable("settings") {
                 val onionAddress by torManager.onionAddress.collectAsState()
@@ -89,7 +95,8 @@ fun MainScreen(
                     identityManager = identityManager,
                     navController = rootNavController,
                     onionAddress = onionAddress,
-                    db = db
+                    db = db,
+                    settingsManager = settingsManager
                 )
             }
         }

@@ -8,15 +8,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.astramesh.app.R
 
-val InterFontFamily = FontFamily(
-    Font(R.font.inter_regular, FontWeight.Normal),
-    Font(R.font.inter_medium, FontWeight.Medium),
-    Font(R.font.inter_semibold, FontWeight.SemiBold)
-)
+import android.util.Log
 
-val JetBrainsMonoFontFamily = FontFamily(
-    Font(R.font.jetbrains_mono_regular, FontWeight.Normal)
-)
+// Safely load Inter Variable Font with a fallback
+val InterFontFamily = try {
+    FontFamily(Font(R.font.inter_variable))
+} catch (e: Exception) {
+    Log.e("Fonts", "Failed to load custom font inter_variable", e)
+    FontFamily.Default
+}
+
+// Safely load JetBrains Mono Variable Font with a fallback
+val JetBrainsMonoFontFamily = try {
+    FontFamily(Font(R.font.jetbrains_mono_variable))
+} catch (e: Exception) {
+    Log.e("Fonts", "Failed to load custom font jetbrains_mono_variable", e)
+    FontFamily.Monospace
+}
 
 // Set of Material typography styles to start with
 val AstraTypography = Typography(

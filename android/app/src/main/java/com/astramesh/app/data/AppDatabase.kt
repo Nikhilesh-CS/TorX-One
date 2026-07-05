@@ -34,7 +34,18 @@ data class MessageEntity(
     val replyToId: String? = null,
     val replyToText: String? = null,
     val retryCount: Int = 0,
-    val transport: String? = null
+    val transport: String? = null,
+    
+    // Media & File Sharing Fields
+    val messageType: String = "TEXT", // TEXT, IMAGE, VIDEO, AUDIO, VOICE, DOCUMENT, APK
+    val fileName: String? = null,
+    val fileSize: Long? = null,
+    val mimeType: String? = null,
+    val localUri: String? = null,
+    val thumbnailUri: String? = null,
+    val transferProgress: Int? = null,
+    val checksum: String? = null,
+    val transferStatus: String? = null
 )
 
 @Entity(tableName = "connection_requests")
@@ -92,6 +103,12 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :status, transport = :transport WHERE messageId = :messageId")
     fun updateMessageStatus(messageId: String, status: String, transport: String? = null)
 
+    @Query("UPDATE messages SET transferProgress = :progress WHERE messageId = :messageId")
+    fun updateTransferProgress(messageId: String, progress: Int)
+
+    @Query("UPDATE messages SET status = :status, localUri = :localUri, transferProgress = 100 WHERE messageId = :messageId")
+    fun markMediaDelivered(messageId: String, status: String, localUri: String)
+
     @Query("UPDATE messages SET status = :status, transport = :transport WHERE messageId = :messageId AND contactKey = :contactKey AND direction = 'sent'")
     fun updateSentMessageStatus(messageId: String, contactKey: String, status: String, transport: String? = null): Int
 
@@ -136,19 +153,50 @@ interface ConnectionRequestDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class],
-    version = 6,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, MediaTransferEntity::class],
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao
     abstract fun connectionRequestDao(): ConnectionRequestDao
+    abstract fun mediaTransferDao(): MediaTransferDao
 
     companion object {
         val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE contacts ADD COLUMN muteUntil INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Add new columns to messages table
+                db.execSQL("ALTER TABLE messages ADD COLUMN messageType TEXT NOT NULL DEFAULT 'TEXT'")
+                db.execSQL("ALTER TABLE messages ADD COLUMN fileName TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN fileSize INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN mimeType TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN localUri TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN thumbnailUri TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN transferProgress INTEGER")
+                db.execSQL("ALTER TABLE messages ADD COLUMN checksum TEXT")
+                db.execSQL("ALTER TABLE messages ADD COLUMN transferStatus TEXT")
+
+                // Create media_transfers table
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `media_transfers` (
+                        `messageId` TEXT NOT NULL,
+                        `contactKey` TEXT NOT NULL,
+                        `direction` TEXT NOT NULL,
+                        `totalChunks` INTEGER NOT NULL,
+                        `completedChunks` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `lastUpdatedAt` INTEGER NOT NULL,
+                        `transport` TEXT,
+                        PRIMARY KEY(`messageId`)
+                    )
+                """.trimIndent())
             }
         }
     }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.astramesh.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.0.3"
     }
 
     signingConfigs {
@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
     
     // Compose BOM
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
@@ -87,4 +88,10 @@ dependencies {
     // Tor Embedded
     implementation("info.guardianproject:tor-android:0.4.8.12")
     implementation("info.guardianproject:jtorctl:0.4.5.7")
+
+    // Coil for image loading
+    implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // DataStore for Settings
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
 }

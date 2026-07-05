@@ -50,12 +50,15 @@ fun NetworkUniverseScreen(
 
     // Using collected states for dynamic nodes
     val nearbyPeers by nearbyManager.connectedEndpoints.collectAsState()
+    val activeOnionConnections by torManager.activeConnections.collectAsState(initial = emptyList())
     val torReady by torManager.isTorReady.collectAsState()
 
-    // Example dummy data for visual density if empty
-    val visualBluetoothNodes = maxOf(nearbyPeers.size, 2)
-    val visualWifiNodes = maxOf(nearbyPeers.size, 3)
-    val visualOnionNodes = if (torReady) 5 else 0
+    // Use exact numbers, no maxOf mocks
+    val visualBluetoothNodes = nearbyPeers.size // For simplicity, we treat nearby as a mix
+    val visualWifiNodes = nearbyPeers.size 
+    val visualOnionNodes = if (torReady) activeOnionConnections.size else 0
+
+    val totalNodes = visualBluetoothNodes + visualWifiNodes + visualOnionNodes
 
     Box(
         modifier = Modifier
@@ -63,7 +66,16 @@ fun NetworkUniverseScreen(
             .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        if (totalNodes == 0) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "Waiting for network data...",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = Color.White.copy(alpha = 0.5f)
+                )
+            }
+        } else {
+            Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2, size.height / 2)
             val baseRadius = size.width / 4
 
@@ -141,6 +153,7 @@ fun NetworkUniverseScreen(
                 }
             }
         }
+        } // Close else block
 
         // Overlay Text
         Column(
@@ -155,7 +168,7 @@ fun NetworkUniverseScreen(
                 color = MaterialTheme.colorScheme.onBackground
             )
             Text(
-                text = "${nearbyPeers.size} Nearby • ${if (torReady) "Tor Connected" else "Tor Disconnected"}",
+                text = "${nearbyPeers.size} Nearby • ${visualOnionNodes} Tor Connected",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
             )

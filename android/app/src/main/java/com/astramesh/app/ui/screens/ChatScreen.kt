@@ -32,17 +32,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import com.astramesh.app.ui.components.VoiceNoteRecorder
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.net.toUri
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.astramesh.app.data.AppDatabase
 import com.astramesh.app.data.MessageEntity
 import com.astramesh.app.network.MessageRouter
 import com.astramesh.app.network.NearbyConnectionManager
 import com.astramesh.app.network.Transport
+import com.astramesh.app.transfer.MediaTransferManager
 import com.astramesh.app.ui.theme.*
 import com.astramesh.app.ui.components.*
 import androidx.compose.animation.*
@@ -61,7 +66,8 @@ fun ChatScreen(
     navController: NavController,
     db: AppDatabase,
     nearbyManager: NearbyConnectionManager,
-    messageRouter: MessageRouter
+    messageRouter: MessageRouter,
+    mediaTransferManager: MediaTransferManager
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -73,10 +79,52 @@ fun ChatScreen(
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsState()
     val listState = rememberLazyListState()
     
-    // UI states
     var showMessageMenu by remember { mutableStateOf<MessageEntity?>(null) }
     var replyToMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var showAttachmentSheet by remember { mutableStateOf(false) }
+
+    var pendingTransferUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var pendingTransferMimeType by remember { mutableStateOf("") }
+    var pendingTransferType by remember { mutableStateOf("") }
+    var showWifiDirectPrompt by remember { mutableStateOf(false) }
+
+    fun processSelectedFile(uri: android.net.Uri, mimeType: String, type: String) {
+        coroutineScope.launch(Dispatchers.IO) {
+            val fileSize = try {
+                context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
+            } catch (e: Exception) { 0L }
+            
+            withContext(Dispatchers.Main) {
+                if (fileSize > 5 * 1024 * 1024) { // > 5MB
+                    pendingTransferUri = uri
+                    pendingTransferMimeType = mimeType
+                    pendingTransferType = type
+                    showWifiDirectPrompt = true
+                } else {
+                    mediaTransferManager.queueMediaTransfer(contactKey, uri, mimeType, type, false)
+                }
+            }
+        }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val mimeType = context.contentResolver.getType(uri) ?: "image/*"
+            processSelectedFile(uri, mimeType, "IMAGE")
+        }
+    }
+
+    val documentPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+            val type = if (mimeType.contains("apk")) "APK" else "DOCUMENT"
+            processSelectedFile(uri, mimeType, type)
+        }
+    }
     
+    val voiceNoteRecorder = remember { VoiceNoteRecorder(context) }
+    var isRecording by remember { mutableStateOf(false) }
+
     val isNearbyOnline = connectedEndpoints.contains(contactEndpoint)
     val isOnline = isNearbyOnline || contactOnion.isNotBlank()
 
@@ -162,9 +210,10 @@ fun ChatScreen(
         bottomBar = {
             Surface(color = DeepBlack, shadowElevation = 16.dp) {
                 Column {
-                    if (replyToMessage != null) {
+                    val reply = replyToMessage
+                    if (reply != null) {
                         ReplyPreviewBanner(
-                            message = replyToMessage!!,
+                            message = reply,
                             onCancel = { replyToMessage = null }
                         )
                     }
@@ -176,7 +225,7 @@ fun ChatScreen(
                         verticalAlignment = Alignment.Bottom
                     ) {
                         IconButton(
-                            onClick = { Toast.makeText(context, "Attachments coming soon", Toast.LENGTH_SHORT).show() },
+                            onClick = { showAttachmentSheet = true },
                             modifier = Modifier.padding(bottom = 4.dp)
                         ) {
                             Icon(Icons.Rounded.AttachFile, "Attach", tint = MutedGray)
@@ -207,8 +256,9 @@ fun ChatScreen(
                         IconButton(
                             onClick = {
                                 if (!isSendEnabled) return@IconButton
-                                val text = if (replyToMessage != null) {
-                                    "↩ ${replyToMessage!!.text.take(30)}...\n$messageText"
+                                val reply = replyToMessage
+                                val text = if (reply != null) {
+                                    "↩ ${reply.text.take(30)}...\n$messageText"
                                 } else messageText
                                 
                                 messageText = ""
@@ -280,17 +330,18 @@ fun ChatScreen(
             }
         }
 
-        if (showMessageMenu != null) {
+        val menuMsg = showMessageMenu
+        if (menuMsg != null) {
             MessageActionsSheet(
-                message = showMessageMenu!!,
+                message = menuMsg,
                 onDismiss = { showMessageMenu = null },
                 onReply = { 
-                    replyToMessage = showMessageMenu
+                    replyToMessage = menuMsg
                     showMessageMenu = null
                 },
                 onCopy = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Copied message", showMessageMenu!!.text))
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Copied message", menuMsg.text))
                     Toast.makeText(context, "Message copied", Toast.LENGTH_SHORT).show()
                     showMessageMenu = null
                 },
@@ -299,12 +350,72 @@ fun ChatScreen(
                     showMessageMenu = null
                 },
                 onDelete = {
-                    val msgToDelete = showMessageMenu!!
                     coroutineScope.launch(Dispatchers.IO) {
-                        db.messageDao().deleteMessage(msgToDelete.messageId)
+                        db.messageDao().deleteMessage(menuMsg.messageId)
                     }
                     showMessageMenu = null
                 }
+            )
+        }
+
+        if (showAttachmentSheet) {
+            AttachmentBottomSheet(
+                onDismiss = { showAttachmentSheet = false },
+                onOptionSelected = { type ->
+                    showAttachmentSheet = false
+                    when (type) {
+                        "IMAGE" -> imagePickerLauncher.launch("image/*")
+                        "DOCUMENT" -> documentPickerLauncher.launch("*/*")
+                        "APK" -> documentPickerLauncher.launch("application/vnd.android.package-archive")
+                        "VOICE" -> {
+                            if (isRecording) {
+                                val file = voiceNoteRecorder.stopRecording()
+                                isRecording = false
+                                if (file != null) {
+                                    coroutineScope.launch {
+                                        mediaTransferManager.queueMediaTransfer(contactKey, file.toUri(), "audio/ogg", "VOICE", false)
+                                    }
+                                }
+                            } else {
+                                if (voiceNoteRecorder.startRecording()) {
+                                    isRecording = true
+                                    Toast.makeText(context, "Recording...", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                        else -> Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        }
+
+        val transferUri = pendingTransferUri
+        if (showWifiDirectPrompt && transferUri != null) {
+            AlertDialog(
+                onDismissRequest = { showWifiDirectPrompt = false },
+                title = { Text("Large File Transfer", color = SoftWhite) },
+                text = { Text("This file is large. Use high-speed Wi-Fi Direct transfer?", color = MutedGray) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showWifiDirectPrompt = false
+                        coroutineScope.launch {
+                            mediaTransferManager.queueMediaTransfer(contactKey, transferUri, pendingTransferMimeType, pendingTransferType, true)
+                        }
+                    }) {
+                        Text("Yes, use Wi-Fi", color = AccentViolet)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showWifiDirectPrompt = false
+                        coroutineScope.launch {
+                            mediaTransferManager.queueMediaTransfer(contactKey, transferUri, pendingTransferMimeType, pendingTransferType, false)
+                        }
+                    }) {
+                        Text("No, use Bluetooth", color = DimGray)
+                    }
+                },
+                containerColor = CardSurface
             )
         }
     }
@@ -474,12 +585,7 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit, onSwipeReply:
                                 )
                             }
                         }
-                        Text(
-                            message.text,
-                            fontSize = if (isEmojiOnly) 40.sp else 16.sp,
-                            color = if (isSent) Color.White else SoftWhite,
-                            lineHeight = 24.sp
-                        )
+                        MediaContent(message = message, isSent = isSent)
                         Row(
                             modifier = Modifier.align(Alignment.End).padding(top = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -529,6 +635,41 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit, onSwipeReply:
                     }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AttachmentBottomSheet(onDismiss: () -> Unit, onOptionSelected: (String) -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = CardSurface
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp)) {
+            Text("Share Attachment", color = SoftWhite, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+            HorizontalDivider(color = DimGray)
+            
+            ListItem(
+                headlineContent = { Text("Photo or Video", color = SoftWhite) },
+                modifier = Modifier.clickable { onOptionSelected("IMAGE") },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+            ListItem(
+                headlineContent = { Text("Document", color = SoftWhite) },
+                modifier = Modifier.clickable { onOptionSelected("DOCUMENT") },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+            ListItem(
+                headlineContent = { Text("Voice Note", color = SoftWhite) },
+                modifier = Modifier.clickable { onOptionSelected("VOICE") },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+            ListItem(
+                headlineContent = { Text("APK / App File", color = SoftWhite) },
+                modifier = Modifier.clickable { onOptionSelected("APK") },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
         }
     }
 }

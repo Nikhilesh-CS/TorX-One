@@ -180,7 +180,8 @@ class MainActivity : ComponentActivity() {
                                 db = service.db,
                                 nearbyManager = service.nearbyManager,
                                 torManager = service.torManager,
-                                messageRouter = service.messageRouter
+                                messageRouter = service.messageRouter,
+                                settingsManager = service.settingsManager
                             )
                         }
                         composable("chat/{contactKey}") { backStackEntry ->
@@ -191,7 +192,8 @@ class MainActivity : ComponentActivity() {
                                 navController = navController,
                                 db = service.db,
                                 nearbyManager = service.nearbyManager,
-                                messageRouter = service.messageRouter
+                                messageRouter = service.messageRouter,
+                                mediaTransferManager = service.mediaTransferManager
                             )
                         }
                         composable("settings") {
@@ -200,7 +202,8 @@ class MainActivity : ComponentActivity() {
                                 identityManager = service.identityManager,
                                 navController = navController,
                                 onionAddress = onionAddress,
-                                db = service.db
+                                db = service.db,
+                                settingsManager = service.settingsManager
                             )
                         }
                         composable("debug") {
