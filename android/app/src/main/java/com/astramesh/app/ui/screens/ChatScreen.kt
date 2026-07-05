@@ -23,6 +23,8 @@ import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material3.*
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -266,7 +268,8 @@ fun ChatScreen(
                         
                         MessageBubble(
                             message = message,
-                            onLongClick = { showMessageMenu = message }
+                            onLongClick = { showMessageMenu = message },
+                            onSwipeReply = { replyToMessage = message }
                         )
                         
                         if (dateStr != nextDateStr) {
@@ -384,7 +387,7 @@ fun MessageActionsSheet(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit) {
+fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit, onSwipeReply: () -> Unit) {
     val isSent = message.direction == "sent"
     val align = if (isSent) Alignment.CenterEnd else Alignment.CenterStart
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -393,6 +396,9 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
+    var swipeOffset by remember { mutableStateOf(0f) }
+    val animatedSwipeOffset by animateFloatAsState(targetValue = swipeOffset)
+
     AnimatedVisibility(
         visible = visible,
         enter = slideInHorizontally(
@@ -400,7 +406,33 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit) {
         ) + fadeIn() + expandVertically()
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+                .offset { androidx.compose.ui.unit.IntOffset(animatedSwipeOffset.toInt(), 0) }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (swipeOffset > 100f || swipeOffset < -100f) {
+                                // Trigger reply if swiped far enough
+                                onSwipeReply()
+                            }
+                            swipeOffset = 0f
+                        },
+                        onDragCancel = { swipeOffset = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            // Only allow swipe left for sent, right for received
+                            if (isSent && dragAmount < 0) {
+                                swipeOffset += dragAmount
+                            } else if (!isSent && dragAmount > 0) {
+                                swipeOffset += dragAmount
+                            }
+                            // Limit swipe distance
+                            if (swipeOffset > 150f) swipeOffset = 150f
+                            if (swipeOffset < -150f) swipeOffset = -150f
+                        }
+                    )
+                },
             contentAlignment = align
         ) {
             Column(horizontalAlignment = if (isSent) Alignment.End else Alignment.Start) {
@@ -425,6 +457,23 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit) {
                         .padding(horizontal = 18.dp, vertical = 12.dp)
                 ) {
                     Column {
+                        if (message.replyToText != null) {
+                            Box(
+                                modifier = Modifier
+                                    .padding(bottom = 6.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.Black.copy(alpha = 0.2f))
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = message.replyToText,
+                                    fontSize = 12.sp,
+                                    color = if (isSent) Color.White.copy(alpha = 0.7f) else MutedGray,
+                                    maxLines = 2,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                         Text(
                             message.text,
                             fontSize = if (isEmojiOnly) 40.sp else 16.sp,
@@ -440,6 +489,13 @@ fun MessageBubble(message: MessageEntity, onLongClick: () -> Unit) {
                                 fontSize = 11.sp,
                                 color = if (isSent) Color.White.copy(alpha = 0.8f) else MutedGray
                             )
+                            if (message.transport != null) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (message.transport == "NEARBY") "📶" else "🧅",
+                                    fontSize = 10.sp
+                                )
+                            }
                             if (isSent) {
                                 Spacer(modifier = Modifier.width(4.dp))
                                 when (message.status) {

@@ -105,7 +105,7 @@ fun ChatListScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(DeepBlack)
+                    .background(MaterialTheme.colorScheme.background)
                     .padding(top = 16.dp, start = 20.dp, end = 20.dp, bottom = 8.dp)
             ) {
                 Row(
@@ -113,19 +113,9 @@ fun ChatListScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Chats", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = SoftWhite)
+                    Text("Messages", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.onBackground)
                     Column(horizontalAlignment = Alignment.End) {
                         DiscoveryStatusChip(status = connectionStatus)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .clickable { navController.navigate("settings") }
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Icon(Icons.Rounded.Settings, contentDescription = "Settings", tint = SoftWhite, modifier = Modifier.size(24.dp))
-                        }
                     }
                 }
             }

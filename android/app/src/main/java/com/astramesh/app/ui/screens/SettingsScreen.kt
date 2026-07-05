@@ -122,15 +122,10 @@ fun SettingsScreen(
         containerColor = DeepBlack,
         topBar = {
             TopAppBar(
-                title = { Text("Profile", color = SoftWhite, fontSize = 20.sp, fontWeight = FontWeight.Normal) },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = SoftWhite)
-                    }
-                },
+                title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground) },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = DeepBlack,
-                    titleContentColor = SoftWhite
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
                 )
             )
         }

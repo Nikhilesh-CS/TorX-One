@@ -153,7 +153,7 @@ class MainActivity : ComponentActivity() {
 
                     NavHost(
                         navController = navController,
-                        startDestination = if (hasIdentity) "chatList" else "setup",
+                        startDestination = if (hasIdentity) "main" else "setup",
                         enterTransition = { fadeIn(animationSpec = tween(300)) + slideInHorizontally { it / 4 } },
                         exitTransition = { fadeOut(animationSpec = tween(300)) },
                         popEnterTransition = { fadeIn(animationSpec = tween(300)) + slideInHorizontally { -it / 4 } },
@@ -164,20 +164,19 @@ class MainActivity : ComponentActivity() {
                                 identityManager = service.identityManager,
                                 onIdentityCreated = {
                                     service.configureAndStart()
-                                    navController.navigate("chatList") {
+                                    navController.navigate("main") {
                                         popUpTo("setup") { inclusive = true }
                                     }
                                 }
                             )
                         }
-                        composable("chatList") {
+                        composable("main") {
                             LaunchedEffect(Unit) {
                                 service.configureAndStart()
                             }
-
-                            ChatListScreen(
+                            MainScreen(
                                 identityManager = service.identityManager,
-                                navController = navController,
+                                rootNavController = navController,
                                 db = service.db,
                                 nearbyManager = service.nearbyManager,
                                 torManager = service.torManager,
