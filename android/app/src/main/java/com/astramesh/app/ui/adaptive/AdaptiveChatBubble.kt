@@ -8,11 +8,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.astramesh.app.engine.MessageLifecycleState
 import com.astramesh.app.ui.theme.AstraTheme
 import com.astramesh.app.ui.theme.ErrorRed
 import com.astramesh.app.ui.theme.rememberWindowSizeClass
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 
 @Composable
 fun AdaptiveChatBubble(
@@ -53,13 +58,25 @@ fun AdaptiveChatBubble(
     val isFailed = lifecycleState == MessageLifecycleState.FAILED || lifecycleState == MessageLifecycleState.EXPIRED
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics(mergeDescendants = true) {
+                // Group the entire bubble so TalkBack reads it as a single unit
+                val sender = if (isMine) "You" else "Contact"
+                contentDescription = "Message from $sender at $timestamp. Status: $lifecycleState"
+                role = Role.Button
+            },
         horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
     ) {
         BoxWithConstraints {
             Column(
                 modifier = Modifier
                     .widthIn(max = maxWidth * widthFraction)
+                    .androidx.compose.ui.draw.shadow(
+                        elevation = 2.dp,
+                        shape = bubbleShape,
+                        spotColor = Color.Black.copy(alpha = 0.1f)
+                    )
                     .clip(bubbleShape)
                     .background(if (isFailed) ErrorRed.copy(alpha = 0.2f) else bubbleColor)
                     .padding(horizontal = AstraTheme.spacing.medium, vertical = AstraTheme.spacing.small),

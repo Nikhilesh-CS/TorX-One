@@ -88,6 +88,40 @@ class IdentityRestoreManager(private val context: Context) {
                 identityManager.saveIdentity(identity)
                 identityManager.saveOnionAddress(dto.onionAddress)
 
+                // Restore Profile
+                val db = androidx.room.Room.databaseBuilder(
+                    context.applicationContext,
+                    com.astramesh.app.data.AppDatabase::class.java,
+                    "astra-mesh-db"
+                ).build()
+                val profileDao = db.profileDao()
+                val profileCacheManager = com.astramesh.app.identity.profile.ProfileCacheManagerImpl(context)
+
+                var localAvatarPath: String? = null
+                if (dto.avatarWebPB64 != null) {
+                    try {
+                        val avatarBytes = java.util.Base64.getDecoder().decode(dto.avatarWebPB64)
+                        val thumbFile = profileCacheManager.saveAvatarBytes("LOCAL_USER", "thumb", avatarBytes)
+                        localAvatarPath = thumbFile.absolutePath
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to restore avatar from backup", e)
+                    }
+                }
+
+                val restoredProfile = com.astramesh.app.data.ProfileEntity(
+                    ownerKey = "LOCAL_USER",
+                    name = identity.name,
+                    bio = dto.bio,
+                    statusMessage = dto.statusMessage,
+                    avatarHash = dto.avatarHash,
+                    profileHash = dto.profileHash,
+                    profileVersion = dto.profileVersion,
+                    lastUpdatedAt = dto.lastUpdatedAt,
+                    avatarLocalPath = localAvatarPath
+                )
+                profileDao.insertProfile(restoredProfile)
+                // db.close() // Room will handle this
+
                 // 7. Restart and Verify Self-Test
                 if (service != null) {
                     service.restartNetworking()

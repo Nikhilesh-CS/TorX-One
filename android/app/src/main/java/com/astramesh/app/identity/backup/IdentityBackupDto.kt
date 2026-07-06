@@ -24,5 +24,14 @@ data class IdentityBackupDto(
     
     // Tor hidden service files (encoded as Base64 strings for raw binary files, or plain text for hostname)
     val torHsEd25519PublicKeyB64: String,
-    val torHsEd25519SecretKeyB64: String
+    val torHsEd25519SecretKeyB64: String,
+    
+    // Profile
+    val bio: String = "",
+    val statusMessage: String = "",
+    val avatarHash: String? = null,
+    val profileHash: String = "",
+    val profileVersion: Int = 1,
+    val lastUpdatedAt: Long = 0L,
+    val avatarWebPB64: String? = null
 )

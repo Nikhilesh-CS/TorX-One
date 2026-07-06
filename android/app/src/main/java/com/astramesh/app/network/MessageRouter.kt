@@ -50,7 +50,10 @@ class MessageRouter(
             MeshProtocol.TYPE_MEDIA_OFFER,
             MeshProtocol.TYPE_MEDIA_CHUNK,
             MeshProtocol.TYPE_MEDIA_ACK,
-            MeshProtocol.TYPE_MEDIA_COMPLETE -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
+            MeshProtocol.TYPE_MEDIA_COMPLETE,
+            MeshProtocol.TYPE_PROFILE_UPDATE,
+            MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
+            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(endpointId, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json) }
@@ -67,7 +70,10 @@ class MessageRouter(
             MeshProtocol.TYPE_MEDIA_OFFER,
             MeshProtocol.TYPE_MEDIA_CHUNK,
             MeshProtocol.TYPE_MEDIA_ACK,
-            MeshProtocol.TYPE_MEDIA_COMPLETE -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
+            MeshProtocol.TYPE_MEDIA_COMPLETE,
+            MeshProtocol.TYPE_PROFILE_UPDATE,
+            MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
+            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(null, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json) }
@@ -411,6 +417,10 @@ class MessageRouter(
                     isConnected = true
                 )
             )
+            
+            // Broadcast our profile to the newly connected peer
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.profileSyncManager?.broadcastLocalProfile(CryptoManager.toHex(parsed.signingPublicKey))
         }
     }
 
@@ -493,6 +503,14 @@ class MessageRouter(
             messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) {
             val service = com.astramesh.app.service.AstraMeshService.getInstance()
             service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey)
+            return
+        }
+
+        if (messageType == MeshProtocol.TYPE_PROFILE_UPDATE ||
+            messageType == MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO ||
+            messageType == MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) {
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.profileSyncManager?.handleProfilePacket(messageType, plaintext, senderKey)
             return
         }
 

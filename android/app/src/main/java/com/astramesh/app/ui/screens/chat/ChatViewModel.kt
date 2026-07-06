@@ -45,9 +45,14 @@ class ChatViewModel(
         }
     }
 
+    private val _messageLimit = MutableStateFlow(100)
+    
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun observeMessages() {
         viewModelScope.launch(Dispatchers.IO) {
-            db.messageDao().getMessagesForContact(contactKey).collect { entities ->
+            _messageLimit.flatMapLatest { limit ->
+                db.messageDao().getMessagesForContact(contactKey, limit)
+            }.collect { entities ->
                 entities.forEach { entity ->
                     val transport = when (entity.transport) {
                         "NEARBY" -> TransportType.BLUETOOTH
@@ -63,6 +68,19 @@ class ChatViewModel(
                         else -> MessageLifecycleState.DELIVERED
                     }
                     
+                    val reactionsMap = try {
+                        val map = mutableMapOf<String, String>()
+                        if (!entity.reactionsJson.isNullOrBlank()) {
+                            val json = org.json.JSONObject(entity.reactionsJson)
+                            for (key in json.keys()) {
+                                map[key] = json.getString(key)
+                            }
+                        }
+                        map
+                    } catch (e: Exception) {
+                        emptyMap<String, String>()
+                    }
+
                     val payload = MessagePayload(
                         id = entity.messageId,
                         senderId = if (entity.direction == "sent") "me" else contactKey,
@@ -71,7 +89,16 @@ class ChatViewModel(
                         timestamp = entity.timestamp,
                         lifecycleState = lifecycle,
                         transportType = transport,
-                        replyToId = null // Need to map replyToText
+                        replyToId = entity.replyToId,
+                        hasAttachments = entity.messageType != "TEXT",
+                        messageType = entity.messageType,
+                        fileName = entity.fileName,
+                        fileSize = entity.fileSize,
+                        mimeType = entity.mimeType,
+                        localUri = entity.localUri,
+                        thumbnailUri = entity.thumbnailUri,
+                        transferProgress = entity.transferProgress,
+                        reactions = reactionsMap
                     )
                     conversationEngine.ingestMessage(payload)
 
@@ -83,6 +110,10 @@ class ChatViewModel(
                 }
             }
         }
+    }
+    
+    fun loadMoreMessages() {
+        _messageLimit.value += 100
     }
 
     fun sendMessage(text: String, replyToId: String? = null) {

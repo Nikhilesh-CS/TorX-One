@@ -66,7 +66,7 @@ fun ConnectionStatusPill(
     val icon: ImageVector = when (transportType) {
         TransportType.BLUETOOTH -> Icons.Default.Bluetooth
         TransportType.WIFI_DIRECT -> Icons.Default.Wifi
-        TransportType.TOR -> Icons.Default.Wifi // TODO: Use a proper Tor/Onion icon
+        TransportType.TOR -> androidx.compose.material.icons.Icons.Rounded.VpnKey
         TransportType.SWITCHING -> Icons.Default.Warning
         TransportType.OFFLINE -> Icons.Default.Warning
     }
@@ -74,9 +74,9 @@ fun ConnectionStatusPill(
     val label = when (transportType) {
         TransportType.BLUETOOTH -> "Bluetooth • $details"
         TransportType.WIFI_DIRECT -> "Wi-Fi Direct • $details"
-        TransportType.TOR -> "Tor • $details"
-        TransportType.SWITCHING -> "Switching Transport…"
-        TransportType.OFFLINE -> "Offline • Queued"
+        TransportType.TOR -> "Tor" + if (details.isNotBlank()) " • $details" else ""
+        TransportType.SWITCHING -> "Syncing…"
+        TransportType.OFFLINE -> "Offline"
     }
 
     Row(
@@ -87,12 +87,14 @@ fun ConnectionStatusPill(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.small)
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = "Transport Icon",
-            tint = contentColor,
-            modifier = Modifier.size(AstraTheme.iconSizes.tiny)
-        )
+        if (AstraTheme.showTransportIcons) {
+            Icon(
+                imageVector = icon,
+                contentDescription = "Transport Icon",
+                tint = contentColor,
+                modifier = Modifier.size(AstraTheme.iconSizes.tiny)
+            )
+        }
         Text(
             text = label,
             color = contentColor,

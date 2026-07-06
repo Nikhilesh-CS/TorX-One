@@ -12,6 +12,11 @@ object MeshProtocol {
     const val TYPE_PING = "ping"
     const val TYPE_PONG = "pong"
     
+    // Profile Sync Protocol Types
+    const val TYPE_PROFILE_UPDATE = "profile_update"
+    const val TYPE_REQUEST_PROFILE_PHOTO = "req_profile_photo"
+    const val TYPE_PROFILE_PHOTO_CHUNK = "profile_photo_chunk"
+    
     // Media Transfer Protocol Types
     const val TYPE_MEDIA_OFFER = "media_offer"
     const val TYPE_MEDIA_CHUNK = "media_chunk"

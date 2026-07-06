@@ -39,6 +39,8 @@ val LocalElevations = staticCompositionLocalOf { defaultAstraElevations }
 val LocalIconSizes = staticCompositionLocalOf { defaultAstraIconSizes }
 val LocalAvatarSizes = staticCompositionLocalOf { defaultAstraAvatarSizes }
 val LocalOpacities = staticCompositionLocalOf { defaultAstraOpacities }
+val LocalReduceMotion = staticCompositionLocalOf { false }
+val LocalShowTransportIcons = staticCompositionLocalOf { true }
 
 fun Modifier.glassmorphism(
     cornerRadius: Dp = 16.dp,
@@ -67,6 +69,8 @@ private val DarkColorScheme = darkColorScheme(
 fun AstraMeshTheme(
     activeTransport: NetworkTransport = NetworkTransport.DISCONNECTED,
     useAmoledTheme: Boolean = false,
+    reduceMotion: Boolean = false,
+    showTransportIcons: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val view = LocalView.current
@@ -123,7 +127,9 @@ tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
         LocalElevations provides defaultAstraElevations,
         LocalIconSizes provides dynamicIconSizes,
         LocalAvatarSizes provides defaultAstraAvatarSizes,
-        LocalOpacities provides defaultAstraOpacities
+        LocalOpacities provides defaultAstraOpacities,
+        LocalReduceMotion provides reduceMotion,
+        LocalShowTransportIcons provides showTransportIcons
     ) {
         MaterialTheme(
             colorScheme = dynamicColorScheme,
@@ -151,4 +157,8 @@ object AstraTheme {
         @Composable get() = MaterialTheme.colorScheme
     val typography: androidx.compose.material3.Typography
         @Composable get() = MaterialTheme.typography
+    val reduceMotion: Boolean
+        @Composable get() = LocalReduceMotion.current
+    val showTransportIcons: Boolean
+        @Composable get() = LocalShowTransportIcons.current
 }

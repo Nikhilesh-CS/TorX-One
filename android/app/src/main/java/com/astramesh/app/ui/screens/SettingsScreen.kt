@@ -204,6 +204,11 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground) },
+                navigationIcon = {
+                    IconButton(onClick = { navController.popBackStack() }) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
                     titleContentColor = MaterialTheme.colorScheme.onBackground
@@ -246,10 +251,10 @@ fun SettingsScreen(
             // Group: Profile Details (No headers, just list items like WhatsApp)
             item {
                 SettingsItem(
-                    icon = Icons.Rounded.PersonOutline,
-                    title = "Name",
-                    subtitle = identity?.name ?: "Unknown",
-                    onClick = { showEditProfileDialog = true }
+                    icon = Icons.Rounded.Person,
+                    title = "Edit Profile",
+                    subtitle = "Change your display name, bio, and avatar",
+                    onClick = { navController.navigate("profile") }
                 )
             }
             item {
@@ -278,6 +283,14 @@ fun SettingsScreen(
             item { Divider(color = CardSurface, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
 
             // Group: Network & Privacy
+            item {
+                SettingsItem(
+                    icon = Icons.Rounded.Dashboard,
+                    title = "Mesh Dashboard",
+                    subtitle = "Network health and topology",
+                    onClick = { navController.navigate("mesh_dashboard") }
+                )
+            }
             item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.WifiTethering,
@@ -359,7 +372,7 @@ fun SettingsScreen(
             item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.Brightness4,
-                    title = "Dark Mode",
+                    title = "AMOLED Pure Black",
                     checked = darkMode,
                     onCheckedChange = { 
                         scope.launch { settingsManager.setDarkMode(it) }

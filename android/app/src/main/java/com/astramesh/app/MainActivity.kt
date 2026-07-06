@@ -90,7 +90,16 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            AstraMeshTheme {
+            val settingsManager = remember { com.astramesh.app.data.SettingsManager(this@MainActivity) }
+            val darkMode by settingsManager.darkModeFlow.collectAsState(initial = true)
+            val reduceMotion by settingsManager.reduceMotionFlow.collectAsState(initial = false)
+            val showTransportIcons by settingsManager.showTransportIconsFlow.collectAsState(initial = true)
+
+            AstraMeshTheme(
+                useAmoledTheme = darkMode,
+                reduceMotion = reduceMotion,
+                showTransportIcons = showTransportIcons
+            ) {
                 com.astramesh.app.debug.UIMicroAuditOverlay {
                     Surface(modifier = Modifier.fillMaxSize(), color = DeepBlack) {
                         if (!permissionsGranted) {
@@ -152,23 +161,26 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    val animDuration = if (reduceMotion) 0 else 300
                     NavHost(
                         navController = navController,
                         startDestination = if (hasIdentity) "main" else "setup",
-                        enterTransition = { fadeIn(animationSpec = tween(300)) + slideInHorizontally { it / 4 } },
-                        exitTransition = { fadeOut(animationSpec = tween(300)) },
-                        popEnterTransition = { fadeIn(animationSpec = tween(300)) + slideInHorizontally { -it / 4 } },
-                        popExitTransition = { fadeOut(animationSpec = tween(300)) }
+                        enterTransition = { fadeIn(animationSpec = tween(animDuration)) + slideInHorizontally { if (reduceMotion) 0 else it / 4 } },
+                        exitTransition = { fadeOut(animationSpec = tween(animDuration)) },
+                        popEnterTransition = { fadeIn(animationSpec = tween(animDuration)) + slideInHorizontally { if (reduceMotion) 0 else -it / 4 } },
+                        popExitTransition = { fadeOut(animationSpec = tween(animDuration)) }
                     ) {
                         composable("setup") {
                             SetupScreen(
                                 identityManager = service.identityManager,
                                 onIdentityCreated = {
                                     service.configureAndStart()
-                                    navController.navigate("main") {
-                                        popUpTo("setup") { inclusive = true }
-                                    }
                                 }
+                            )
+                        }
+                        composable("profile") {
+                            com.astramesh.app.ui.screens.ProfileScreen(
+                                navController = navController
                             )
                         }
                         composable("main") {
@@ -211,6 +223,11 @@ class MainActivity : ComponentActivity() {
                             DebugScreen(
                                 navController = navController,
                                 torManager = service.torManager
+                            )
+                        }
+                        composable("mesh_dashboard") {
+                            com.astramesh.app.ui.screens.MeshDashboardScreen(
+                                onNavigateBack = { navController.popBackStack() }
                             )
                         }
                         }

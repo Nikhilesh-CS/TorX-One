@@ -68,11 +68,14 @@ class AstraMeshService : Service() {
         private set
     lateinit var mediaTransferManager: com.astramesh.app.transfer.MediaTransferManager
         private set
+    lateinit var profileSyncManager: com.astramesh.app.identity.profile.ProfileSyncManager
+        private set
     lateinit var settingsManager: com.astramesh.app.data.SettingsManager
         private set
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val binder = LocalBinder()
+    private val isConfigured = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     inner class LocalBinder : Binder() {
         fun getService(): AstraMeshService = this@AstraMeshService
@@ -102,7 +105,9 @@ class AstraMeshService : Service() {
                 AppDatabase.MIGRATION_3_4,
                 AppDatabase.MIGRATION_4_5,
                 AppDatabase.MIGRATION_5_6,
-                AppDatabase.MIGRATION_6_7
+                AppDatabase.MIGRATION_6_7,
+                AppDatabase.MIGRATION_7_8,
+                AppDatabase.MIGRATION_8_9
             )
             .build()
 
@@ -110,6 +115,12 @@ class AstraMeshService : Service() {
         torManager = TorManager(this)
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager)
         mediaTransferManager = com.astramesh.app.transfer.MediaTransferManager(this, db, messageRouter)
+        
+        val profileCache = com.astramesh.app.identity.profile.ProfileCacheManagerImpl(this)
+        val imageProcessor = com.astramesh.app.media.ImageProcessor(this)
+        val profileRepository = com.astramesh.app.identity.profile.ProfileRepositoryImpl(db.profileDao(), identityManager, profileCache, imageProcessor)
+        profileSyncManager = com.astramesh.app.identity.profile.ProfileSyncManager(this, profileRepository, messageRouter)
+        
         settingsManager = com.astramesh.app.data.SettingsManager(this)
 
         wireNetworking()
@@ -138,9 +149,7 @@ class AstraMeshService : Service() {
         messageRouter.mySigningKeyHex = CryptoManager.toHex(identity.signingPublicKey)
         messageRouter.myOnionAddress = identityManager.loadOnionAddress() ?: ""
 
-        nearbyManager.startAdvertising()
-        nearbyManager.startDiscovery()
-        torManager.start()
+        isConfigured.value = true
 
         // Start retry loop for any pending messages from previous session
         messageRouter.ensureRetryLoopRunning()
@@ -207,6 +216,31 @@ class AstraMeshService : Service() {
                     identityManager.saveOnionAddress(onion)
                     Log.d(TAG, "[TOR] Onion address saved: ${onion.take(20)}...")
                     updateNotification("Connected", "Tor: ${onion.take(16)}...")
+                }
+            }
+        }
+
+        serviceScope.launch {
+            kotlinx.coroutines.flow.combine(isConfigured, settingsManager.torEnabledFlow) { configured, enabled ->
+                Pair(configured, enabled)
+            }.collectLatest { (configured, enabled) ->
+                if (configured) {
+                    if (enabled) torManager.start() else torManager.stop()
+                }
+            }
+        }
+
+        serviceScope.launch {
+            kotlinx.coroutines.flow.combine(isConfigured, settingsManager.hideOnlineStatusFlow) { configured, hidden ->
+                Pair(configured, hidden)
+            }.collectLatest { (configured, hidden) ->
+                if (configured) {
+                    if (hidden) {
+                        nearbyManager.stopAll()
+                    } else {
+                        nearbyManager.startAdvertising()
+                        nearbyManager.startDiscovery()
+                    }
                 }
             }
         }

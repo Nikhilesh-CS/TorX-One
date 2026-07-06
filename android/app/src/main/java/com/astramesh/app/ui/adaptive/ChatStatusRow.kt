@@ -29,7 +29,7 @@ fun ChatStatusRow(
         verticalArrangement = Arrangement.Center,
         modifier = Modifier.wrapContentWidth()
     ) {
-        if (isEncrypted) {
+        if (isEncrypted && AstraTheme.showTransportIcons) {
             Icon(
                 imageVector = Icons.Default.Lock,
                 contentDescription = "Encrypted",

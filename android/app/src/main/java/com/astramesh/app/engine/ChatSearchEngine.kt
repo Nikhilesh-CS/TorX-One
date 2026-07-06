@@ -27,9 +27,40 @@ class ChatSearchEngine(private val conversationEngine: ConversationEngine) {
             return
         }
 
-        // Perform case-insensitive search across all messages
-        val results = conversationEngine.messages.value.filter { 
-            it.text.contains(query, ignoreCase = true)
+        // Parse filters
+        val hasImage = query.contains("has:image", ignoreCase = true)
+        val hasVideo = query.contains("has:video", ignoreCase = true)
+        val hasDoc = query.contains("has:document", ignoreCase = true)
+        val hasMedia = query.contains("has:media", ignoreCase = true) || hasImage || hasVideo
+        
+        val fromMe = query.contains("from:me", ignoreCase = true)
+        val fromThem = query.contains("from:them", ignoreCase = true)
+        
+        val textQuery = query
+            .replace("has:image", "", ignoreCase = true)
+            .replace("has:video", "", ignoreCase = true)
+            .replace("has:document", "", ignoreCase = true)
+            .replace("has:media", "", ignoreCase = true)
+            .replace("from:me", "", ignoreCase = true)
+            .replace("from:them", "", ignoreCase = true)
+            .trim()
+
+        val results = conversationEngine.messages.value.filter { msg ->
+            var matches = true
+            
+            if (hasImage && msg.messageType != "IMAGE") matches = false
+            if (hasVideo && msg.messageType != "VIDEO") matches = false
+            if (hasDoc && msg.messageType != "DOCUMENT") matches = false
+            if (hasMedia && !msg.hasAttachments) matches = false
+            
+            if (fromMe && msg.senderId != "me") matches = false
+            if (fromThem && msg.senderId == "me") matches = false
+            
+            if (textQuery.isNotEmpty() && !msg.text.contains(textQuery, ignoreCase = true)) {
+                matches = false
+            }
+            
+            matches
         }.map { it.id }
         
         _searchResults.value = results

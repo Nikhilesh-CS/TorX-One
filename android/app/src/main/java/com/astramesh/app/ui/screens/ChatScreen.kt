@@ -77,12 +77,29 @@ fun ChatScreen(
     
     var messageText by remember { mutableStateOf("") }
     var replyToMessage by remember { mutableStateOf<MessagePayload?>(null) }
-    var showMessageMenu by remember { mutableStateOf<MessagePayload?>(null) }
+    var selectedMessages by remember { mutableStateOf(setOf<String>()) }
+    val inSelectionMode = selectedMessages.isNotEmpty()
+    
+    var inSearchMode by remember { mutableStateOf(false) }
+    val searchQuery by viewModel.searchEngine.searchQuery.collectAsState()
+    val searchResults by viewModel.searchEngine.searchResults.collectAsState()
+    val currentResultIndex by viewModel.searchEngine.currentResultIndex.collectAsState()
+    
+    // Jump to search result
+    LaunchedEffect(currentResultIndex) {
+        if (currentResultIndex >= 0 && searchResults.isNotEmpty()) {
+            val targetId = searchResults[currentResultIndex]
+            val indexInList = messages.asReversed().indexOfFirst { it.id == targetId }
+            if (indexInList != -1) {
+                listState.animateScrollToItem(indexInList)
+            }
+        }
+    }
     
     // Scroll handling when new messages arrive
     LaunchedEffect(messages.size) {
         val lastMessage = messages.lastOrNull()
-        if (lastMessage != null) {
+        if (lastMessage != null && !inSearchMode) {
             smartScrollEngine.onNewMessageArrived(lastMessage.senderId == "me")
         }
     }
@@ -97,29 +114,110 @@ fun ChatScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = AstraTheme.spacing.small, vertical = AstraTheme.spacing.medium),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { navController.popBackStack() }) {
+                    IconButton(onClick = { 
+                        if (inSearchMode) {
+                            inSearchMode = false
+                            viewModel.searchEngine.clearSearch()
+                        } else {
+                            navController.popBackStack() 
+                        }
+                    }) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = AstraTheme.colors.onSurface)
                     }
-                    AstraAvatar(
-                        name = contactName,
-                        size = AstraTheme.spacing.massive2,
-                        isOnline = isOnline
-                    )
-                    Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(contactName, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = AstraTheme.colors.onSurface)
-                        
-                        ConnectionStatusPill(
-                            transportType = when {
-                                isNearbyOnline -> com.astramesh.app.ui.components.TransportType.BLUETOOTH
-                                contactOnion.isNotBlank() -> com.astramesh.app.ui.components.TransportType.TOR
-                                else -> com.astramesh.app.ui.components.TransportType.OFFLINE
+            androidx.compose.animation.Crossfade(targetState = if (inSelectionMode) 2 else if (inSearchMode) 1 else 0) { mode ->
+                when (mode) {
+                    2 -> {
+                        com.astramesh.app.ui.adaptive.AstraTopAppBar(
+                            title = { Text("${selectedMessages.size}") },
+                            onNavigationIconClick = { selectedMessages = emptySet() },
+                            navigationIcon = {
+                                Icon(Icons.Rounded.Close, "Clear Selection")
                             },
-                            details = if (isNearbyOnline) contactEndpoint else if (contactOnion.isNotBlank()) "Connected" else ""
+                            actions = {
+                                IconButton(onClick = { 
+                                    val textToCopy = selectedMessages.mapNotNull { id -> messages.find { it.id == id }?.text }.joinToString("\n")
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("AstraMesh Messages", textToCopy))
+                                    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                    selectedMessages = emptySet()
+                                }) {
+                                    Icon(Icons.Rounded.ContentCopy, "Copy")
+                                }
+                                if (selectedMessages.size == 1) {
+                                    IconButton(onClick = { 
+                                        showMessageInfoFor = messages.find { it.id == selectedMessages.first() }
+                                    }) {
+                                        Icon(androidx.compose.material.icons.Icons.Rounded.Info, "Info")
+                                    }
+                                    IconButton(onClick = { 
+                                        replyToMessage = messages.find { it.id == selectedMessages.first() }
+                                        selectedMessages = emptySet()
+                                    }) {
+                                        Icon(Icons.AutoMirrored.Rounded.Reply, "Reply")
+                                    }
+                                }
+                                IconButton(onClick = { 
+                                    selectedMessages.forEach { id ->
+                                        viewModel.conversationEngine.updateMessageState(id, com.astramesh.app.engine.MessageLifecycleState.CANCELLED)
+                                        // Note: Actually delete from DB could go here if desired.
+                                    }
+                                    selectedMessages = emptySet()
+                                    Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                                }) {
+                                    Icon(Icons.Rounded.Delete, "Delete")
+                                }
+                            }
+                        )
+                    }
+                    1 -> {
+                        // Search Mode
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { viewModel.searchEngine.updateQuery(it) },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text("Search... (has:image)") },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color.Transparent,
+                                    unfocusedBorderColor = Color.Transparent
+                                )
+                            )
+                            if (searchResults.isNotEmpty()) {
+                                Text("${currentResultIndex + 1}/${searchResults.size}", style = AstraTheme.typography.labelSmall)
+                                IconButton(onClick = { viewModel.searchEngine.previousResult() }) {
+                                    Icon(androidx.compose.material.icons.Icons.Rounded.KeyboardArrowUp, "Previous")
+                                }
+                                IconButton(onClick = { viewModel.searchEngine.nextResult() }) {
+                                    Icon(androidx.compose.material.icons.Icons.Rounded.KeyboardArrowDown, "Next")
+                                }
+                            }
+                        }
+                    }
+                    0 -> {
+                        com.astramesh.app.ui.adaptive.AstraTopAppBar(
+                            title = { Text(contactName) },
+                            onNavigationIconClick = { navController.popBackStack() },
+                            actions = {
+                                IconButton(onClick = { inSearchMode = true }) {
+                                    Icon(androidx.compose.material.icons.Icons.Rounded.Search, "Search")
+                                }
+                                ConnectionStatusPill(
+                                    transportType = when {
+                                        isNearbyOnline -> com.astramesh.app.ui.components.TransportType.BLUETOOTH
+                                        contactOnion.isNotBlank() -> com.astramesh.app.ui.components.TransportType.TOR
+                                        else -> com.astramesh.app.ui.components.TransportType.OFFLINE
+                                    },
+                                    details = if (isNearbyOnline) contactEndpoint else if (contactOnion.isNotBlank()) "Connected" else "",
+                                    modifier = Modifier.clickable { showConnectionVisualizer = true }
+                                )
+                            }
                         )
                     }
                 }
             }
+            } // Close Row
+            } // Close Surface
         },
         bottomBar = {
             Surface(color = AstraTheme.colors.background, shadowElevation = AstraTheme.spacing.standard) {
@@ -138,7 +236,7 @@ fun ChatScreen(
                         verticalAlignment = Alignment.Bottom
                     ) {
                         IconButton(
-                            onClick = { /* TODO: Open AttachmentSheet */ },
+                            onClick = {  },
                             modifier = Modifier.padding(bottom = AstraTheme.spacing.tiny)
                         ) {
                             Icon(Icons.Rounded.AttachFile, "Attach", tint = AstraTheme.colors.onSurfaceVariant)
@@ -199,6 +297,15 @@ fun ChatScreen(
             } else {
                 val reversedMessages = remember(messages) { messages.asReversed() }
                 val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
+                var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+                
+                LaunchedEffect(highlightedMessageId) {
+                    if (highlightedMessageId != null) {
+                        kotlinx.coroutines.delay(1000)
+                        highlightedMessageId = null
+                    }
+                }
+
                 LazyColumn(
                     state = listState,
                     reverseLayout = true,
@@ -208,54 +315,215 @@ fun ChatScreen(
                     items(reversedMessages.size) { index ->
                         val message = reversedMessages[index]
                         val nextMessage = reversedMessages.getOrNull(index + 1)
+                        val prevMessage = reversedMessages.getOrNull(index - 1)
                         
                         val dateStr = dateFormat.format(Date(message.timestamp))
                         val nextDateStr = nextMessage?.let { dateFormat.format(Date(it.timestamp)) }
                         
-                        MessageBubbleProxy(
-                            message = message,
-                            onLongClick = { showMessageMenu = message },
-                            onSwipeReply = { replyToMessage = message }
-                        )
+                        // Because reverseLayout = true, prevMessage is visually BELOW (newer in time)
+                        // nextMessage is visually ABOVE (older in time)
+                        // A tail should be shown if the message below is from a DIFFERENT sender, or there is no message below.
+                        val showTail = prevMessage == null || prevMessage.senderId != message.senderId
+                        
+                        val isSelected = selectedMessages.contains(message.id)
+                        
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(if (isSelected) AstraTheme.colors.primary.copy(alpha = 0.2f) else Color.Transparent)
+                        ) {
+                            MessageBubbleProxy(
+                                message = message,
+                                showTail = showTail,
+                                isSelected = isSelected,
+                                isHighlighted = highlightedMessageId == message.id,
+                                onClick = {
+                                    if (inSelectionMode) {
+                                        if (isSelected) selectedMessages -= message.id else selectedMessages += message.id
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!inSelectionMode) {
+                                        selectedMessages = setOf(message.id)
+                                    } else {
+                                        if (isSelected) selectedMessages -= message.id else selectedMessages += message.id
+                                    }
+                                },
+                                onSwipeReply = { replyToMessage = message },
+                                onReplyClick = { replyId -> 
+                                    val targetIdx = reversedMessages.indexOfFirst { it.id == replyId }
+                                    if (targetIdx != -1) {
+                                        coroutineScope.launch {
+                                            listState.animateScrollToItem(targetIdx)
+                                            highlightedMessageId = replyId
+                                        }
+                                    }
+                                }
+                            )
+                        }
                         
                         if (dateStr != nextDateStr) {
                             DateSeparator(dateStr)
                         }
                     }
                 }
+
+                // Jump to Bottom FAB
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = listState.firstVisibleItemIndex > 5,
+                    enter = androidx.compose.animation.scaleIn() + androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.scaleOut() + androidx.compose.animation.fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(AstraTheme.spacing.medium)
+                ) {
+                    FloatingActionButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(0)
+                            }
+                        },
+                        containerColor = AstraTheme.colors.surface,
+                        contentColor = AstraTheme.colors.primary,
+                        shape = CircleShape
+                    ) {
+                        Icon(androidx.compose.material.icons.Icons.Rounded.KeyboardArrowDown, "Jump to bottom")
+                    }
+                }
+
+                // Floating Date Indicator and Pagination
+                val isScrollInProgress = listState.isScrollInProgress
+                var showFloatingDate by remember { mutableStateOf(false) }
+
+                LaunchedEffect(isScrollInProgress) {
+                    if (isScrollInProgress) {
+                        showFloatingDate = true
+                    } else {
+                        kotlinx.coroutines.delay(1500)
+                        showFloatingDate = false
+                    }
+                }
+                
+                // Pagination trigger
+                val shouldLoadMore = remember {
+                    derivedStateOf {
+                        val totalItems = listState.layoutInfo.totalItemsCount
+                        val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        totalItems > 0 && lastVisibleItem >= totalItems - 10
+                    }
+                }
+                
+                LaunchedEffect(shouldLoadMore.value) {
+                    if (shouldLoadMore.value) {
+                        viewModel.loadMoreMessages()
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showFloatingDate && reversedMessages.isNotEmpty(),
+                    enter = androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.fadeOut(),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = AstraTheme.spacing.small)
+                ) {
+                    val firstVisibleIndex = listState.firstVisibleItemIndex
+                    if (firstVisibleIndex in reversedMessages.indices) {
+                        val msg = reversedMessages[firstVisibleIndex]
+                        val dateStr = dateFormat.format(Date(msg.timestamp))
+                        DateSeparator(dateStr)
+                    }
+                }
             }
         }
+    }
+    
+    // Bottom Sheets
+    var showMessageInfoFor by remember { mutableStateOf<MessagePayload?>(null) }
+    if (showMessageInfoFor != null) {
+        com.astramesh.app.ui.components.MessageInfoSheet(
+            message = showMessageInfoFor!!,
+            onDismiss = { showMessageInfoFor = null }
+        )
+    }
+    
+    var showConnectionVisualizer by remember { mutableStateOf(false) }
+    if (showConnectionVisualizer) {
+        com.astramesh.app.ui.components.ConnectionVisualizerSheet(
+            transportType = when {
+                isNearbyOnline -> com.astramesh.app.ui.components.TransportType.BLUETOOTH
+                contactOnion.isNotBlank() -> com.astramesh.app.ui.components.TransportType.TOR
+                else -> com.astramesh.app.ui.components.TransportType.OFFLINE
+            },
+            peerName = contactName,
+            onDismiss = { showConnectionVisualizer = false }
+        )
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubbleProxy(message: MessagePayload, onLongClick: () -> Unit, onSwipeReply: () -> Unit) {
+fun MessageBubbleProxy(
+    message: MessagePayload, 
+    showTail: Boolean, 
+    isSelected: Boolean,
+    isHighlighted: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit, 
+    onSwipeReply: () -> Unit,
+    onReplyClick: (String) -> Unit
+) {
     val isSent = message.senderId == "me"
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val accentColor = if (isSent) AstraTheme.colors.onPrimary else AstraTheme.colors.primary
+
+    // Highlight flash animation
+    val highlightAlpha by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (isHighlighted) 0.5f else 0f,
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 300)
+    )
 
     com.astramesh.app.ui.adaptive.AdaptiveChatBubble(
         isMine = isSent,
         timestamp = timeFormat.format(Date(message.timestamp)),
         lifecycleState = message.lifecycleState,
         isEncrypted = message.isEncrypted,
-        modifier = Modifier.padding(vertical = AstraTheme.spacing.tiny).combinedClickable(onClick = {}, onLongClick = onLongClick),
+        showTail = showTail,
+        modifier = Modifier
+            .padding(vertical = AstraTheme.spacing.tiny)
+            .background(AstraTheme.colors.primary.copy(alpha = highlightAlpha))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         replyContent = if (message.replyToId != null) {
             {
                 com.astramesh.app.ui.adaptive.ReplyPreview(
                     senderName = "Replied",
-                    messageText = "Original message text...", // TODO: map reply text from DB
-                    accentColor = accentColor
+                    messageText = "Original message text...",
+                    accentColor = accentColor,
+                    modifier = Modifier.clickable { onReplyClick(message.replyToId) }
                 )
             }
         } else null
     ) {
-        Text(
-            text = message.text,
-            color = if (isSent) AstraTheme.colors.onPrimary else AstraTheme.colors.onSurfaceVariant,
-            style = AstraTheme.typography.bodyMedium
-        )
+        Column {
+            if (message.hasAttachments) {
+                com.astramesh.app.ui.components.MediaAttachmentCard(
+                    message = message, 
+                    onClick = {  }
+                )
+            }
+            if (message.text.isNotBlank()) {
+                val isEmoji = com.astramesh.app.ui.utils.TextUtils.isEmojiOnly(message.text)
+                val annotatedText = com.astramesh.app.ui.utils.TextUtils.parseMarkdown(message.text, codeColor = AstraTheme.colors.onSurfaceVariant.copy(alpha = 0.2f))
+                
+                Text(
+                    text = annotatedText,
+                    color = if (isSent) AstraTheme.colors.onPrimary else AstraTheme.colors.onSurfaceVariant,
+                    style = AstraTheme.typography.bodyMedium,
+                    fontSize = if (isEmoji) 48.sp else AstraTheme.typography.bodyMedium.fontSize,
+                    lineHeight = if (isEmoji) 56.sp else AstraTheme.typography.bodyMedium.lineHeight
+                )
+            }
+        }
     }
 }
 

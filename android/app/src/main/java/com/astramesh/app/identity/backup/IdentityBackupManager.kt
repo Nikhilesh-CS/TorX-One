@@ -4,13 +4,21 @@ import android.content.Context
 import android.util.Base64
 import com.astramesh.app.crypto.CryptoManager
 import com.astramesh.app.identity.IdentityManager
+import com.astramesh.app.identity.profile.ProfileCacheManager
+import com.astramesh.app.identity.profile.ProfileRepository
 import com.astramesh.app.network.TorManager
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
+import java.util.Base64 as JavaBase64
 
-class IdentityBackupManager(private val context: Context) {
+class IdentityBackupManager(
+    private val context: Context,
+    private val profileRepository: ProfileRepository,
+    private val profileCacheManager: ProfileCacheManager
+) {
     private val identityManager = IdentityManager(context)
     private val torManager = TorManager(context)
     private val gson = Gson()
@@ -32,6 +40,21 @@ class IdentityBackupManager(private val context: Context) {
                 return@withContext Result.failure(Exception("Tor keys are missing. Ensure Tor has run at least once."))
             }
 
+            // Load Local Profile
+            val profile = profileRepository.getLocalProfile().firstOrNull()
+            var avatarWebPB64: String? = null
+
+            if (profile?.avatarLocalPath != null) {
+                try {
+                    val avatarFile = profileCacheManager.getAvatarFile("LOCAL_USER", "thumb")
+                    if (avatarFile != null && avatarFile.exists()) {
+                        avatarWebPB64 = JavaBase64.getEncoder().encodeToString(avatarFile.readBytes())
+                    }
+                } catch (e: Exception) {
+                    // Ignore missing avatar during backup
+                }
+            }
+
             val backupDto = IdentityBackupDto(
                 backupVersion = 1,
                 appVersion = "1.0.6",
@@ -46,7 +69,14 @@ class IdentityBackupManager(private val context: Context) {
                 sigSecHex = CryptoManager.toHex(identity.signingSecretKey),
                 onionAddress = onionAddress,
                 torHsEd25519PublicKeyB64 = torKeys.pubKeyB64,
-                torHsEd25519SecretKeyB64 = torKeys.secKeyB64
+                torHsEd25519SecretKeyB64 = torKeys.secKeyB64,
+                bio = profile?.bio ?: "",
+                statusMessage = profile?.statusMessage ?: "",
+                avatarHash = profile?.avatarHash,
+                profileHash = profile?.profileHash ?: "",
+                profileVersion = profile?.profileVersion ?: 1,
+                lastUpdatedAt = profile?.lastUpdatedAt ?: 0L,
+                avatarWebPB64 = avatarWebPB64
             )
 
             val jsonPayload = gson.toJson(backupDto).toByteArray(Charsets.UTF_8)

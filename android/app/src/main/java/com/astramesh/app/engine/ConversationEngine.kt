@@ -36,7 +36,15 @@ data class MessagePayload(
     val isEncrypted: Boolean = true,
     val retryCount: Int = 0,
     val replyToId: String? = null,
-    val hasAttachments: Boolean = false
+    val hasAttachments: Boolean = false,
+    val messageType: String = "TEXT",
+    val fileName: String? = null,
+    val fileSize: Long? = null,
+    val mimeType: String? = null,
+    val localUri: String? = null,
+    val thumbnailUri: String? = null,
+    val transferProgress: Int? = null,
+    val reactions: Map<String, String> = emptyMap() // Map of senderKey -> Emoji
 )
 
 /**

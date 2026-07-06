@@ -45,7 +45,8 @@ data class MessageEntity(
     val thumbnailUri: String? = null,
     val transferProgress: Int? = null,
     val checksum: String? = null,
-    val transferStatus: String? = null
+    val transferStatus: String? = null,
+    val reactionsJson: String? = null
 )
 
 @Entity(tableName = "connection_requests")
@@ -54,6 +55,27 @@ data class ConnectionRequestEntity(
     val name: String,
     val timestamp: Long,
     val status: String = "pending" // pending, accepted, rejected
+)
+
+@Entity(tableName = "profiles")
+data class ProfileEntity(
+    @PrimaryKey val ownerKey: String, // signingPublicKey of contact, or "LOCAL_USER"
+    val name: String,
+    val bio: String = "",
+    val statusMessage: String = "",
+    val avatarHash: String? = null,
+    val profileHash: String = "",
+    val profileVersion: Int = 1,
+    val lastUpdatedAt: Long = 0L,
+    val avatarLocalPath: String? = null,
+    
+    // Future-proofing fields
+    val nickname: String? = null,
+    val pronouns: String? = null,
+    val verifiedBadge: Boolean = false,
+    val avatarTheme: String? = null,
+    val customStatusEmoji: String? = null,
+    val presenceCapabilities: String? = null
 )
 
 @Dao
@@ -82,8 +104,8 @@ interface ContactDao {
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp ASC")
-    fun getMessagesForContact(contactKey: String): Flow<List<MessageEntity>>
+    @Query("SELECT * FROM (SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    fun getMessagesForContact(contactKey: String, limit: Int = 100): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT 1")
     fun getLastMessageForContact(contactKey: String): Flow<MessageEntity?>
@@ -155,9 +177,24 @@ interface ConnectionRequestDao {
     fun deleteRequest(endpointId: String)
 }
 
+@Dao
+interface ProfileDao {
+    @Query("SELECT * FROM profiles WHERE ownerKey = :ownerKey LIMIT 1")
+    fun getProfile(ownerKey: String): Flow<ProfileEntity?>
+
+    @Query("SELECT * FROM profiles WHERE ownerKey = :ownerKey LIMIT 1")
+    fun getProfileSync(ownerKey: String): ProfileEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertProfile(profile: ProfileEntity)
+
+    @Query("DELETE FROM profiles WHERE ownerKey = :ownerKey")
+    fun deleteProfile(ownerKey: String)
+}
+
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, MediaTransferEntity::class],
-    version = 7,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, MediaTransferEntity::class, ProfileEntity::class],
+    version = 9,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -165,6 +202,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun connectionRequestDao(): ConnectionRequestDao
     abstract fun mediaTransferDao(): MediaTransferDao
+    abstract fun profileDao(): ProfileDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -205,6 +243,37 @@ abstract class AppDatabase : RoomDatabase() {
                         PRIMARY KEY(`messageId`)
                     )
                 """.trimIndent())
+            }
+        }
+
+        val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `profiles` (
+                        `ownerKey` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `bio` TEXT NOT NULL,
+                        `statusMessage` TEXT NOT NULL,
+                        `avatarHash` TEXT,
+                        `profileHash` TEXT NOT NULL,
+                        `profileVersion` INTEGER NOT NULL,
+                        `lastUpdatedAt` INTEGER NOT NULL,
+                        `avatarLocalPath` TEXT,
+                        `nickname` TEXT,
+                        `pronouns` TEXT,
+                        `verifiedBadge` INTEGER NOT NULL,
+                        `avatarTheme` TEXT,
+                        `customStatusEmoji` TEXT,
+                        `presenceCapabilities` TEXT,
+                        PRIMARY KEY(`ownerKey`)
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN reactionsJson TEXT")
             }
         }
     }
