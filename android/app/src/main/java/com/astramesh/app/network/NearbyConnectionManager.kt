@@ -109,8 +109,12 @@ class NearbyConnectionManager(private val context: Context) {
     }
 
     fun sendRaw(endpointId: String, data: String) {
-        val payload = Payload.fromBytes(data.toByteArray(Charsets.UTF_8))
-        connectionsClient.sendPayload(endpointId, payload)
+        try {
+            val payload = Payload.fromBytes(data.toByteArray(Charsets.UTF_8))
+            connectionsClient.sendPayload(endpointId, payload)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send raw payload to $endpointId", e)
+        }
     }
 
     fun sendMessage(endpointId: String, message: String) {

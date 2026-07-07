@@ -228,7 +228,11 @@ class MessageRouter(
             Log.d(TAG, "[RETRY] Starting retry loop")
             while (isActive) {
                 delay(RETRY_INTERVAL_MS)
-                retryPendingMessages()
+                try {
+                    retryPendingMessages()
+                } catch (e: Exception) {
+                    Log.e(TAG, "[RETRY] Error in retry loop", e)
+                }
             }
         }
     }
@@ -304,19 +308,23 @@ class MessageRouter(
         } else {
             // Came via Tor — send ACK back via Tor
             scope.launch(Dispatchers.IO) {
-                // Prefer the senderOnion from the wire (most reliable)
-                val onion = if (!senderOnion.isNullOrBlank()) {
-                    senderOnion
-                } else {
-                    // Fallback: look up from DB
-                    val contact = db.contactDao().getContact(senderKey)
-                    contact?.onionAddress
-                }
-                if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                    val ok = torManager.sendToOnion(onion, ackWire)
-                    Log.d(TAG, "[ACK] Tor ACK send result: $ok")
-                } else {
-                    Log.w(TAG, "[ACK] Cannot send ACK via Tor — no onion address for sender")
+                try {
+                    // Prefer the senderOnion from the wire (most reliable)
+                    val onion = if (!senderOnion.isNullOrBlank()) {
+                        senderOnion
+                    } else {
+                        // Fallback: look up from DB
+                        val contact = db.contactDao().getContact(senderKey)
+                        contact?.onionAddress
+                    }
+                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
+                        val ok = torManager.sendToOnion(onion, ackWire)
+                        Log.d(TAG, "[ACK] Tor ACK send result: $ok")
+                    } else {
+                        Log.w(TAG, "[ACK] Cannot send ACK via Tor — no onion address for sender")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "[ACK] Error sending ACK via Tor", e)
                 }
             }
         }
@@ -354,16 +362,20 @@ class MessageRouter(
         Log.d(TAG, "[READ] Sending READ receipt for $messageId to $senderKey")
 
         scope.launch(Dispatchers.IO) {
-            val contact = db.contactDao().getContact(senderKey) ?: return@launch
-            val connected = nearbyManager.connectedEndpoints.value
-            
-            if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-                nearbyManager.sendRaw(contact.endpointId, readWire)
-            } else {
-                val onion = contact.onionAddress
-                if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                    torManager.sendToOnion(onion, readWire)
+            try {
+                val contact = db.contactDao().getContact(senderKey) ?: return@launch
+                val connected = nearbyManager.connectedEndpoints.value
+                
+                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
+                    nearbyManager.sendRaw(contact.endpointId, readWire)
+                } else {
+                    val onion = contact.onionAddress
+                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
+                        torManager.sendToOnion(onion, readWire)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "[READ] Error sending READ receipt", e)
             }
         }
     }
@@ -374,16 +386,20 @@ class MessageRouter(
         Log.d(TAG, "[MEDIA_ACK] Sending ACK for $messageId to $senderKey")
 
         scope.launch(Dispatchers.IO) {
-            val contact = db.contactDao().getContact(senderKey) ?: return@launch
-            val connected = nearbyManager.connectedEndpoints.value
-            
-            if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-                nearbyManager.sendRaw(contact.endpointId, ackWire)
-            } else {
-                val onion = contact.onionAddress
-                if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                    torManager.sendToOnion(onion, ackWire)
+            try {
+                val contact = db.contactDao().getContact(senderKey) ?: return@launch
+                val connected = nearbyManager.connectedEndpoints.value
+                
+                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
+                    nearbyManager.sendRaw(contact.endpointId, ackWire)
+                } else {
+                    val onion = contact.onionAddress
+                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
+                        torManager.sendToOnion(onion, ackWire)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "[MEDIA_ACK] Error sending MEDIA ACK", e)
             }
         }
     }

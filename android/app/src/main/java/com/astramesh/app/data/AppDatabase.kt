@@ -1,3 +1,7 @@
+/**
+ * Core database layer for AstraMesh.
+ * Handles storage of contacts, messages, profiles, and media metadata.
+ */
 package com.astramesh.app.data
 
 import kotlinx.coroutines.flow.Flow
@@ -104,7 +108,8 @@ interface ContactDao {
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM (SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    @Transaction
+    @Query("SELECT * FROM messages WHERE id IN (SELECT id FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
     fun getMessagesForContact(contactKey: String, limit: Int = 100): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT 1")
@@ -113,9 +118,11 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE contactKey = :contactKey AND direction = 'received' AND status != 'read'")
     fun getUnreadCountForContact(contactKey: String): Flow<Int>
 
+    @Transaction
     @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND direction = 'received' AND status != 'read' ORDER BY timestamp ASC")
     fun getUnreadMessagesSync(contactKey: String): List<MessageEntity>
 
+    @Transaction
     @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND text LIKE '%' || :query || '%' ORDER BY timestamp DESC")
     fun searchMessages(contactKey: String, query: String): Flow<List<MessageEntity>>
 

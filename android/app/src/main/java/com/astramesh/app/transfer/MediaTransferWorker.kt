@@ -60,7 +60,7 @@ class MediaTransferWorker(
         val windowSize = if (transport == com.astramesh.app.network.Transport.TOR) 4 else 8
         
         val fileSize = file.length()
-        val totalChunks = kotlin.math.ceil(fileSize.toDouble() / finalChunkSize).toInt()
+        val totalChunks = kotlin.math.max(1, kotlin.math.ceil(fileSize.toDouble() / finalChunkSize).toInt())
 
         if (transfer.totalChunks != totalChunks) {
             db.openHelper.writableDatabase.execSQL("UPDATE media_transfers SET totalChunks = ? WHERE messageId = ?", arrayOf(totalChunks, messageId))
@@ -120,7 +120,7 @@ class MediaTransferWorker(
                             deferredList.add(async(Dispatchers.Default) {
                                 val buffer = ByteArray(finalChunkSize)
                                 var actualChunk: ByteArray
-                                val offset = (currentChunkIndex * finalChunkSize).toLong()
+                                val offset = currentChunkIndex.toLong() * finalChunkSize
                                 synchronized(raf) {
                                     raf.seek(offset)
                                     val bytesRead = raf.read(buffer)
@@ -203,10 +203,13 @@ class MediaTransferWorker(
             db.messageDao().updateMessageStatus(messageId, "sent")
             return@withContext Result.success()
 
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            Log.w(TAG, "Transfer cancelled", e)
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Transfer failed", e)
-            db.mediaTransferDao().updateStatus(messageId, TransferStatus.FAILED.name, System.currentTimeMillis())
-            return@withContext Result.failure()
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+            return@withContext Result.retry()
         }
     }
 }

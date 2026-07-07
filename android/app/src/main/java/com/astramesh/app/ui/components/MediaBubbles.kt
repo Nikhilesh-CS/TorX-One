@@ -19,7 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.astramesh.app.data.MessageEntity
+import com.astramesh.app.data.MessagePayload
 import com.astramesh.app.ui.theme.AccentViolet
 import com.astramesh.app.ui.theme.CardSurface
 import com.astramesh.app.ui.theme.DimGray
@@ -30,7 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import java.io.File
 
 @Composable
-fun MediaContent(message: MessageEntity, isSent: Boolean) {
+fun MediaContent(message: MessagePayload, isSent: Boolean) {
     when (message.messageType) {
         "IMAGE" -> ImageBubble(message, isSent)
         "VIDEO" -> VideoBubble(message, isSent)
@@ -53,7 +53,7 @@ fun MediaContent(message: MessageEntity, isSent: Boolean) {
 }
 
 @Composable
-fun ImageBubble(message: MessageEntity, isSent: Boolean) {
+fun ImageBubble(message: MessagePayload, isSent: Boolean) {
     Box(
         modifier = Modifier
             .widthIn(max = 240.dp)
@@ -92,7 +92,7 @@ fun ImageBubble(message: MessageEntity, isSent: Boolean) {
 }
 
 @Composable
-fun VideoBubble(message: MessageEntity, isSent: Boolean) {
+fun VideoBubble(message: MessagePayload, isSent: Boolean) {
     Box(
         modifier = Modifier
             .widthIn(max = 240.dp)
@@ -107,7 +107,7 @@ fun VideoBubble(message: MessageEntity, isSent: Boolean) {
 }
 
 @Composable
-fun AudioBubble(message: MessageEntity, isSent: Boolean) {
+fun AudioBubble(message: MessagePayload, isSent: Boolean) {
     Row(
         modifier = Modifier
             .width(200.dp)
@@ -129,7 +129,7 @@ fun AudioBubble(message: MessageEntity, isSent: Boolean) {
 }
 
 @Composable
-fun FileBubble(message: MessageEntity, isSent: Boolean) {
+fun FileBubble(message: MessagePayload, isSent: Boolean) {
     val isApk = message.messageType == "APK"
     
     Column(

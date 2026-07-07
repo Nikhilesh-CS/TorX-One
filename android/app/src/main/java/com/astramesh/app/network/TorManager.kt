@@ -354,6 +354,7 @@ class TorManager(private val context: Context) {
             addTorLog("[SOCKET] Connecting to $onionHost:$port via SOCKS5 proxy")
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(SOCKS_HOST, SOCKS_PORT))
             val socket = Socket(proxy)
+            socket.soTimeout = timeoutMs
             // Use createUnresolved to prevent local DNS leak which breaks SOCKS
             socket.connect(InetSocketAddress.createUnresolved(onionHost, port), timeoutMs)
             addTorLog("[SOCKET] Connected to $onionHost successfully")

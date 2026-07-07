@@ -20,6 +20,9 @@ class ChatViewModel(
     val conversationEngine = ConversationEngine()
     val searchEngine = ChatSearchEngine(conversationEngine)
 
+    private val _isLoading = MutableStateFlow(true)
+    val isLoading: StateFlow<Boolean> = _isLoading
+
     private val _contactName = MutableStateFlow("Chat")
     val contactName: StateFlow<String> = _contactName
 
@@ -53,6 +56,7 @@ class ChatViewModel(
             _messageLimit.flatMapLatest { limit ->
                 db.messageDao().getMessagesForContact(contactKey, limit)
             }.collect { entities ->
+                _isLoading.value = false
                 entities.forEach { entity ->
                     val transport = when (entity.transport) {
                         "NEARBY" -> TransportType.BLUETOOTH
@@ -123,5 +127,6 @@ class ChatViewModel(
         }
     }
 }
+
 
 

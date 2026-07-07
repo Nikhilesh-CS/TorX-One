@@ -71,7 +71,7 @@ class MediaTransferManager(
         
         // 3. Determine Chunk Size
         val chunkSize = if (forceWifiDirect) CHUNK_SIZE_WIFI else CHUNK_SIZE_BT_TOR
-        val totalChunks = ceil(fileSize.toDouble() / chunkSize).toInt()
+        val totalChunks = kotlin.math.max(1, ceil(fileSize.toDouble() / chunkSize).toInt())
 
         // 4. Save to Database
         db.messageDao().insertMessage(
@@ -261,7 +261,11 @@ class MediaTransferManager(
             put("chunkIndex", chunkIndex)
         }.toString()
         CoroutineScope(Dispatchers.IO).launch {
-            messageRouter.sendRawPayload(senderKey, payload, com.astramesh.app.network.MeshProtocol.TYPE_MEDIA_ACK)
+            try {
+                messageRouter.sendRawPayload(senderKey, payload, com.astramesh.app.network.MeshProtocol.TYPE_MEDIA_ACK)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send media ACK", e)
+            }
         }
     }
 
@@ -305,7 +309,12 @@ class MediaTransferManager(
             return
         }
 
-        val newCompleted = receivedSet.size
+        var newCompleted = 0
+        synchronized(receivedSet) {
+            while (receivedSet.contains(newCompleted)) {
+                newCompleted++
+            }
+        }
         if (newCompleted <= transfer.totalChunks) {
             db.mediaTransferDao().updateProgress(messageId, newCompleted, TransferStatus.RECEIVING.name, System.currentTimeMillis())
             

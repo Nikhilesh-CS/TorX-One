@@ -71,6 +71,7 @@ fun ChatScreen(
     val isOnline = isNearbyOnline || contactOnion.isNotBlank()
     
     val messages by viewModel.conversationEngine.messages.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
     
     val listState = rememberLazyListState()
     val smartScrollEngine = remember(listState) { SmartScrollEngine(listState, coroutineScope) }
@@ -231,12 +232,12 @@ fun ChatScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = AstraTheme.spacing.medium, vertical = 10.dp)
+                            .padding(horizontal = AstraTheme.spacing.medium, vertical = AstraTheme.spacing.small)
                             .navigationBarsPadding(),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         IconButton(
-                            onClick = {  },
+                            onClick = { /* TODO */ },
                             modifier = Modifier.padding(bottom = AstraTheme.spacing.tiny)
                         ) {
                             Icon(Icons.Rounded.AttachFile, "Attach", tint = AstraTheme.colors.onSurfaceVariant)
@@ -289,7 +290,9 @@ fun ChatScreen(
         }
     ) { paddingValues ->
         Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            if (messages.isEmpty()) {
+            if (isLoading) {
+                com.astramesh.app.ui.components.AstraLoadingState(message = "Loading messages...")
+            } else if (messages.isEmpty()) {
                 AstraEmptyState(
                     title = "No messages yet",
                     message = "Say hello to $contactName!"
@@ -369,8 +372,11 @@ fun ChatScreen(
                 }
 
                 // Jump to Bottom FAB
+                val showJumpToBottom by remember {
+                    derivedStateOf { listState.firstVisibleItemIndex > 5 }
+                }
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = listState.firstVisibleItemIndex > 5,
+                    visible = showJumpToBottom,
                     enter = androidx.compose.animation.scaleIn() + androidx.compose.animation.fadeIn(),
                     exit = androidx.compose.animation.scaleOut() + androidx.compose.animation.fadeOut(),
                     modifier = Modifier
@@ -419,20 +425,24 @@ fun ChatScreen(
                     }
                 }
 
+                val currentTopDate by remember(reversedMessages) {
+                    derivedStateOf {
+                        val idx = listState.firstVisibleItemIndex
+                        if (idx in reversedMessages.indices) {
+                            dateFormat.format(Date(reversedMessages[idx].timestamp))
+                        } else ""
+                    }
+                }
+
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = showFloatingDate && reversedMessages.isNotEmpty(),
+                    visible = showFloatingDate && currentTopDate.isNotEmpty(),
                     enter = androidx.compose.animation.fadeIn(),
                     exit = androidx.compose.animation.fadeOut(),
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = AstraTheme.spacing.small)
                 ) {
-                    val firstVisibleIndex = listState.firstVisibleItemIndex
-                    if (firstVisibleIndex in reversedMessages.indices) {
-                        val msg = reversedMessages[firstVisibleIndex]
-                        val dateStr = dateFormat.format(Date(msg.timestamp))
-                        DateSeparator(dateStr)
-                    }
+                    DateSeparator(currentTopDate)
                 }
             }
         }
@@ -506,12 +516,12 @@ fun MessageBubbleProxy(
     ) {
         Column {
             if (message.hasAttachments) {
-                com.astramesh.app.ui.components.MediaAttachmentCard(
+                com.astramesh.app.ui.components.MediaContent(
                     message = message, 
-                    onClick = {  }
+                    isSent = isSent 
                 )
             }
-            if (message.text.isNotBlank()) {
+            if (message.text.isNotBlank() && !message.text.startsWith("Media Message (") && !message.text.startsWith("Receiving ")) {
                 val isEmoji = com.astramesh.app.ui.utils.TextUtils.isEmojiOnly(message.text)
                 val annotatedText = com.astramesh.app.ui.utils.TextUtils.parseMarkdown(message.text, codeColor = AstraTheme.colors.onSurfaceVariant.copy(alpha = 0.2f))
                 
@@ -534,7 +544,7 @@ fun DateSeparator(dateStr: String) {
             text = dateStr,
             fontSize = AstraTheme.typography.labelMedium.fontSize,
             color = AstraTheme.colors.onSurfaceVariant,
-            modifier = Modifier.background(AstraTheme.colors.surface, RoundedCornerShape(AstraTheme.spacing.medium)).padding(horizontal = 10.dp, vertical = AstraTheme.spacing.tiny)
+            modifier = Modifier.background(AstraTheme.colors.surface, RoundedCornerShape(AstraTheme.spacing.medium)).padding(horizontal = AstraTheme.spacing.small, vertical = AstraTheme.spacing.tiny)
         )
     }
 }
@@ -548,7 +558,7 @@ fun ReplyPreviewBanner(message: MessagePayload, onCancel: () -> Unit) {
             .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.small),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(modifier = Modifier.width(AstraTheme.spacing.tiny).height(AstraTheme.spacing.massive1).background(AstraTheme.colors.primary, RoundedCornerShape(2.dp)))
+        Box(modifier = Modifier.width(AstraTheme.spacing.tiny).height(AstraTheme.spacing.massive1).background(AstraTheme.colors.primary, RoundedCornerShape(AstraTheme.spacing.tiny)))
         Spacer(modifier = Modifier.width(AstraTheme.spacing.small))
         Column(modifier = Modifier.weight(1f)) {
             Text(if (message.senderId == "me") "You" else "Them", fontSize = AstraTheme.typography.bodySmall.fontSize, color = AstraTheme.colors.primary, fontWeight = FontWeight.Bold)
