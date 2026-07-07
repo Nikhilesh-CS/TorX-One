@@ -23,38 +23,39 @@ class NotificationActionReceiver : BroadcastReceiver() {
         val db = service.db
         val router = service.messageRouter
 
-        when (intent.action) {
-            ACTION_REPLY -> {
-                val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(EXTRA_REPLY)?.toString()
-                if (!replyText.isNullOrBlank()) {
-                    Log.d("NotificationAction", "Sending quick reply to $contactKey")
-                    CoroutineScope(Dispatchers.IO).launch {
-                        router.sendMessage(contactKey, replyText)
-                        // Mark messages as read since user replied
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                when (intent.action) {
+                    ACTION_REPLY -> {
+                        val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(EXTRA_REPLY)?.toString()
+                        if (!replyText.isNullOrBlank()) {
+                            Log.d("NotificationAction", "Sending quick reply to $contactKey")
+                            router.sendMessage(contactKey, replyText)
+                            // Mark messages as read since user replied
+                            db.messageDao().markMessagesAsRead(contactKey)
+                            // Clear notification
+                            NotificationHelper.clearContactNotifications(context, contactKey)
+                        }
+                    }
+                    ACTION_MARK_READ -> {
+                        Log.d("NotificationAction", "Marking messages as read for $contactKey")
                         db.messageDao().markMessagesAsRead(contactKey)
-                        // Clear notification
                         NotificationHelper.clearContactNotifications(context, contactKey)
                     }
-                }
-            }
-            ACTION_MARK_READ -> {
-                Log.d("NotificationAction", "Marking messages as read for $contactKey")
-                CoroutineScope(Dispatchers.IO).launch {
-                    db.messageDao().markMessagesAsRead(contactKey)
-                    NotificationHelper.clearContactNotifications(context, contactKey)
-                }
-            }
-            ACTION_MUTE -> {
-                val durationMs = intent.getLongExtra("durationMs", 0L)
-                Log.d("NotificationAction", "Muting $contactKey for $durationMs ms")
-                CoroutineScope(Dispatchers.IO).launch {
-                    val contact = db.contactDao().getContact(contactKey)
-                    if (contact != null) {
-                        val muteUntil = if (durationMs == -1L) -1L else System.currentTimeMillis() + durationMs
-                        db.contactDao().insertContact(contact.copy(muteUntil = muteUntil))
-                        NotificationHelper.clearContactNotifications(context, contactKey)
+                    ACTION_MUTE -> {
+                        val durationMs = intent.getLongExtra("durationMs", 0L)
+                        Log.d("NotificationAction", "Muting $contactKey for $durationMs ms")
+                        val contact = db.contactDao().getContact(contactKey)
+                        if (contact != null) {
+                            val muteUntil = if (durationMs == -1L) -1L else System.currentTimeMillis() + durationMs
+                            db.contactDao().insertContact(contact.copy(muteUntil = muteUntil))
+                            NotificationHelper.clearContactNotifications(context, contactKey)
+                        }
                     }
                 }
+            } finally {
+                pendingResult.finish()
             }
         }
     }

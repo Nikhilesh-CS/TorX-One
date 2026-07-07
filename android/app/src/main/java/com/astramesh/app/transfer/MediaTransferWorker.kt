@@ -46,17 +46,23 @@ class MediaTransferWorker(
             return@withContext Result.failure()
         }
 
-        db.mediaTransferDao().updateStatus(messageId, TransferStatus.SENDING.name, System.currentTimeMillis())
-
         val transport = messageRouter.getBestTransport(contact)
+        if (transport == com.astramesh.app.network.Transport.FAILED) {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+            return@withContext Result.retry()
+        }
+        db.mediaTransferDao().updateStatus(messageId, TransferStatus.SENDING.name, System.currentTimeMillis())
+        db.mediaTransferDao().updateTransport(messageId, transport.name, System.currentTimeMillis())
+        db.openHelper.writableDatabase.execSQL("UPDATE messages SET transferProgress = ? WHERE messageId = ?", arrayOf(0, messageId))
+
         val chunkSize = when (transport) {
-            com.astramesh.app.network.Transport.NEARBY_DIRECT -> 128 * 1024
-            com.astramesh.app.network.Transport.NEARBY_RELAY -> 128 * 1024
-            com.astramesh.app.network.Transport.TOR -> 32 * 1024
-            else -> 32 * 1024
+            com.astramesh.app.network.Transport.NEARBY_DIRECT -> MediaTransferManager.CHUNK_SIZE_BT_TOR
+            com.astramesh.app.network.Transport.NEARBY_RELAY -> MediaTransferManager.CHUNK_SIZE_BT_TOR
+            com.astramesh.app.network.Transport.TOR -> MediaTransferManager.CHUNK_SIZE_BT_TOR
+            else -> MediaTransferManager.CHUNK_SIZE_BT_TOR
         }
         
-        val finalChunkSize = if (useWifiDirect) 512 * 1024 else chunkSize
+        val finalChunkSize = if (useWifiDirect) MediaTransferManager.CHUNK_SIZE_WIFI else chunkSize
         val windowSize = if (transport == com.astramesh.app.network.Transport.TOR) 4 else 8
         
         val fileSize = file.length()

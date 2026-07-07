@@ -51,6 +51,7 @@ class TorManager(private val context: Context) {
     val lastPing: StateFlow<String?> = _lastPing
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    @Volatile
     private var torProcess: Process? = null
     private var isRunning = AtomicBoolean(false)
 
@@ -180,7 +181,15 @@ class TorManager(private val context: Context) {
                 addTorLog("[TOR] Execution test passed: ${versionCheck.output}")
                 addTorLog("[TOR] Starting process")
 
-                val hsDir = File(torDir, "hidden_service").apply { mkdirs() }
+                val hsDir = File(torDir, "hidden_service").apply {
+                    mkdirs()
+                    setReadable(false, false)
+                    setWritable(false, false)
+                    setExecutable(false, false)
+                    setReadable(true, true)
+                    setWritable(true, true)
+                    setExecutable(true, true)
+                }
                 val torrc = File(torDir, "torrc")
 
                 torrc.writeText("""
@@ -200,8 +209,16 @@ class TorManager(private val context: Context) {
                 pb.directory(torDir)
                 pb.redirectErrorStream(true)
                 
+                if (!isRunning.get()) return@launch
+
                 val process = pb.start()
                 torProcess = process
+                
+                if (!isRunning.get()) {
+                    process.destroy()
+                    return@launch
+                }
+                
                 addTorLog("[START] Tor process started (PID tracking unavailable on Android)")
 
                 // Read output to monitor bootstrap

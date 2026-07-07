@@ -159,6 +159,7 @@ class NearbyConnectionManager(private val context: Context) {
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "Lost: $endpointId")
             _nearbyDevices.value = _nearbyDevices.value.filter { it.endpointId != endpointId }
+            endpointNames.remove(endpointId)
         }
     }
 
@@ -196,6 +197,8 @@ class NearbyConnectionManager(private val context: Context) {
         override fun onDisconnected(endpointId: String) {
             Log.d(TAG, "Disconnected from $endpointId")
             _connectedEndpoints.value = _connectedEndpoints.value - endpointId
+            _nearbyDevices.value = _nearbyDevices.value.filter { it.endpointId != endpointId }
+            endpointNames.remove(endpointId)
             onDisconnected?.invoke(endpointId)
         }
     }

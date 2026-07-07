@@ -57,7 +57,7 @@ class IdentityBackupManager(
 
             val backupDto = IdentityBackupDto(
                 backupVersion = 1,
-                appVersion = "1.0.6",
+                appVersion = "1.0.7",
                 schemaVersion = 1,
                 createdAt = java.time.Instant.now().toString(),
                 identityVersion = 1,

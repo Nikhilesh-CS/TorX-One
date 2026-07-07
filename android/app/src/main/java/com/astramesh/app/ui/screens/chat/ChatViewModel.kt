@@ -85,6 +85,25 @@ class ChatViewModel(
                         emptyMap<String, String>()
                     }
 
+                    val inferredMessageType = when {
+                        entity.messageType != "TEXT" -> entity.messageType
+                        entity.text.startsWith("Media Message (IMAGE)", ignoreCase = true) -> "IMAGE"
+                        entity.text.startsWith("Media Message (VIDEO)", ignoreCase = true) -> "VIDEO"
+                        entity.text.startsWith("Media Message (AUDIO)", ignoreCase = true) -> "AUDIO"
+                        entity.text.startsWith("Media Message (VOICE)", ignoreCase = true) -> "VOICE"
+                        entity.text.startsWith("Media Message (DOCUMENT)", ignoreCase = true) -> "DOCUMENT"
+                        entity.mimeType?.startsWith("image/") == true -> "IMAGE"
+                        entity.mimeType?.startsWith("video/") == true -> "VIDEO"
+                        entity.mimeType?.startsWith("audio/") == true -> "AUDIO"
+                        entity.fileName != null || entity.localUri != null -> "DOCUMENT"
+                        else -> "TEXT"
+                    }
+                    val hasMediaPayload = inferredMessageType != "TEXT" ||
+                        entity.fileName != null ||
+                        entity.localUri != null ||
+                        entity.thumbnailUri != null ||
+                        entity.transferProgress != null
+
                     MessagePayload(
                         id = entity.messageId,
                         senderId = if (entity.direction == "sent") "me" else contactKey,
@@ -95,8 +114,8 @@ class ChatViewModel(
                         transportType = transport,
                         replyToId = entity.replyToId,
                         replyToText = entity.replyToText,
-                        hasAttachments = entity.messageType != "TEXT",
-                        messageType = entity.messageType,
+                        hasAttachments = hasMediaPayload,
+                        messageType = inferredMessageType,
                         fileName = entity.fileName,
                         fileSize = entity.fileSize,
                         mimeType = entity.mimeType,

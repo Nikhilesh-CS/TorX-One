@@ -25,6 +25,11 @@ object MeshProtocol {
     const val TYPE_MEDIA_RESUME = "media_resume"
     const val TYPE_MEDIA_COMPLETE = "media_complete"
     const val TYPE_MEDIA_ERROR = "media_error"
+
+    // Call signaling. Media itself uses WebRTC; these messages are encrypted signaling only.
+    const val TYPE_CALL_OFFER = "call_offer"
+    const val TYPE_CALL_ANSWER = "call_answer"
+    const val TYPE_ICE_CANDIDATE = "ice_candidate"
     
     const val DEFAULT_TTL = 5
     const val MAX_FRAME_BYTES = 64 * 1024
@@ -101,7 +106,8 @@ object MeshProtocol {
         ttl: Int = DEFAULT_TTL,
         messageId: String? = null,
         senderOnion: String? = null,
-        type: String = TYPE_RELAY
+        type: String = TYPE_RELAY,
+        innerType: String? = null
     ): String {
         val json = JSONObject()
             .put("type", type)
@@ -113,6 +119,7 @@ object MeshProtocol {
             .put("signature", payload.signatureHex)
         if (!messageId.isNullOrBlank()) json.put("msgId", messageId)
         if (!senderOnion.isNullOrBlank()) json.put("senderOnion", senderOnion)
+        if (!innerType.isNullOrBlank()) json.put("innerType", innerType)
         return json.toString()
     }
 

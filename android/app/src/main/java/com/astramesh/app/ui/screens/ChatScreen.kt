@@ -1,55 +1,163 @@
 package com.astramesh.app.ui.screens
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.*
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.automirrored.rounded.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.AudioFile
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.KeyboardVoice
+import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material.icons.rounded.Videocam
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.astramesh.app.data.AppDatabase
+import com.astramesh.app.engine.MessageLifecycleState
 import com.astramesh.app.engine.MessagePayload
-import com.astramesh.app.engine.TransportType
 import com.astramesh.app.network.MessageRouter
 import com.astramesh.app.network.NearbyConnectionManager
 import com.astramesh.app.transfer.MediaTransferManager
-import com.astramesh.app.ui.components.*
+import com.astramesh.app.ui.components.ConnectionStatusPill
+import com.astramesh.app.ui.components.MediaContent
+import com.astramesh.app.ui.components.TransportType
 import com.astramesh.app.ui.screens.chat.ChatViewModel
 import com.astramesh.app.ui.screens.chat.SmartScrollEngine
 import com.astramesh.app.ui.theme.AstraTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
+import java.io.File
+import kotlin.math.roundToInt
+
+private val ReactionChoices = listOf(
+    "\u2764\uFE0F",
+    "\uD83D\uDC4D",
+    "\uD83D\uDE02",
+    "\uD83D\uDE2E",
+    "\uD83D\uDE22",
+    "\uD83D\uDD25",
+    "\uD83D\uDC4F",
+    "\u2795"
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,37 +170,41 @@ fun ChatScreen(
     mediaTransferManager: MediaTransferManager
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-
-    // Instantiate ViewModel at Compose level for simplicity. Normally we'd use ViewModelProvider.
+    val scope = rememberCoroutineScope()
     val viewModel = remember(contactKey) { ChatViewModel(contactKey, db, messageRouter) }
 
     val contactName by viewModel.contactName.collectAsStateWithLifecycle()
     val contactEndpoint by viewModel.contactEndpoint.collectAsStateWithLifecycle()
     val contactOnion by viewModel.contactOnion.collectAsStateWithLifecycle()
-
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsStateWithLifecycle()
-    val isNearbyOnline = connectedEndpoints.contains(contactEndpoint)
-    val isOnline = isNearbyOnline || contactOnion.isNotBlank()
-
     val messages by viewModel.conversationEngine.messages.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchEngine.searchQuery.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchEngine.searchResults.collectAsStateWithLifecycle()
+    val currentResultIndex by viewModel.searchEngine.currentResultIndex.collectAsStateWithLifecycle()
 
     val listState = rememberLazyListState()
-    val smartScrollEngine = remember(listState) { SmartScrollEngine(listState, coroutineScope) }
+    val smartScrollEngine = remember(listState) { SmartScrollEngine(listState, scope) }
+    val localReactions = remember { mutableStateMapOf<String, String>() }
 
-    var messageText by remember { mutableStateOf("") }
-    var replyToMessage by remember { mutableStateOf<MessagePayload?>(null) }
-    var selectedMessages by remember { mutableStateOf(setOf<String>()) }
-    var showMessageInfoFor by remember { mutableStateOf<MessagePayload?>(null) }
-    var showConnectionVisualizer by remember { mutableStateOf(false) }
-    val inSelectionMode = selectedMessages.isNotEmpty()
+    var text by remember { mutableStateOf("") }
+    var replyTo by remember { mutableStateOf<MessagePayload?>(null) }
+    var reactionTarget by remember { mutableStateOf<MessagePayload?>(null) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var searchMode by remember { mutableStateOf(false) }
+    var highlightedId by remember { mutableStateOf<String?>(null) }
+    var showAttachmentSheet by remember { mutableStateOf(false) }
+    var showVoiceRecorder by remember { mutableStateOf(false) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingAudioAction by remember { mutableStateOf<String?>(null) }
 
-    val attachmentPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
+    val reversedMessages = remember(messages) { messages.asReversed() }
+    val isNearbyOnline = connectedEndpoints.contains(contactEndpoint)
+    val isConnected = isNearbyOnline || contactOnion.isNotBlank()
+    val inSelectionMode = selectedIds.isNotEmpty()
+
+    val attachmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
-
         val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
         val messageType = when {
             mimeType.startsWith("image/") -> "IMAGE"
@@ -101,496 +213,1287 @@ fun ChatScreen(
             mimeType == "application/vnd.android.package-archive" -> "APK"
             else -> "DOCUMENT"
         }
-
-        coroutineScope.launch {
-            val queuedId = mediaTransferManager.queueMediaTransfer(
-                contactKey = contactKey,
-                fileUri = uri,
-                mimeType = mimeType,
-                messageType = messageType
-            )
-            Toast.makeText(
-                context,
-                if (queuedId != null) "Attachment queued" else "Could not attach file",
-                Toast.LENGTH_SHORT
-            ).show()
+        scope.launch {
+            val queuedId = mediaTransferManager.queueMediaTransfer(contactKey, uri, mimeType, messageType)
+            Toast.makeText(context, if (queuedId != null) "Attachment queued" else "Could not attach file", Toast.LENGTH_SHORT).show()
         }
     }
 
-    var inSearchMode by remember { mutableStateOf(false) }
-    val searchQuery by viewModel.searchEngine.searchQuery.collectAsStateWithLifecycle()
-    val searchResults by viewModel.searchEngine.searchResults.collectAsStateWithLifecycle()
-    val currentResultIndex by viewModel.searchEngine.currentResultIndex.collectAsStateWithLifecycle()
+    fun queueMediaUri(uri: Uri, mimeType: String, messageType: String) {
+        scope.launch {
+            val queuedId = mediaTransferManager.queueMediaTransfer(contactKey, uri, mimeType, messageType)
+            Toast.makeText(context, if (queuedId != null) "$messageType queued" else "Could not send $messageType", Toast.LENGTH_SHORT).show()
+        }
+    }
 
-    // Jump to search result
-    LaunchedEffect(currentResultIndex) {
-        if (currentResultIndex >= 0 && searchResults.isNotEmpty()) {
-            val targetId = searchResults[currentResultIndex]
-            val indexInList = messages.asReversed().indexOfFirst { it.id == targetId }
-            if (indexInList != -1) {
-                listState.animateScrollToItem(indexInList)
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val uri = pendingCameraUri
+        if (success && uri != null) {
+            queueMediaUri(uri, "image/jpeg", "IMAGE")
+        }
+        pendingCameraUri = null
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            val uri = createTempMediaUri(context, "camera", ".jpg")
+            pendingCameraUri = uri
+            cameraLauncher.launch(uri)
+        } else {
+            Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val audioPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val action = pendingAudioAction
+        pendingAudioAction = null
+        if (!granted) {
+            Toast.makeText(context, "Microphone permission denied", Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
+        when (action) {
+            "call" -> {
+                val service = com.astramesh.app.service.AstraMeshService.getInstance()
+                service?.callManager?.startAudioCall(contactKey)
+                    ?: Toast.makeText(context, "Call service not ready", Toast.LENGTH_SHORT).show()
             }
+            else -> showVoiceRecorder = true
         }
     }
 
-    // Scroll handling when new messages arrive
     LaunchedEffect(messages.size) {
         val lastMessage = messages.lastOrNull()
-        if (lastMessage != null && !inSearchMode) {
+        if (lastMessage != null && !searchMode) {
             smartScrollEngine.onNewMessageArrived(lastMessage.senderId == "me")
         }
     }
 
-    Scaffold(
-        containerColor = AstraTheme.colors.background,
-        modifier = Modifier.imePadding(),
-        contentWindowInsets = WindowInsets.safeDrawing,
-        topBar = {
-            Surface(color = AstraTheme.colors.surface, shadowElevation = AstraTheme.spacing.tiny) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = AstraTheme.spacing.small, vertical = AstraTheme.spacing.medium),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = {
-                        if (inSearchMode) {
-                            inSearchMode = false
-                            viewModel.searchEngine.clearSearch()
-                        } else {
-                            navController.popBackStack()
-                        }
-                    }) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = AstraTheme.colors.onSurface)
-                    }
-            androidx.compose.animation.Crossfade(targetState = if (inSelectionMode) 2 else if (inSearchMode) 1 else 0) { mode ->
-                when (mode) {
-                    2 -> {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("${selectedMessages.size} Selected", style = AstraTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(start = AstraTheme.spacing.small))
-                            Row {
-                                IconButton(onClick = {
-                                    val textToCopy = selectedMessages.mapNotNull { id -> messages.find { it.id == id }?.text }.joinToString("\n")
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("AstraMesh Messages", textToCopy))
-                                    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-                                    selectedMessages = emptySet()
-                                }) {
-                                    Icon(Icons.Rounded.ContentCopy, "Copy")
-                                }
-                                if (selectedMessages.size == 1) {
-                                    IconButton(onClick = {
-                                        showMessageInfoFor = messages.find { it.id == selectedMessages.first() }
-                                    }) {
-                                        Icon(Icons.Rounded.Info, "Info")
-                                    }
-                                    IconButton(onClick = {
-                                        replyToMessage = messages.find { it.id == selectedMessages.first() }
-                                        selectedMessages = emptySet()
-                                    }) {
-                                        Icon(Icons.AutoMirrored.Rounded.Reply, "Reply")
-                                    }
-                                }
-                                IconButton(onClick = {
-                                    viewModel.deleteMessages(selectedMessages)
-                                    selectedMessages = emptySet()
-                                    Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
-                                }) {
-                                    Icon(Icons.Rounded.Delete, "Delete")
-                                }
-                            }
-                        }
-                    }
-                    1 -> {
-                        // Search Mode
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { viewModel.searchEngine.updateQuery(it) },
-                                modifier = Modifier.weight(1f),
-                                placeholder = { Text("Search... (has:image)") },
-                                singleLine = true,
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = Color.Transparent,
-                                    unfocusedBorderColor = Color.Transparent
-                                )
-                            )
-                            if (searchResults.isNotEmpty()) {
-                                Text("${currentResultIndex + 1}/${searchResults.size}", style = AstraTheme.typography.labelSmall)
-                                IconButton(onClick = { viewModel.searchEngine.previousResult() }) {
-                                    Icon(Icons.Default.KeyboardArrowUp, "Previous")
-                                }
-                                IconButton(onClick = { viewModel.searchEngine.nextResult() }) {
-                                    Icon(Icons.Default.KeyboardArrowDown, "Next")
-                                }
-                            }
-                        }
-                    }
-                    0 -> {
-                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(contactName, style = AstraTheme.typography.titleMedium, modifier = Modifier.weight(1f).padding(start = AstraTheme.spacing.small))
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(onClick = { inSearchMode = true }) {
-                                    Icon(Icons.Rounded.Search, "Search")
-                                }
-                                ConnectionStatusPill(
-                                    transportType = when {
-                                        isNearbyOnline -> com.astramesh.app.ui.components.TransportType.BLUETOOTH
-                                        contactOnion.isNotBlank() -> com.astramesh.app.ui.components.TransportType.TOR
-                                        else -> com.astramesh.app.ui.components.TransportType.OFFLINE
-                                    },
-                                    details = if (isNearbyOnline) contactEndpoint else if (contactOnion.isNotBlank()) "Connected" else "",
-                                    modifier = Modifier.clickable { showConnectionVisualizer = true }
-                                )
-                            }
-                        }
-                    }
-                }
+    LaunchedEffect(currentResultIndex, searchResults) {
+        if (currentResultIndex >= 0 && searchResults.isNotEmpty()) {
+            val targetId = searchResults[currentResultIndex]
+            val index = reversedMessages.indexOfFirst { it.id == targetId }
+            if (index >= 0) {
+                listState.animateScrollToItem(index)
+                highlightedId = targetId
             }
-            } // Close Row
-            } // Close Surface
+        }
+    }
+
+    LaunchedEffect(highlightedId) {
+        if (highlightedId != null) {
+            delay(1000)
+            highlightedId = null
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing,
+        modifier = Modifier.imePadding(),
+        topBar = {
+            ChatHeader(
+                contactName = contactName,
+                isConnected = isConnected,
+                isNearbyOnline = isNearbyOnline,
+                contactEndpoint = contactEndpoint,
+                contactOnion = contactOnion,
+                searchMode = searchMode,
+                searchQuery = searchQuery,
+                searchCountLabel = if (searchResults.isEmpty()) "" else "${currentResultIndex + 1}/${searchResults.size}",
+                selectedCount = selectedIds.size,
+                onBack = {
+                    when {
+                        inSelectionMode -> selectedIds = emptySet()
+                        searchMode -> {
+                            searchMode = false
+                            viewModel.searchEngine.clearSearch()
+                        }
+                        else -> navController.popBackStack()
+                    }
+                },
+                onSearch = { searchMode = true },
+                onSearchChange = { viewModel.searchEngine.updateQuery(it) },
+                onPreviousResult = { viewModel.searchEngine.previousResult() },
+                onNextResult = { viewModel.searchEngine.nextResult() },
+                onCopy = {
+                    copyMessages(context, messages, selectedIds)
+                    selectedIds = emptySet()
+                },
+                onReply = {
+                    replyTo = messages.firstOrNull { it.id == selectedIds.firstOrNull() }
+                    selectedIds = emptySet()
+                },
+                onDelete = {
+                    viewModel.deleteMessages(selectedIds)
+                    selectedIds = emptySet()
+                },
+                onVoiceCall = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        val service = com.astramesh.app.service.AstraMeshService.getInstance()
+                        service?.callManager?.startAudioCall(contactKey)
+                            ?: Toast.makeText(context, "Call service not ready", Toast.LENGTH_SHORT).show()
+                    } else {
+                        pendingAudioAction = "call"
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onVideoCall = {
+                    Toast.makeText(context, "Audio call first. Video layer will be added after audio is stable.", Toast.LENGTH_LONG).show()
+                }
+            )
         },
         bottomBar = {
-            Surface(color = AstraTheme.colors.background, shadowElevation = AstraTheme.spacing.standard) {
-                Column {
-                    if (replyToMessage != null) {
-                        ReplyPreviewBanner(
-                            message = replyToMessage!!,
-                            onCancel = { replyToMessage = null }
-                        )
+            ChatComposer(
+                text = text,
+                replyTo = replyTo,
+                onTextChange = { text = it },
+                onCancelReply = { replyTo = null },
+                onOpenAttachmentSheet = { showAttachmentSheet = true },
+                onCamera = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        val uri = createTempMediaUri(context, "camera", ".jpg")
+                        pendingCameraUri = uri
+                        cameraLauncher.launch(uri)
+                    } else {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = AstraTheme.spacing.medium, vertical = AstraTheme.spacing.small)
-                            .navigationBarsPadding(),
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        IconButton(
-                            onClick = { attachmentPicker.launch("*/*") },
-                            modifier = Modifier.padding(bottom = AstraTheme.spacing.tiny)
-                        ) {
-                            Icon(Icons.Rounded.AttachFile, "Attach", tint = AstraTheme.colors.onSurfaceVariant)
-                        }
-
-                        OutlinedTextField(
-                            value = messageText,
-                            onValueChange = { messageText = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text("Message...", color = AstraTheme.colors.onSurfaceVariant) },
-                            shape = RoundedCornerShape(AstraTheme.spacing.extraLarge),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AstraTheme.colors.primary,
-                                unfocusedBorderColor = Color.Transparent,
-                                focusedTextColor = AstraTheme.colors.onSurface,
-                                unfocusedTextColor = AstraTheme.colors.onSurface,
-                                cursorColor = AstraTheme.colors.primary,
-                                focusedContainerColor = AstraTheme.colors.surface,
-                                unfocusedContainerColor = AstraTheme.colors.surface
-                            ),
-                            maxLines = 4
-                        )
-                        Spacer(modifier = Modifier.width(AstraTheme.spacing.small))
-
-                        val isSendEnabled = messageText.isNotBlank()
-                        val sendScale by animateFloatAsState(targetValue = if (isSendEnabled) 1f else 0.8f, label = "sendBtn")
-
-                        IconButton(
-                            onClick = {
-                                if (!isSendEnabled) return@IconButton
-                                viewModel.sendMessage(messageText, replyToMessage?.id)
-                                messageText = ""
-                                replyToMessage = null
-                            },
-                            enabled = isSendEnabled,
-                            modifier = Modifier
-                                .padding(bottom = AstraTheme.spacing.tiny)
-                                .size(AstraTheme.spacing.massive3)
-                                .scale(sendScale)
-                                .clip(CircleShape)
-                                .background(
-                                    if (isSendEnabled) AstraTheme.colors.primary else AstraTheme.colors.surfaceVariant
-                                )
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = AstraTheme.colors.onPrimary, modifier = Modifier.size(AstraTheme.spacing.large))
-                        }
+                },
+                onVoice = {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        showVoiceRecorder = true
+                    } else {
+                        pendingAudioAction = "voice"
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onSend = {
+                    val outgoing = text.trim()
+                    if (outgoing.isNotEmpty()) {
+                        viewModel.sendMessage(outgoing, replyTo?.id)
+                        text = ""
+                        replyTo = null
                     }
                 }
-            }
+            )
         }
-    ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            if (isLoading) {
-                com.astramesh.app.ui.components.AstraLoadingState(message = "Loading messages...")
-            } else if (messages.isEmpty()) {
-                AstraEmptyState(
-                    title = "No messages yet",
-                    message = "Say hello to $contactName!"
-                )
-            } else {
-                val reversedMessages = remember(messages) { messages.asReversed() }
-                val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
-                var highlightedMessageId by remember { mutableStateOf<String?>(null) }
-
-                LaunchedEffect(highlightedMessageId) {
-                    if (highlightedMessageId != null) {
-                        kotlinx.coroutines.delay(1000)
-                        highlightedMessageId = null
-                    }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            when {
+                isLoading -> {
+                    com.astramesh.app.ui.components.AstraLoadingState(message = "Loading messages...")
                 }
-
-                LazyColumn(
-                    state = listState,
-                    reverseLayout = true,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.medium)
-                ) {
-                    items(reversedMessages.size) { index ->
-                        val message = reversedMessages[index]
-                        val nextMessage = reversedMessages.getOrNull(index + 1)
-                        val prevMessage = reversedMessages.getOrNull(index - 1)
-
-                        val dateStr = dateFormat.format(Date(message.timestamp))
-                        val nextDateStr = nextMessage?.let { dateFormat.format(Date(it.timestamp)) }
-
-                        // Because reverseLayout = true, prevMessage is visually BELOW (newer in time)
-                        // nextMessage is visually ABOVE (older in time)
-                        // A tail should be shown if the message below is from a DIFFERENT sender, or there is no message below.
-                        val showTail = prevMessage == null || prevMessage.senderId != message.senderId
-
-                        val isSelected = selectedMessages.contains(message.id)
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(if (isSelected) AstraTheme.colors.primary.copy(alpha = 0.2f) else Color.Transparent)
-                        ) {
-                            MessageBubbleProxy(
-                                message = message,
-                                showTail = showTail,
-                                isSelected = isSelected,
-                                isHighlighted = highlightedMessageId == message.id,
-                                onClick = {
-                                    if (inSelectionMode) {
-                                        if (isSelected) selectedMessages -= message.id else selectedMessages += message.id
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!inSelectionMode) {
-                                        selectedMessages = setOf(message.id)
-                                    } else {
-                                        if (isSelected) selectedMessages -= message.id else selectedMessages += message.id
-                                    }
-                                },
-                                onSwipeReply = { replyToMessage = message },
-                                onReplyClick = { replyId ->
-                                    val targetIdx = reversedMessages.indexOfFirst { it.id == replyId }
-                                    if (targetIdx != -1) {
-                                        coroutineScope.launch {
-                                            listState.animateScrollToItem(targetIdx)
-                                            highlightedMessageId = replyId
-                                        }
-                                    }
-                                }
-                            )
-                        }
-
-                        if (dateStr != nextDateStr) {
-                            DateSeparator(dateStr)
-                        }
-                    }
+                messages.isEmpty() -> {
+                    com.astramesh.app.ui.components.AstraEmptyState(
+                        title = "No messages yet",
+                        message = "Start a secure conversation with $contactName"
+                    )
                 }
-
-                // Jump to Bottom FAB
-                val showJumpToBottom by remember {
-                    derivedStateOf { listState.firstVisibleItemIndex > 5 }
-                }
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = showJumpToBottom,
-                    enter = androidx.compose.animation.scaleIn() + androidx.compose.animation.fadeIn(),
-                    exit = androidx.compose.animation.scaleOut() + androidx.compose.animation.fadeOut(),
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(AstraTheme.spacing.medium)
-                ) {
-                    FloatingActionButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                listState.animateScrollToItem(0)
+                else -> {
+                    MessageTimeline(
+                        messages = reversedMessages,
+                        listState = listState,
+                        selectedIds = selectedIds,
+                        highlightedId = highlightedId,
+                        localReactions = localReactions,
+                        onSelectToggle = { message ->
+                            selectedIds = if (selectedIds.contains(message.id)) {
+                                selectedIds - message.id
+                            } else {
+                                selectedIds + message.id
                             }
                         },
-                        containerColor = AstraTheme.colors.surface,
-                        contentColor = AstraTheme.colors.primary,
-                        shape = CircleShape
-                    ) {
-                        Icon(Icons.Default.KeyboardArrowDown, "Jump to bottom")
-                    }
+                        onReply = { replyTo = it },
+                        onLongPress = { reactionTarget = it },
+                        onReplyClick = { replyId ->
+                            val index = reversedMessages.indexOfFirst { it.id == replyId }
+                            if (index >= 0) {
+                                scope.launch {
+                                    listState.animateScrollToItem(index)
+                                    highlightedId = replyId
+                                }
+                            }
+                        },
+                        onFailedTap = { failed ->
+                            if (failed.text.isNotBlank()) {
+                                viewModel.sendMessage(failed.text, failed.replyToId)
+                                Toast.makeText(context, "Retry queued", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
                 }
+            }
 
-                // Floating Date Indicator and Pagination
-                val isScrollInProgress = listState.isScrollInProgress
-                var showFloatingDate by remember { mutableStateOf(false) }
-
-                LaunchedEffect(isScrollInProgress) {
-                    if (isScrollInProgress) {
-                        showFloatingDate = true
-                    } else {
-                        kotlinx.coroutines.delay(1500)
-                        showFloatingDate = false
-                    }
-                }
-
-                // Pagination trigger
-                val shouldLoadMore = remember {
-                    derivedStateOf {
-                        val totalItems = listState.layoutInfo.totalItemsCount
-                        val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                        totalItems > 0 && lastVisibleItem >= totalItems - 10
-                    }
-                }
-
-                LaunchedEffect(shouldLoadMore.value) {
-                    if (shouldLoadMore.value) {
-                        viewModel.loadMoreMessages()
-                    }
-                }
-
-                val currentTopDate by remember(reversedMessages) {
-                    derivedStateOf {
-                        val idx = listState.firstVisibleItemIndex
-                        if (idx in reversedMessages.indices) {
-                            dateFormat.format(Date(reversedMessages[idx].timestamp))
-                        } else ""
-                    }
-                }
-
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = showFloatingDate && currentTopDate.isNotEmpty(),
-                    enter = androidx.compose.animation.fadeIn(),
-                    exit = androidx.compose.animation.fadeOut(),
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = AstraTheme.spacing.small)
+            val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 4 } }
+            AnimatedVisibility(
+                visible = showJump,
+                enter = scaleIn() + fadeIn(),
+                exit = scaleOut() + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(18.dp)
+            ) {
+                FloatingActionButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape
                 ) {
-                    DateSeparator(currentTopDate)
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Jump to latest")
                 }
             }
         }
     }
 
-    // Bottom Sheets
-    if (showMessageInfoFor != null) {
-        com.astramesh.app.ui.components.MessageInfoSheet(
-            message = showMessageInfoFor!!,
-            onDismiss = { showMessageInfoFor = null }
+    reactionTarget?.let { target ->
+        ReactionDialog(
+            message = target,
+            onDismiss = { reactionTarget = null },
+            onReaction = { emoji ->
+                if (emoji != "\u2795") {
+                    val current = localReactions[target.id]
+                    if (current == emoji) {
+                        localReactions.remove(target.id)
+                    } else {
+                        localReactions[target.id] = emoji
+                    }
+                }
+                reactionTarget = null
+            }
         )
     }
-    if (showConnectionVisualizer) {
-        com.astramesh.app.ui.components.ConnectionVisualizerSheet(
-            transportType = when {
-                isNearbyOnline -> com.astramesh.app.ui.components.TransportType.BLUETOOTH
-                contactOnion.isNotBlank() -> com.astramesh.app.ui.components.TransportType.TOR
-                else -> com.astramesh.app.ui.components.TransportType.OFFLINE
+
+    if (showAttachmentSheet) {
+        AttachmentSheet(
+            onDismiss = { showAttachmentSheet = false },
+            onPick = { mimeType ->
+                showAttachmentSheet = false
+                attachmentPicker.launch(mimeType)
             },
-            peerName = contactName,
-            onDismiss = { showConnectionVisualizer = false }
+            onComingSoon = { title ->
+                Toast.makeText(context, "$title will be wired next", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    if (showVoiceRecorder) {
+        VoiceRecorderDialog(
+            onDismiss = { showVoiceRecorder = false },
+            onSend = { uri ->
+                showVoiceRecorder = false
+                queueMediaUri(uri, "audio/mp4", "VOICE")
+            }
+        )
+    }
+}
+
+@Composable
+private fun ChatHeader(
+    contactName: String,
+    isConnected: Boolean,
+    isNearbyOnline: Boolean,
+    contactEndpoint: String,
+    contactOnion: String,
+    searchMode: Boolean,
+    searchQuery: String,
+    searchCountLabel: String,
+    selectedCount: Int,
+    onBack: () -> Unit,
+    onSearch: () -> Unit,
+    onSearchChange: (String) -> Unit,
+    onPreviousResult: () -> Unit,
+    onNextResult: () -> Unit,
+    onCopy: () -> Unit,
+    onReply: () -> Unit,
+    onDelete: () -> Unit,
+    onVoiceCall: () -> Unit,
+    onVideoCall: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        tonalElevation = 2.dp,
+        shadowElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(64.dp)
+                .padding(start = 4.dp, end = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+            }
+
+            Crossfade(targetState = when {
+                selectedCount > 0 -> "selection"
+                searchMode -> "search"
+                else -> "normal"
+            }, label = "chatHeader") { mode ->
+                when (mode) {
+                    "selection" -> SelectionHeader(selectedCount, onCopy, onReply, onDelete)
+                    "search" -> SearchHeader(searchQuery, searchCountLabel, onSearchChange, onPreviousResult, onNextResult)
+                    else -> NormalHeader(
+                        contactName = contactName,
+                        isConnected = isConnected,
+                        isNearbyOnline = isNearbyOnline,
+                        contactEndpoint = contactEndpoint,
+                        contactOnion = contactOnion,
+                        onSearch = onSearch,
+                        onVoiceCall = onVoiceCall,
+                        onVideoCall = onVideoCall
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NormalHeader(
+    contactName: String,
+    isConnected: Boolean,
+    isNearbyOnline: Boolean,
+    contactEndpoint: String,
+    contactOnion: String,
+    onSearch: () -> Unit,
+    onVoiceCall: () -> Unit,
+    onVideoCall: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = contactName.firstOrNull()?.uppercase() ?: "A",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 4.dp)
+        ) {
+            Text(
+                text = contactName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = when {
+                    isNearbyOnline -> "Bluetooth Relay • Encrypted"
+                    contactOnion.isNotBlank() -> "Online • Encrypted"
+                    isConnected -> "Mesh Connected • Encrypted"
+                    else -> "Offline • Encrypted"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        IconButton(onClick = onSearch, modifier = Modifier.size(44.dp)) {
+            Icon(Icons.Rounded.Search, contentDescription = "Search conversation")
+        }
+        IconButton(onClick = onVoiceCall, modifier = Modifier.size(44.dp)) {
+            Icon(Icons.Rounded.Call, contentDescription = "Voice call")
+        }
+        IconButton(onClick = onVideoCall, modifier = Modifier.size(44.dp)) {
+            Icon(Icons.Rounded.Videocam, contentDescription = "Video call")
+        }
+        IconButton(onClick = { }, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Rounded.MoreVert, contentDescription = "Conversation menu")
+        }
+    }
+}
+
+@Composable
+private fun SearchHeader(
+    query: String,
+    countLabel: String,
+    onSearchChange: (String) -> Unit,
+    onPreviousResult: () -> Unit,
+    onNextResult: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onSearchChange,
+            modifier = Modifier.weight(1f),
+            placeholder = { Text("Search conversation") },
+            singleLine = true,
+            shape = RoundedCornerShape(24.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color.Transparent,
+                unfocusedBorderColor = Color.Transparent,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        )
+        if (countLabel.isNotBlank()) {
+            Text(countLabel, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp))
+            IconButton(onClick = onPreviousResult) {
+                Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = "Previous")
+            }
+            IconButton(onClick = onNextResult) {
+                Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Next")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectionHeader(
+    count: Int,
+    onCopy: () -> Unit,
+    onReply: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("$count selected", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        IconButton(onClick = onCopy) {
+            Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy")
+        }
+        IconButton(onClick = onReply, enabled = count == 1) {
+            Icon(Icons.AutoMirrored.Rounded.Reply, contentDescription = "Reply")
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Rounded.Delete, contentDescription = "Delete")
+        }
+    }
+}
+
+@Composable
+private fun MessageTimeline(
+    messages: List<MessagePayload>,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    selectedIds: Set<String>,
+    highlightedId: String?,
+    localReactions: Map<String, String>,
+    onSelectToggle: (MessagePayload) -> Unit,
+    onReply: (MessagePayload) -> Unit,
+    onLongPress: (MessagePayload) -> Unit,
+    onReplyClick: (String) -> Unit,
+    onFailedTap: (MessagePayload) -> Unit
+) {
+    val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
+    LazyColumn(
+        state = listState,
+        reverseLayout = true,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp)
+    ) {
+        itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+            val nextOlder = messages.getOrNull(index + 1)
+            val nextNewer = messages.getOrNull(index - 1)
+            val sameSenderAsOlder = nextOlder?.senderId == message.senderId
+            val sameSenderAsNewer = nextNewer?.senderId == message.senderId
+            val date = dateFormat.format(Date(message.timestamp))
+            val olderDate = nextOlder?.let { dateFormat.format(Date(it.timestamp)) }
+            val topGap = if (sameSenderAsOlder) 8.dp else 16.dp
+
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (date != olderDate) {
+                    DatePill(date)
+                    Spacer(Modifier.height(8.dp))
+                }
+                SwipeReplyMessage(
+                    message = message,
+                    showSenderName = !sameSenderAsOlder && message.senderId != "me",
+                    compactWithPrevious = sameSenderAsOlder,
+                    compactWithNext = sameSenderAsNewer,
+                    isSelected = selectedIds.contains(message.id),
+                    isHighlighted = highlightedId == message.id,
+                    localReaction = localReactions[message.id],
+                    topPadding = topGap,
+                    onSelectToggle = { onSelectToggle(message) },
+                    onReply = { onReply(message) },
+                    onLongPress = { onLongPress(message) },
+                    onReplyClick = onReplyClick,
+                    onFailedTap = { onFailedTap(message) }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SwipeReplyMessage(
+    message: MessagePayload,
+    showSenderName: Boolean,
+    compactWithPrevious: Boolean,
+    compactWithNext: Boolean,
+    isSelected: Boolean,
+    isHighlighted: Boolean,
+    localReaction: String?,
+    topPadding: androidx.compose.ui.unit.Dp,
+    onSelectToggle: () -> Unit,
+    onReply: () -> Unit,
+    onLongPress: () -> Unit,
+    onReplyClick: (String) -> Unit,
+    onFailedTap: () -> Unit
+) {
+    val isMine = message.senderId == "me"
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val dragOffset = remember(message.id) { Animatable(0f) }
+    var triggered by remember(message.id) { mutableStateOf(false) }
+    val threshold = 82f
+    val maxDrag = 118f
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = topPadding)
+            .pointerInput(message.id, isMine) {
+                detectHorizontalDragGestures(
+                    onDragStart = { triggered = false },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        val next = (dragOffset.value + dragAmount).coerceIn(-maxDrag, maxDrag)
+                        val allowed = if (isMine) next <= 0f else next >= 0f
+                        if (allowed) {
+                            scope.launch { dragOffset.snapTo(next) }
+                            if (!triggered && kotlin.math.abs(next) > threshold) {
+                                triggered = true
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        }
+                    },
+                    onDragEnd = {
+                        if (kotlin.math.abs(dragOffset.value) > threshold) onReply()
+                        scope.launch {
+                            dragOffset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioMediumBouncy))
+                        }
+                    },
+                    onDragCancel = {
+                        scope.launch {
+                            dragOffset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = Spring.DampingRatioMediumBouncy))
+                        }
+                    }
+                )
+            }
+    ) {
+        val iconAlpha = (kotlin.math.abs(dragOffset.value) / threshold).coerceIn(0f, 1f)
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.Reply,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = iconAlpha),
+            modifier = Modifier
+                .align(if (isMine) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(horizontal = 18.dp)
+                .scale(0.8f + iconAlpha * 0.25f)
+        )
+        MessageBubble(
+            message = message,
+            isMine = isMine,
+            showSenderName = showSenderName,
+            compactWithPrevious = compactWithPrevious,
+            compactWithNext = compactWithNext,
+            isSelected = isSelected,
+            isHighlighted = isHighlighted,
+            localReaction = localReaction,
+            onClick = {
+                if (message.lifecycleState == MessageLifecycleState.FAILED) onFailedTap() else onSelectToggle()
+            },
+            onLongPress = onLongPress,
+            onReplyClick = onReplyClick,
+            modifier = Modifier.offset { IntOffset(dragOffset.value.roundToInt(), 0) }
         )
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MessageBubbleProxy(
+private fun MessageBubble(
     message: MessagePayload,
-    showTail: Boolean,
+    isMine: Boolean,
+    showSenderName: Boolean,
+    compactWithPrevious: Boolean,
+    compactWithNext: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
+    localReaction: String?,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    onSwipeReply: () -> Unit,
-    onReplyClick: (String) -> Unit
+    onLongPress: () -> Unit,
+    onReplyClick: (String) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val isSent = message.senderId == "me"
+    val config = LocalConfiguration.current
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val accentColor = if (isSent) AstraTheme.colors.onPrimary else AstraTheme.colors.primary
-
-    // Highlight flash animation
-    val highlightAlpha by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (isHighlighted) 0.5f else 0f,
-        animationSpec = androidx.compose.animation.core.tween(durationMillis = 300)
+    val maxBubbleWidth = (config.screenWidthDp * 0.72f).dp
+    val bubbleColor by animateColorAsState(
+        targetValue = when {
+            isHighlighted -> MaterialTheme.colorScheme.tertiaryContainer
+            isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+            isMine -> MaterialTheme.colorScheme.primaryContainer
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        },
+        label = "bubbleColor"
     )
+    val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    val shape = bubbleShape(isMine, compactWithPrevious, compactWithNext)
+    val reactions = remember(message.reactions, localReaction) {
+        buildMap {
+            message.reactions.values.groupingBy { it }.eachCount().forEach { (emoji, count) -> put(emoji, count) }
+            if (localReaction != null) put(localReaction, (get(localReaction) ?: 0) + 1)
+        }
+    }
+    val pressScale by animateFloatAsState(if (isSelected) 0.98f else 1f, label = "bubbleScale")
 
-    com.astramesh.app.ui.adaptive.AdaptiveChatBubble(
-        isMine = isSent,
-        timestamp = timeFormat.format(Date(message.timestamp)),
-        lifecycleState = message.lifecycleState,
-        isEncrypted = message.isEncrypted,
-        showTail = showTail,
-        modifier = Modifier
-            .padding(vertical = AstraTheme.spacing.tiny)
-            .background(AstraTheme.colors.primary.copy(alpha = highlightAlpha))
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        replyContent = if (message.replyToId != null) {
-            {
-                com.astramesh.app.ui.adaptive.ReplyPreview(
-                    senderName = "Replied",
-                    messageText = message.replyToText ?: "Original message unavailable",
-                    accentColor = accentColor,
-                    modifier = Modifier.clickable { onReplyClick(message.replyToId) }
-                )
-            }
-        } else null
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
     ) {
-        Column {
-            if (message.hasAttachments) {
-                com.astramesh.app.ui.components.MediaContent(
-                    message = message,
-                    isSent = isSent
+        Column(horizontalAlignment = if (isMine) Alignment.End else Alignment.Start) {
+            if (showSenderName) {
+                Text(
+                    text = "Astra contact",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp, bottom = 4.dp)
                 )
             }
-            if (message.text.isNotBlank() && !message.text.startsWith("Media Message (") && !message.text.startsWith("Receiving ")) {
-                val isEmoji = com.astramesh.app.ui.utils.TextUtils.isEmojiOnly(message.text)
-                val annotatedText = com.astramesh.app.ui.utils.TextUtils.parseMarkdown(message.text, codeColor = AstraTheme.colors.onSurfaceVariant.copy(alpha = 0.2f))
-
-                Text(
-                    text = annotatedText,
-                    color = if (isSent) AstraTheme.colors.onPrimary else AstraTheme.colors.onSurfaceVariant,
-                    style = AstraTheme.typography.bodyMedium,
-                    fontSize = if (isEmoji) 48.sp else AstraTheme.typography.bodyMedium.fontSize,
-                    lineHeight = if (isEmoji) 56.sp else AstraTheme.typography.bodyMedium.lineHeight
-                )
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = maxBubbleWidth)
+                    .scale(pressScale)
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongPress,
+                        onDoubleClick = onLongPress
+                    ),
+                color = bubbleColor,
+                shape = shape,
+                tonalElevation = if (isMine) 4.dp else 2.dp,
+                shadowElevation = 1.dp
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)) {
+                    if (message.replyToId != null) {
+                        InlineReplyPreview(
+                            isMine = isMine,
+                            text = message.replyToText ?: "Original message unavailable",
+                            onClick = { onReplyClick(message.replyToId) }
+                        )
+                        Spacer(Modifier.height(7.dp))
+                    }
+                    if (message.hasAttachments) {
+                        MediaContent(message = message, isSent = isMine)
+                        if (message.text.isNotBlank() && !message.text.startsWith("Media Message")) {
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                    if (message.text.isNotBlank() && !message.text.startsWith("Media Message") && !message.text.startsWith("Receiving ")) {
+                        Text(
+                            text = com.astramesh.app.ui.utils.TextUtils.parseMarkdown(
+                                message.text,
+                                codeColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            ),
+                            color = textColor,
+                            style = MaterialTheme.typography.bodyLarge,
+                            lineHeight = 23.sp
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (message.isEncrypted) {
+                            Icon(Icons.Rounded.Security, contentDescription = "Encrypted", modifier = Modifier.size(12.dp), tint = textColor.copy(alpha = 0.52f))
+                        }
+                        Text(
+                            text = timeFormat.format(Date(message.timestamp)),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = textColor.copy(alpha = 0.62f)
+                        )
+                        if (isMine) MessageStatusIcon(message.lifecycleState, textColor.copy(alpha = 0.7f))
+                    }
+                }
+            }
+            if (reactions.isNotEmpty()) {
+                ReactionCapsules(reactions = reactions, isMine = isMine)
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun DateSeparator(dateStr: String) {
-    Box(modifier = Modifier.fillMaxWidth().padding(vertical = AstraTheme.spacing.medium), contentAlignment = Alignment.Center) {
+private fun InlineReplyPreview(isMine: Boolean, text: String, onClick: () -> Unit) {
+    val accent = if (isMine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.38f))
+            .combinedClickable(onClick = onClick)
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(34.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(accent)
+        )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text("Reply", style = MaterialTheme.typography.labelSmall, color = accent, fontWeight = FontWeight.Bold)
+            Text(text, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun MessageStatusIcon(state: MessageLifecycleState, tint: Color) {
+    val text = when (state) {
+        MessageLifecycleState.DRAFT,
+        MessageLifecycleState.QUEUED,
+        MessageLifecycleState.ENCRYPTING,
+        MessageLifecycleState.SENDING,
+        MessageLifecycleState.TRANSPORT_SELECTED,
+        MessageLifecycleState.IN_TRANSIT,
+        MessageLifecycleState.RETRYING -> "\u2713"
+        MessageLifecycleState.DELIVERED -> "\u2713\u2713"
+        MessageLifecycleState.READ -> "\u2713\u2713"
+        MessageLifecycleState.FAILED,
+        MessageLifecycleState.CANCELLED,
+        MessageLifecycleState.EXPIRED -> "!"
+        MessageLifecycleState.ARCHIVED -> "\u2713"
+    }
+    Crossfade(targetState = text, label = "status") { label ->
         Text(
-            text = dateStr,
-            fontSize = AstraTheme.typography.labelMedium.fontSize,
-            color = AstraTheme.colors.onSurfaceVariant,
-            modifier = Modifier.background(AstraTheme.colors.surface, RoundedCornerShape(AstraTheme.spacing.medium)).padding(horizontal = AstraTheme.spacing.small, vertical = AstraTheme.spacing.tiny)
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (state == MessageLifecycleState.FAILED) MaterialTheme.colorScheme.error else tint,
+            fontWeight = FontWeight.Bold
         )
     }
 }
 
 @Composable
-fun ReplyPreviewBanner(message: MessagePayload, onCancel: () -> Unit) {
+private fun ReactionCapsules(reactions: Map<String, Int>, isMine: Boolean) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(top = 4.dp, start = if (isMine) 0.dp else 8.dp, end = if (isMine) 8.dp else 0.dp)
+    ) {
+        reactions.forEach { (emoji, count) ->
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 2.dp
+            ) {
+                Text(
+                    text = if (count > 1) "$emoji $count" else emoji,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DatePill(date: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.84f),
+            tonalElevation = 3.dp
+        ) {
+            Text(
+                text = date,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatComposer(
+    text: String,
+    replyTo: MessagePayload?,
+    onTextChange: (String) -> Unit,
+    onCancelReply: () -> Unit,
+    onOpenAttachmentSheet: () -> Unit,
+    onCamera: () -> Unit,
+    onVoice: () -> Unit,
+    onSend: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+        tonalElevation = 4.dp,
+        shadowElevation = 6.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 9.dp)
+        ) {
+            AnimatedVisibility(
+                visible = replyTo != null,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                replyTo?.let {
+                    ComposerReplyPreview(message = it, onCancel = onCancelReply)
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+            Row(verticalAlignment = Alignment.Bottom) {
+                IconButton(onClick = onOpenAttachmentSheet, modifier = Modifier.size(46.dp)) {
+                    Icon(Icons.Rounded.AttachFile, contentDescription = "Open attachment options")
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Message...") },
+                    shape = RoundedCornerShape(28.dp),
+                    minLines = 1,
+                    maxLines = 5,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.78f),
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent
+                    ),
+                    trailingIcon = {
+                        Row {
+                            IconButton(onClick = onCamera, modifier = Modifier.size(36.dp)) {
+                                Icon(Icons.Rounded.CameraAlt, contentDescription = "Camera", modifier = Modifier.size(20.dp))
+                            }
+                            if (text.isBlank()) {
+                                IconButton(onClick = onVoice, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Rounded.KeyboardVoice, contentDescription = "Voice", modifier = Modifier.size(20.dp))
+                                }
+                            }
+                        }
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
+                val enabled = text.isNotBlank()
+                val scale by animateFloatAsState(if (enabled) 1f else 0.82f, label = "sendScale")
+                IconButton(
+                    onClick = onSend,
+                    enabled = enabled,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .scale(scale)
+                        .clip(CircleShape)
+                        .background(if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposerReplyPreview(message: MessagePayload, onCancel: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AstraTheme.colors.surface)
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.small),
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(modifier = Modifier.width(AstraTheme.spacing.tiny).height(AstraTheme.spacing.massive1).background(AstraTheme.colors.primary, RoundedCornerShape(AstraTheme.spacing.tiny)))
-        Spacer(modifier = Modifier.width(AstraTheme.spacing.small))
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .height(38.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(if (message.senderId == "me") "You" else "Them", fontSize = AstraTheme.typography.bodySmall.fontSize, color = AstraTheme.colors.primary, fontWeight = FontWeight.Bold)
-            Text(message.text, fontSize = AstraTheme.typography.bodySmall.fontSize, color = AstraTheme.colors.onSurfaceVariant, maxLines = 1)
+            Text(if (message.senderId == "me") "Replying to yourself" else "Replying to contact", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            Text(message.text.ifBlank { message.fileName ?: "Attachment" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
         }
         IconButton(onClick = onCancel) {
-            Icon(Icons.Rounded.Close, "Cancel", tint = AstraTheme.colors.onSurfaceVariant)
+            Icon(Icons.Rounded.Close, contentDescription = "Cancel reply")
         }
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ReactionDialog(
+    message: MessagePayload,
+    onDismiss: () -> Unit,
+    onReaction: (String) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                tonalElevation = 6.dp,
+                shadowElevation = 12.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ReactionChoices.forEachIndexed { index, emoji ->
+                        val scale by animateFloatAsState(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "reaction$index")
+                        Text(
+                            text = emoji,
+                            fontSize = 28.sp,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .scale(scale)
+                                .clip(CircleShape)
+                                .combinedClickable(onClick = { onReaction(emoji) })
+                                .padding(5.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            AssistChip(
+                onClick = onDismiss,
+                label = {
+                    Text(
+                        message.text.ifBlank { "Attachment" },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 260.dp)
+                    )
+                },
+                leadingIcon = {
+                    if (message.lifecycleState == MessageLifecycleState.FAILED) {
+                        Icon(Icons.Rounded.Warning, contentDescription = null, modifier = Modifier.size(16.dp))
+                    } else {
+                        Icon(Icons.Rounded.Sync, contentDescription = null, modifier = Modifier.size(16.dp))
+                    }
+                }
+            )
+        }
+    }
+}
+
+private data class AttachmentAction(
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val mimeType: String? = null
+)
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+private fun AttachmentSheet(
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+    onComingSoon: (String) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val actions = remember {
+        listOf(
+            AttachmentAction("Gallery", "Choose photos & videos", Icons.Rounded.Image, "image/*"),
+            AttachmentAction("Camera", "Take a photo", Icons.Rounded.CameraAlt),
+            AttachmentAction("Document", "PDF ZIP APK", Icons.Rounded.Description, "*/*"),
+            AttachmentAction("Audio", "Send music", Icons.Rounded.AudioFile, "audio/*"),
+            AttachmentAction("Voice Note", "Record instantly", Icons.Rounded.KeyboardVoice),
+            AttachmentAction("Location", "Live location", Icons.Rounded.LocationOn),
+            AttachmentAction("Contact", "Share contact", Icons.Rounded.Person),
+            AttachmentAction("Poll", "Create poll", Icons.Rounded.Hub),
+            AttachmentAction("GIF", "GIF search", Icons.Rounded.Image),
+            AttachmentAction("Sticker", "Open sticker picker", Icons.Rounded.Person),
+            AttachmentAction("Code Snippet", "Share formatted code", Icons.Rounded.Description, "text/*"),
+            AttachmentAction("Calendar", "Schedule event", Icons.Rounded.Description),
+            AttachmentAction("Share Device", "Nearby device details", Icons.Rounded.Smartphone),
+            AttachmentAction("Mesh File", "Offline mesh transfer", Icons.Rounded.Hub, "*/*")
+        )
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 18.dp, vertical = 8.dp)
+        ) {
+            Text(
+                text = "Attach",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 14.dp)
+            )
+            actions.chunked(2).forEach { rowActions ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    rowActions.forEach { action ->
+                        AttachmentCard(
+                            action = action,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                if (action.mimeType != null) onPick(action.mimeType) else onComingSoon(action.title)
+                            }
+                        )
+                    }
+                    if (rowActions.size == 1) Spacer(Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AttachmentCard(
+    action: AttachmentAction,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = modifier
+            .height(86.dp)
+            .combinedClickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(action.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = action.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = action.subtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceRecorderDialog(
+    onDismiss: () -> Unit,
+    onSend: (Uri) -> Unit
+) {
+    val context = LocalContext.current
+    var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var recordedUri by remember { mutableStateOf<Uri?>(null) }
+    var isRecording by remember { mutableStateOf(false) }
+    var startedAt by remember { mutableStateOf(0L) }
+    var elapsedSeconds by remember { mutableStateOf(0L) }
+
+    LaunchedEffect(isRecording, startedAt) {
+        while (isRecording) {
+            elapsedSeconds = (System.currentTimeMillis() - startedAt) / 1000L
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { recorder?.release() }
+        }
+    }
+
+    Dialog(onDismissRequest = {
+        if (!isRecording) onDismiss()
+    }) {
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            shadowElevation = 12.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text("Voice note", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (isRecording) "Recording ${elapsedSeconds}s" else if (recordedUri != null) "Preview ready" else "Tap record to start",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AudioRecordingWave(isRecording = isRecording)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = {
+                            if (isRecording) return@TextButton
+                            recordedUri = null
+                            onDismiss()
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                    Button(
+                        onClick = {
+                            if (isRecording) {
+                                runCatching {
+                                    recorder?.stop()
+                                    recorder?.release()
+                                }
+                                recorder = null
+                                isRecording = false
+                            } else {
+                                val outputFile = createTempMediaFile(context, "voice", ".m4a")
+                                val newRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
+                                newRecorder.apply {
+                                    setAudioSource(MediaRecorder.AudioSource.MIC)
+                                    setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                                    setAudioEncodingBitRate(96_000)
+                                    setAudioSamplingRate(44_100)
+                                    setOutputFile(outputFile.absolutePath)
+                                    prepare()
+                                    start()
+                                }
+                                recorder = newRecorder
+                                recordedUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", outputFile)
+                                startedAt = System.currentTimeMillis()
+                                elapsedSeconds = 0
+                                isRecording = true
+                            }
+                        }
+                    ) {
+                        Text(if (isRecording) "Stop" else "Record")
+                    }
+                    Button(
+                        enabled = recordedUri != null && !isRecording,
+                        onClick = { recordedUri?.let(onSend) }
+                    ) {
+                        Text("Send")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioRecordingWave(isRecording: Boolean) {
+    Row(
+        modifier = Modifier
+            .width(220.dp)
+            .height(42.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(24) { index ->
+            val heights = if (isRecording) listOf(10, 24, 16, 36, 18, 28) else listOf(8, 12, 10, 14, 9, 11)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(heights[index % heights.size].dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = if (isRecording) 0.88f else 0.35f))
+            )
+        }
+    }
+}
+
+private fun createTempMediaUri(context: Context, prefix: String, extension: String): Uri {
+    val file = createTempMediaFile(context, prefix, extension)
+    return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}
+
+private fun createTempMediaFile(context: Context, prefix: String, extension: String): File {
+    val dir = File(context.cacheDir, prefix).apply { mkdirs() }
+    return File(dir, "${prefix}_${System.currentTimeMillis()}$extension").apply {
+        if (!exists()) createNewFile()
+    }
+}
+
+private fun bubbleShape(
+    isMine: Boolean,
+    compactWithPrevious: Boolean,
+    compactWithNext: Boolean
+): RoundedCornerShape {
+    val big = 22.dp
+    val small = 7.dp
+    return if (isMine) {
+        RoundedCornerShape(
+            topStart = big,
+            topEnd = if (compactWithPrevious) small else big,
+            bottomStart = big,
+            bottomEnd = if (compactWithNext) small else big
+        )
+    } else {
+        RoundedCornerShape(
+            topStart = if (compactWithPrevious) small else big,
+            topEnd = big,
+            bottomStart = if (compactWithNext) small else big,
+            bottomEnd = big
+        )
+    }
+}
+
+private fun copyMessages(context: Context, messages: List<MessagePayload>, selectedIds: Set<String>) {
+    if (selectedIds.isEmpty()) return
+    val text = messages
+        .filter { selectedIds.contains(it.id) }
+        .joinToString("\n") { it.text.ifBlank { it.fileName ?: "Attachment" } }
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("AstraMesh messages", text))
+    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
 }

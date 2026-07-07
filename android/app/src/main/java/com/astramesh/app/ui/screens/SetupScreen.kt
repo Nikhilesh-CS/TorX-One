@@ -33,6 +33,10 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 
@@ -255,6 +259,17 @@ fun OnboardingPage3() {
 fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> Unit) {
     var name by remember { mutableStateOf("") }
     var passphrase by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+
+    fun createIdentity() {
+        val cleanName = name.trim()
+        if (cleanName.isNotBlank() && passphrase.isNotBlank()) {
+            val identity = CryptoManager.generateIdentity(cleanName)
+            identityManager.saveIdentity(identity)
+            focusManager.clearFocus(force = true)
+            onIdentityCreated()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -295,6 +310,7 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
             textStyle = MaterialTheme.typography.bodyLarge
         )
 
@@ -315,6 +331,8 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
                 unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { createIdentity() }),
             textStyle = MaterialTheme.typography.bodyLarge
         )
 
@@ -322,16 +340,12 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
 
         Button(
             onClick = {
-                if (name.isNotBlank() && passphrase.isNotBlank()) {
-                    val identity = CryptoManager.generateIdentity(name)
-                    identityManager.saveIdentity(identity)
-                    onIdentityCreated()
-                }
+                createIdentity()
             },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(AstraTheme.spacing.massive4),
-            enabled = name.isNotBlank() && passphrase.isNotBlank(),
+            enabled = name.trim().isNotBlank() && passphrase.isNotBlank(),
             shape = RoundedCornerShape(AstraTheme.spacing.standard),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,

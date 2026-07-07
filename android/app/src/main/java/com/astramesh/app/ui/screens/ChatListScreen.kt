@@ -6,8 +6,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -53,7 +56,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatListScreen(
     identityManager: IdentityManager,
@@ -65,7 +68,7 @@ fun ChatListScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val contacts by db.contactDao().getAllContacts().collectAsStateWithLifecycle(initialValue = null)
+    val contacts by db.contactDao().getAllContacts().collectAsStateWithLifecycle(initialValue = emptyList())
     val nearbyDevices by nearbyManager.nearbyDevices.collectAsStateWithLifecycle()
     val pendingRequests by nearbyManager.pendingRequests.collectAsStateWithLifecycle()
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsStateWithLifecycle()
@@ -77,6 +80,7 @@ fun ChatListScreen(
     var showAddContact by remember { mutableStateOf(false) }
     var showShareContact by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+    var contactToDelete by remember { mutableStateOf<ContactEntity?>(null) }
 
     val myContactString = remember(identityManager, onionAddress) {
         val identity = identityManager.loadIdentity()
@@ -182,11 +186,7 @@ fun ChatListScreen(
                 )
             }
 
-            if (contacts == null) {
-                item {
-                    com.astramesh.app.ui.components.AstraLoadingState(message = "Loading contacts...")
-                }
-            } else if (contacts!!.isEmpty()) {
+            if (contacts.isEmpty()) {
                 item {
                     com.astramesh.app.ui.components.AstraEmptyState(
                         title = "No conversations yet",
@@ -194,7 +194,7 @@ fun ChatListScreen(
                     )
                 }
             } else {
-                items(contacts!!) { contact ->
+                items(contacts) { contact ->
                     val isConnected = connectedEndpoints.contains(contact.endpointId) ||
                         (contact.onionAddress.isNotBlank() && isTorReady)
                     
@@ -212,6 +212,9 @@ fun ChatListScreen(
                         unreadCount = unreadCount,
                         onClick = {
                             navController.navigate("chat/${contact.signingPublicKey}")
+                        },
+                        onLongClick = {
+                            contactToDelete = contact
                         }
                     )
                 }
@@ -288,6 +291,42 @@ fun ChatListScreen(
             onDismiss = { showDiagnostics = false }
         )
     }
+
+    contactToDelete?.let { contact ->
+        AlertDialog(
+            onDismissRequest = { contactToDelete = null },
+            title = { Text("Delete ${contact.name}?") },
+            text = {
+                Text("This removes the person, chat history, profile cache, and transfer records from this phone.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            db.mediaTransferDao().deleteTransfersForContact(contact.signingPublicKey)
+                            db.messageDao().clearChat(contact.signingPublicKey)
+                            db.profileDao().deleteProfile(contact.signingPublicKey)
+                            db.contactDao().deleteContact(contact.signingPublicKey)
+                            withContext(Dispatchers.Main) {
+                                contactToDelete = null
+                                Toast.makeText(context, "Deleted ${contact.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null)
+                    Spacer(modifier = Modifier.width(AstraTheme.spacing.tiny))
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { contactToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -337,10 +376,22 @@ fun NearbyDeviceChip(device: NearbyDevice, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ContactRow(contact: ContactEntity, isConnected: Boolean, lastMessageText: String, lastMessageTime: Long?, unreadCount: Int = 0, onClick: () -> Unit) {
+fun ContactRow(
+    contact: ContactEntity,
+    isConnected: Boolean,
+    lastMessageText: String,
+    lastMessageTime: Long?,
+    unreadCount: Int = 0,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = AstraTheme.spacing.large, vertical = AstraTheme.spacing.medium),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = AstraTheme.spacing.large, vertical = AstraTheme.spacing.medium),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AstraAvatar(name = contact.name, size = AstraTheme.spacing.massive4, isOnline = isConnected)

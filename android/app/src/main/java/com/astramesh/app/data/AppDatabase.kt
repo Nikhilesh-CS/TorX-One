@@ -88,6 +88,12 @@ interface ContactDao {
 
     @Query("UPDATE contacts SET endpointId = :endpointId WHERE signingPublicKey = :key")
     fun updateEndpointId(key: String, endpointId: String)
+
+    @Query("UPDATE contacts SET endpointId = '', isConnected = 0 WHERE endpointId = :endpointId")
+    fun clearEndpoint(endpointId: String)
+
+    @Query("DELETE FROM contacts WHERE signingPublicKey = :key")
+    fun deleteContact(key: String)
 }
 
 @Dao
@@ -251,6 +257,64 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE messages ADD COLUMN reactionsJson TEXT")
+
+                val profileColumns = mutableSetOf<String>()
+                db.query("PRAGMA table_info(`profiles`)").use { cursor ->
+                    val nameIndex = cursor.getColumnIndex("name")
+                    while (cursor.moveToNext()) {
+                        profileColumns.add(cursor.getString(nameIndex))
+                    }
+                }
+
+                if (!profileColumns.contains("ownerKey")) {
+                    db.execSQL("ALTER TABLE profiles RENAME TO profiles_legacy")
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `profiles` (
+                            `ownerKey` TEXT NOT NULL,
+                            `name` TEXT NOT NULL,
+                            `bio` TEXT NOT NULL,
+                            `statusMessage` TEXT NOT NULL,
+                            `avatarHash` TEXT,
+                            `profileHash` TEXT NOT NULL,
+                            `profileVersion` INTEGER NOT NULL,
+                            `lastUpdatedAt` INTEGER NOT NULL,
+                            `avatarLocalPath` TEXT,
+                            `nickname` TEXT,
+                            `pronouns` TEXT,
+                            `verifiedBadge` INTEGER NOT NULL,
+                            `avatarTheme` TEXT,
+                            `customStatusEmoji` TEXT,
+                            `presenceCapabilities` TEXT,
+                            PRIMARY KEY(`ownerKey`)
+                        )
+                    """.trimIndent())
+
+                    db.execSQL("""
+                        INSERT OR REPLACE INTO profiles (
+                            ownerKey, name, bio, statusMessage, avatarHash, profileHash,
+                            profileVersion, lastUpdatedAt, avatarLocalPath, nickname, pronouns,
+                            verifiedBadge, avatarTheme, customStatusEmoji, presenceCapabilities
+                        )
+                        SELECT
+                            COALESCE(contactKey, 'LOCAL_USER'),
+                            name,
+                            COALESCE(bio, ''),
+                            '',
+                            NULL,
+                            '',
+                            1,
+                            COALESCE(timestamp, 0),
+                            NULL,
+                            NULL,
+                            NULL,
+                            0,
+                            NULL,
+                            NULL,
+                            NULL
+                        FROM profiles_legacy
+                    """.trimIndent())
+                    db.execSQL("DROP TABLE profiles_legacy")
+                }
             }
         }
     }

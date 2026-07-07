@@ -68,6 +68,12 @@ class AstraMeshService : Service() {
         private set
     lateinit var mediaTransferManager: com.astramesh.app.transfer.MediaTransferManager
         private set
+    lateinit var realtimeEngineManager: com.astramesh.app.realtime.RealtimeEngineManager
+        private set
+    lateinit var astraFastLane: com.astramesh.app.realtime.AstraFastLane
+        private set
+    lateinit var callManager: com.astramesh.app.call.CallManager
+        private set
     lateinit var profileSyncManager: com.astramesh.app.identity.profile.ProfileSyncManager
         private set
     lateinit var settingsManager: com.astramesh.app.data.SettingsManager
@@ -114,7 +120,10 @@ class AstraMeshService : Service() {
         nearbyManager = NearbyConnectionManager(this)
         torManager = TorManager(this)
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager)
-        mediaTransferManager = com.astramesh.app.transfer.MediaTransferManager(this, db, messageRouter)
+        realtimeEngineManager = com.astramesh.app.realtime.RealtimeEngineManager(this, messageRouter)
+        astraFastLane = com.astramesh.app.realtime.AstraFastLane(realtimeEngineManager)
+        mediaTransferManager = com.astramesh.app.transfer.MediaTransferManager(this, db, messageRouter, astraFastLane)
+        callManager = com.astramesh.app.call.CallManager(this, db, messageRouter)
         
         val profileCache = com.astramesh.app.identity.profile.ProfileCacheManagerImpl(this)
         val imageProcessor = com.astramesh.app.media.ImageProcessor(this)
@@ -199,7 +208,7 @@ class AstraMeshService : Service() {
 
         nearbyManager.onDisconnected = { endpointId ->
             serviceScope.launch {
-                db.contactDao().updateConnectionStatus(endpointId, false)
+                db.contactDao().clearEndpoint(endpointId)
             }
             Log.d(TAG, "[NEARBY] Disconnected from $endpointId")
         }

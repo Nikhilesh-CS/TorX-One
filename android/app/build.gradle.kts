@@ -88,6 +88,9 @@ dependencies {
     // Google Nearby Connections (P2P offline)
     implementation("com.google.android.gms:play-services-nearby:19.1.0")
 
+    // WebRTC runtime for calls/DataChannel. Kept behind RealtimeEngine so it can be replaced.
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
+
     // Room Database
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
@@ -95,6 +98,7 @@ dependencies {
     
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.google.zxing:core:3.5.3")
 
     // Accompanist (permissions)
     implementation("com.google.accompanist:accompanist-permissions:0.34.0")

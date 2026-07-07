@@ -11,13 +11,19 @@ import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SaveAlt
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,10 +31,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.astramesh.app.engine.MessagePayload
 import com.astramesh.app.ui.theme.AccentViolet
 import com.astramesh.app.ui.theme.CardSurface
@@ -66,13 +76,14 @@ fun MediaContent(message: MessagePayload, isSent: Boolean) {
 @Composable
 fun ImageBubble(message: MessagePayload, isSent: Boolean) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    var showViewer by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .widthIn(max = 240.dp)
             .height(200.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.Black.copy(alpha = 0.3f))
-            .clickable(enabled = message.localUri != null) { openAttachment(context, message) },
+            .clickable(enabled = message.localUri != null) { showViewer = true },
         contentAlignment = Alignment.Center
     ) {
         if (message.localUri != null) {
@@ -83,7 +94,11 @@ fun ImageBubble(message: MessagePayload, isSent: Boolean) {
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            Icon(Icons.Rounded.Image, contentDescription = "Image", tint = MutedGray, modifier = Modifier.size(48.dp))
+            MediaUnavailablePlaceholder(
+                icon = { Icon(Icons.Rounded.Image, contentDescription = null, tint = MutedGray, modifier = Modifier.size(42.dp)) },
+                title = "Image",
+                subtitle = mediaStatusText(message)
+            )
         }
         
         val progress = message.transferProgress
@@ -102,6 +117,13 @@ fun ImageBubble(message: MessagePayload, isSent: Boolean) {
             }
         }
     }
+
+    if (showViewer && message.localUri != null) {
+        FullscreenImageViewer(
+            message = message,
+            onDismiss = { showViewer = false }
+        )
+    }
 }
 
 @Composable
@@ -116,8 +138,34 @@ fun VideoBubble(message: MessagePayload, isSent: Boolean) {
             .clickable(enabled = message.localUri != null) { openAttachment(context, message) },
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Rounded.VideoFile, contentDescription = "Video", tint = MutedGray, modifier = Modifier.size(48.dp))
-        Icon(Icons.Rounded.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(48.dp).background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(24.dp)))
+        if (message.localUri != null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.18f)),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(Color.Black.copy(alpha = 0.55f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = "Play video", tint = Color.White, modifier = Modifier.size(38.dp))
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(message.fileName ?: "Video", color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp))
+                Text(formatFileSize(message.fileSize), color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
+            }
+        } else {
+            MediaUnavailablePlaceholder(
+                icon = { Icon(Icons.Rounded.VideoFile, contentDescription = null, tint = MutedGray, modifier = Modifier.size(42.dp)) },
+                title = "Video",
+                subtitle = mediaStatusText(message)
+            )
+        }
     }
 }
 
@@ -135,7 +183,7 @@ fun AudioBubble(message: MessagePayload, isSent: Boolean) {
 
     Row(
         modifier = Modifier
-            .width(200.dp)
+            .widthIn(min = 220.dp, max = 280.dp)
             .padding(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -176,9 +224,15 @@ fun AudioBubble(message: MessagePayload, isSent: Boolean) {
             Icon(Icons.Rounded.PlayArrow, "Play", tint = if (isSent) Color.White else AccentViolet)
         }
         Spacer(modifier = Modifier.width(12.dp))
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(if (message.messageType == "VOICE") "Voice Note" else (message.fileName ?: "Audio"), color = if (isSent) Color.White else SoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            LinearProgressIndicator(progress = { 0f }, modifier = Modifier.fillMaxWidth().height(4.dp).padding(top = 8.dp), color = if (isSent) Color.White else AccentViolet, trackColor = DimGray)
+            Spacer(modifier = Modifier.height(8.dp))
+            AudioWaveformStub(isSent = isSent, isPlaying = isPlaying)
+            Text(
+                text = if (message.localUri == null) mediaStatusText(message) else if (isPlaying) "Playing" else "Tap to play",
+                color = if (isSent) Color.White.copy(alpha = 0.72f) else MutedGray,
+                fontSize = 12.sp
+            )
         }
     }
 }
@@ -205,7 +259,7 @@ fun FileBubble(message: MessagePayload, isSent: Boolean) {
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(message.fileName ?: if (isApk) "App Package" else "Document", color = if (isSent) Color.White else SoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${(message.fileSize ?: 0L) / 1024} KB", color = if (isSent) Color.White.copy(alpha = 0.8f) else MutedGray, fontSize = 12.sp)
+                Text("${fileExtensionLabel(message.fileName, message.mimeType)} • ${formatFileSize(message.fileSize)}", color = if (isSent) Color.White.copy(alpha = 0.8f) else MutedGray, fontSize = 12.sp)
             }
         }
         
@@ -227,11 +281,188 @@ fun FileBubble(message: MessagePayload, isSent: Boolean) {
                 }, contentPadding = PaddingValues(0.dp)) {
                     Text("SAVE", color = if (isSent) Color.White else AccentViolet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
+                TextButton(onClick = {
+                    message.localUri?.let { shareAttachment(context, it, message.mimeType, message.fileName ?: "Share file") }
+                }, contentPadding = PaddingValues(0.dp)) {
+                    Text("SHARE", color = if (isSent) Color.White else AccentViolet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
             }
         } else {
             val progress = message.transferProgress
             if (progress != null && progress < 100) {
                 LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().height(4.dp).padding(top = 8.dp), color = if (isSent) Color.White else AccentViolet, trackColor = DimGray)
+            } else {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null, tint = if (isSent) Color.White.copy(alpha = 0.8f) else MutedGray, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(mediaStatusText(message), color = if (isSent) Color.White.copy(alpha = 0.8f) else MutedGray, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+
+}
+
+@Composable
+private fun AudioWaveformStub(isSent: Boolean, isPlaying: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        val color = if (isSent) Color.White.copy(alpha = 0.84f) else AccentViolet
+        repeat(18) { index ->
+            val height = if (isPlaying) {
+                listOf(8, 16, 11, 22, 14, 19)[index % 6]
+            } else {
+                listOf(7, 12, 9, 17, 10, 14)[index % 6]
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(height.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(color.copy(alpha = if (index < 5 && isPlaying) 1f else 0.48f))
+            )
+        }
+    }
+}
+
+@Composable
+private fun MediaUnavailablePlaceholder(
+    icon: @Composable () -> Unit,
+    title: String,
+    subtitle: String
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(14.dp)
+    ) {
+        icon()
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(title, color = SoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Text(subtitle, color = MutedGray, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+private fun mediaStatusText(message: MessagePayload): String {
+    val progress = message.transferProgress
+    return when {
+        progress != null && progress in 0..99 -> "Receiving... $progress%"
+        message.localUri.isNullOrBlank() -> "Waiting for media data"
+        else -> "Tap to open"
+    }
+}
+
+private fun formatFileSize(bytes: Long?): String {
+    val value = bytes ?: 0L
+    return when {
+        value <= 0L -> "Size unknown"
+        value < 1024L * 1024L -> "${value / 1024L} KB"
+        value < 1024L * 1024L * 1024L -> String.format("%.1f MB", value / (1024f * 1024f))
+        else -> String.format("%.1f GB", value / (1024f * 1024f * 1024f))
+    }
+}
+
+private fun fileExtensionLabel(fileName: String?, mimeType: String?): String {
+    val ext = fileName?.substringAfterLast('.', missingDelimiterValue = "")?.uppercase()?.takeIf { it.isNotBlank() }
+    return ext ?: mimeType?.substringAfterLast('/')?.uppercase()?.takeIf { it.isNotBlank() } ?: "FILE"
+}
+
+@Composable
+private fun FullscreenImageViewer(message: MessagePayload, onDismiss: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.96f))
+        ) {
+            AsyncImage(
+                model = message.localUri?.let { File(it) },
+                contentDescription = message.fileName ?: "Image attachment",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            if (scale > 1f) {
+                                offsetX += pan.x
+                                offsetY += pan.y
+                            } else {
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                        }
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                } else {
+                                    scale = 2.5f
+                                }
+                            }
+                        )
+                    }
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offsetX,
+                        translationY = offsetY
+                    )
+            )
+
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth(),
+                color = Color.Black.copy(alpha = 0.48f)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Close image", tint = Color.White)
+                    }
+                    Text(
+                        text = message.fileName ?: "Image",
+                        color = Color.White,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = { saveAttachmentToDownloads(context, message) }) {
+                        Icon(Icons.Rounded.SaveAlt, contentDescription = "Save image", tint = Color.White)
+                    }
+                    IconButton(onClick = {
+                        message.localUri?.let { shareAttachment(context, it, message.mimeType ?: "image/*", message.fileName ?: "Share image") }
+                    }) {
+                        Icon(Icons.Rounded.Share, contentDescription = "Share image", tint = Color.White)
+                    }
+                }
             }
         }
     }

@@ -14,10 +14,20 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -31,6 +41,8 @@ import com.astramesh.app.updater.GitHubUpdater
 import com.astramesh.app.updater.UpdateInfo
 import kotlinx.coroutines.launch
 import android.widget.Toast
+import com.astramesh.app.call.CallDirection
+import com.astramesh.app.call.CallUiState
 
 class MainActivity : ComponentActivity() {
 
@@ -175,12 +187,47 @@ class MainActivity : ComponentActivity() {
                                 identityManager = service.identityManager,
                                 onIdentityCreated = {
                                     service.configureAndStart()
+                                    navController.navigate("main") {
+                                        popUpTo("setup") { inclusive = true }
+                                        launchSingleTop = true
+                                    }
                                 }
                             )
                         }
                         composable("profile") {
+                            val profileCacheManager = remember { com.astramesh.app.identity.profile.ProfileCacheManagerImpl(this@MainActivity) }
+                            val imageProcessor = remember { com.astramesh.app.media.ImageProcessor(this@MainActivity) }
+                            val profileRepository = remember(service.db, service.identityManager) {
+                                com.astramesh.app.identity.profile.ProfileRepositoryImpl(
+                                    service.db.profileDao(),
+                                    service.identityManager,
+                                    profileCacheManager,
+                                    imageProcessor
+                                )
+                            }
+                            val profileViewModel: com.astramesh.app.ui.screens.ProfileViewModel =
+                                androidx.lifecycle.viewmodel.compose.viewModel(
+                                    factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+                                        @Suppress("UNCHECKED_CAST")
+                                        override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                                            return com.astramesh.app.ui.screens.ProfileViewModel(profileRepository) as T
+                                        }
+                                    }
+                                )
+                            val identityQrPayload = remember(service.identityManager, service.torManager.onionAddress.value) {
+                                service.identityManager.loadIdentity()?.let { identity ->
+                                    com.astramesh.app.crypto.CryptoManager.createContactString(
+                                        identity,
+                                        service.torManager.onionAddress.value.ifBlank {
+                                            service.identityManager.loadOnionAddress()
+                                        }
+                                    )
+                                } ?: ""
+                            }
                             com.astramesh.app.ui.screens.ProfileScreen(
-                                navController = navController
+                                navController = navController,
+                                viewModel = profileViewModel,
+                                identityQrPayload = identityQrPayload
                             )
                         }
                         composable("main") {
@@ -232,6 +279,17 @@ class MainActivity : ComponentActivity() {
                         }
                         }
                     }
+
+                    meshService?.let { activeService ->
+                        val callState by activeService.callManager.stateStore.state.collectAsState()
+                        CallOverlay(
+                            state = callState,
+                            onAccept = { activeService.callManager.acceptIncomingCall() },
+                            onReject = { activeService.callManager.rejectIncomingCall() },
+                            onEnd = { activeService.callManager.endCall() },
+                            onDismissEnded = { activeService.callManager.stateStore.reset() }
+                        )
+                    }
                 }
             }
         }
@@ -271,5 +329,81 @@ class MainActivity : ComponentActivity() {
         }
         // NOTE: We do NOT stop AstraMeshService here.
         // The service keeps running in the background so Tor stays alive.
+    }
+}
+
+@Composable
+private fun CallOverlay(
+    state: CallUiState,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+    onEnd: () -> Unit,
+    onDismissEnded: () -> Unit
+) {
+    when (state) {
+        CallUiState.Idle -> Unit
+        is CallUiState.Ringing -> {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text(if (state.direction == CallDirection.INCOMING) "Incoming audio call" else "Calling...") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(state.peerName)
+                        Text("Encrypted signaling. Audio stream uses WebRTC over the local route.")
+                    }
+                },
+                confirmButton = {
+                    if (state.direction == CallDirection.INCOMING) {
+                        Button(onClick = onAccept) { Text("Accept") }
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = if (state.direction == CallDirection.INCOMING) onReject else onEnd) {
+                        Text(if (state.direction == CallDirection.INCOMING) "Reject" else "Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(24.dp)
+            )
+        }
+        is CallUiState.Connecting -> {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("Connecting audio call") },
+                text = { Text(state.peerName) },
+                confirmButton = {
+                    TextButton(onClick = onEnd) { Text("End") }
+                }
+            )
+        }
+        is CallUiState.Connected -> {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("Audio call connected") },
+                text = { Text(state.peerName) },
+                confirmButton = {
+                    Button(onClick = onEnd) { Text("End call") }
+                }
+            )
+        }
+        is CallUiState.Ended -> {
+            AlertDialog(
+                onDismissRequest = onDismissEnded,
+                title = { Text("Call ended") },
+                text = { Text(state.reason) },
+                confirmButton = {
+                    TextButton(onClick = onDismissEnded) { Text("Close") }
+                }
+            )
+        }
+        is CallUiState.Unavailable -> {
+            AlertDialog(
+                onDismissRequest = onDismissEnded,
+                title = { Text("Call unavailable") },
+                text = { Text(state.reason) },
+                confirmButton = {
+                    TextButton(onClick = onDismissEnded) { Text("Close") }
+                }
+            )
+        }
     }
 }

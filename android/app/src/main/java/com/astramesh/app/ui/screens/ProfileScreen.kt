@@ -1,10 +1,12 @@
 package com.astramesh.app.ui.screens
 
 import android.net.Uri
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.QrCode
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,22 +23,32 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.astramesh.app.ui.theme.AstraTheme
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
     navController: NavController,
-    viewModel: ProfileViewModel = viewModel()
+    viewModel: ProfileViewModel = viewModel(),
+    identityQrPayload: String = ""
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val clipboard = LocalClipboardManager.current
     
     var cropTargetUri by remember { mutableStateOf<Uri?>(null) }
+    var showQrDialog by remember { mutableStateOf(false) }
     
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -191,9 +204,82 @@ fun ProfileScreen(
                 headlineContent = { Text("Identity QR Code") },
                 supportingContent = { Text("Scan to add contact") },
                 leadingContent = { Icon(Icons.Rounded.QrCode, contentDescription = null) },
-                modifier = Modifier.clickable { }
+                modifier = Modifier.clickable { showQrDialog = true }
             )
         }
     }
+
+    if (showQrDialog) {
+        val qrBitmap = remember(identityQrPayload) {
+            if (identityQrPayload.isBlank()) null else generateQrBitmap(identityQrPayload)
+        }
+        AlertDialog(
+            onDismissRequest = { showQrDialog = false },
+            title = { Text("Identity QR Code") },
+            text = {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(AstraTheme.spacing.standard)
+                ) {
+                    if (qrBitmap != null) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "AstraMesh identity QR code",
+                            modifier = Modifier
+                                .size(260.dp)
+                                .clip(MaterialTheme.shapes.medium)
+                                .background(androidx.compose.ui.graphics.Color.White)
+                                .padding(12.dp)
+                        )
+                    } else {
+                        Text("Identity is not ready yet. Reopen this screen after setup finishes.")
+                    }
+                    if (identityQrPayload.isNotBlank()) {
+                        Text(
+                            identityQrPayload,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (identityQrPayload.isNotBlank()) {
+                            clipboard.setText(AnnotatedString(identityQrPayload))
+                        }
+                    }
+                ) {
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Copy")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showQrDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
 }
 
+private fun generateQrBitmap(payload: String, size: Int = 720): Bitmap {
+    val hints = mapOf(
+        EncodeHintType.CHARACTER_SET to "UTF-8",
+        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+        EncodeHintType.MARGIN to 2
+    )
+    val matrix = QRCodeWriter().encode(payload, BarcodeFormat.QR_CODE, size, size, hints)
+    val pixels = IntArray(size * size)
+    for (y in 0 until size) {
+        val offset = y * size
+        for (x in 0 until size) {
+            pixels[offset + x] = if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        }
+    }
+    return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
+        setPixels(pixels, 0, size, 0, 0, size, size)
+    }
+}

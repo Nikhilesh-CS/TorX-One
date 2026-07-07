@@ -4,9 +4,6 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import androidx.work.workDataOf
 import com.astramesh.app.crypto.CryptoManager
 import com.astramesh.app.data.AppDatabase
 import com.astramesh.app.data.MediaTransferEntity
@@ -14,7 +11,14 @@ import com.astramesh.app.data.MessageEntity
 import com.astramesh.app.data.TransferStatus
 import com.astramesh.app.network.MessageRouter
 import com.astramesh.app.network.Transport
+import com.astramesh.app.realtime.AstraFastLane
+import com.astramesh.app.realtime.RealtimeSendResult
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -38,18 +42,22 @@ import kotlin.math.ceil
 class MediaTransferManager(
     private val context: Context,
     private val db: AppDatabase,
-    private val messageRouter: MessageRouter
+    private val messageRouter: MessageRouter,
+    private val fastLane: AstraFastLane? = null
 ) {
     companion object {
         private const val TAG = "MediaTransferManager"
-        const val CHUNK_SIZE_BT_TOR = 32 * 1024 // 32 KB
-        const val CHUNK_SIZE_WIFI = 512 * 1024 // 512 KB
+        // Payloads are JSON -> base64 -> encrypted -> hex encoded, then wrapped in JSON again.
+        // Keep plaintext chunks well below MeshProtocol.MAX_FRAME_BYTES after expansion.
+        const val CHUNK_SIZE_BT_TOR = 12 * 1024
+        const val CHUNK_SIZE_WIFI = 12 * 1024
     }
 
     private val _ackFlow = MutableSharedFlow<Pair<String, Int>>(extraBufferCapacity = 100)
     val ackFlow: SharedFlow<Pair<String, Int>> = _ackFlow
 
     private val receivedChunksMap = ConcurrentHashMap<String, MutableSet<Int>>()
+    private val transferScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun queueMediaTransfer(
         contactKey: String,
@@ -106,20 +114,21 @@ class MediaTransferManager(
             )
         )
 
-        // 5. Enqueue WorkManager Job
-        startTransferWorker(messageId, forceWifiDirect)
+        startTransferJob(messageId, forceWifiDirect)
 
         return@withContext messageId
     }
 
-    private fun startTransferWorker(messageId: String, forceWifiDirect: Boolean) {
-        val workRequest = OneTimeWorkRequestBuilder<MediaTransferWorker>()
-            .setInputData(workDataOf(
-                MediaTransferWorker.KEY_MESSAGE_ID to messageId,
-                MediaTransferWorker.KEY_USE_WIFI_DIRECT to forceWifiDirect
-            ))
-            .build()
-        WorkManager.getInstance(context).enqueue(workRequest)
+    private fun startTransferJob(messageId: String, forceWifiDirect: Boolean) {
+        transferScope.launch {
+            runCatching {
+                sendQueuedTransfer(messageId, forceWifiDirect)
+            }.onFailure { e ->
+                Log.e(TAG, "Transfer job crashed for $messageId", e)
+                db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+                db.messageDao().updateMessageStatus(messageId, "pending")
+            }
+        }
     }
 
     private fun copyToSandbox(uri: Uri, messageType: String, messageId: String): File? {
@@ -200,6 +209,178 @@ class MediaTransferManager(
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private suspend fun sendQueuedTransfer(messageId: String, forceWifiDirect: Boolean) = withContext(Dispatchers.IO) {
+        val message = db.messageDao().getMessageById(messageId) ?: return@withContext
+        val transfer = db.mediaTransferDao().getTransferSync(messageId) ?: return@withContext
+        val contact = db.contactDao().getContact(message.contactKey) ?: return@withContext
+        val localPath = message.localUri ?: return@withContext
+        val file = File(localPath)
+        if (!file.exists()) {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.FAILED.name, System.currentTimeMillis())
+            db.messageDao().updateMessageStatus(messageId, "failed")
+            return@withContext
+        }
+
+        val transport = messageRouter.getBestTransport(contact)
+        if (transport == Transport.FAILED) {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+            return@withContext
+        }
+
+        db.mediaTransferDao().updateStatus(messageId, TransferStatus.SENDING.name, System.currentTimeMillis())
+        db.mediaTransferDao().updateTransport(messageId, transport.name, System.currentTimeMillis())
+        db.messageDao().updateTransferProgress(messageId, 0)
+
+        val fastLaneResult = tryFastLaneTransfer(contact, file)
+        if (fastLaneResult is RealtimeSendResult.Sent) {
+            db.mediaTransferDao().updateProgress(messageId, 1, TransferStatus.COMPLETED.name, System.currentTimeMillis())
+            db.messageDao().updateTransferProgress(messageId, 100)
+            db.messageDao().updateMessageStatus(messageId, "sent", "FAST_LANE_${fastLaneResult.engineType.name}")
+            Log.i(TAG, "Fast Lane media transfer completed via ${fastLaneResult.engineType}")
+            return@withContext
+        }
+
+        val finalChunkSize = if (forceWifiDirect) CHUNK_SIZE_WIFI else CHUNK_SIZE_BT_TOR
+        val windowSize = if (transport == Transport.TOR) 3 else 5
+        val totalChunks = kotlin.math.max(1, ceil(file.length().toDouble() / finalChunkSize).toInt())
+        if (transfer.totalChunks != totalChunks) {
+            db.openHelper.writableDatabase.execSQL(
+                "UPDATE media_transfers SET totalChunks = ? WHERE messageId = ?",
+                arrayOf(totalChunks, messageId)
+            )
+        }
+
+        Log.i(TAG, "Transfer Started transport=${transport.name} file=${file.length()} chunk=$finalChunkSize total=$totalChunks")
+
+        val metadataPayload = JSONObject().apply {
+            put("msgId", messageId)
+            put("mimeType", message.mimeType)
+            put("messageType", message.messageType)
+            put("fileName", message.fileName)
+            put("checksum", message.checksum)
+            put("fileSize", message.fileSize)
+            put("totalChunks", totalChunks)
+        }.toString()
+
+        var metadataAckReceived = false
+        repeat(4) { attempt ->
+            val result = messageRouter.sendRawPayload(message.contactKey, metadataPayload, com.astramesh.app.network.MeshProtocol.TYPE_MEDIA_OFFER)
+            if (!result.success) {
+                Log.w(TAG, "Media offer send failed attempt=${attempt + 1}: ${result.error}")
+                kotlinx.coroutines.delay(1000)
+                return@repeat
+            }
+            try {
+                kotlinx.coroutines.withTimeout(15_000) {
+                    ackFlow.first { it.first == messageId && it.second == -1 }
+                }
+                metadataAckReceived = true
+                return@repeat
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                Log.w(TAG, "Timeout waiting for media offer ACK attempt=${attempt + 1}")
+            }
+        }
+        if (!metadataAckReceived) {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+            return@withContext
+        }
+
+        RandomAccessFile(file, "r").use { raf ->
+            var chunkIndex = transfer.completedChunks.coerceAtMost(totalChunks)
+            while (chunkIndex < totalChunks) {
+                val batchSize = minOf(windowSize, totalChunks - chunkIndex)
+                val unackedChunks = mutableSetOf<Int>().apply {
+                    repeat(batchSize) { add(chunkIndex + it) }
+                }
+                var attempts = 0
+                while (unackedChunks.isNotEmpty() && attempts < 5) {
+                    attempts++
+                    val sends = mutableListOf<Deferred<Boolean>>()
+                    unackedChunks.toList().forEach { currentIndex ->
+                        sends.add(async(Dispatchers.Default) {
+                            val offset = currentIndex.toLong() * finalChunkSize
+                            val buffer = ByteArray(finalChunkSize)
+                            val actualChunk = synchronized(raf) {
+                                raf.seek(offset)
+                                val bytesRead = raf.read(buffer)
+                                if (bytesRead == finalChunkSize) buffer else buffer.copyOf(maxOf(0, bytesRead))
+                            }
+                            val payload = JSONObject().apply {
+                                put("msgId", messageId)
+                                put("chunkIndex", currentIndex)
+                                put("offset", offset)
+                                put("data", Base64.getEncoder().encodeToString(actualChunk))
+                            }.toString()
+                            messageRouter.sendRawPayload(message.contactKey, payload, com.astramesh.app.network.MeshProtocol.TYPE_MEDIA_CHUNK).success
+                        })
+                    }
+
+                    if (sends.map { it.await() }.any { !it }) {
+                        kotlinx.coroutines.delay(1000)
+                        continue
+                    }
+
+                    try {
+                        kotlinx.coroutines.withTimeout(20_000) {
+                            ackFlow.takeWhile { unackedChunks.isNotEmpty() }.collect { ack ->
+                                if (ack.first == messageId) unackedChunks.remove(ack.second)
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                        Log.w(TAG, "Timeout waiting for media chunk ACKs: $unackedChunks")
+                    }
+                }
+
+                if (unackedChunks.isNotEmpty()) {
+                    db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+                    return@withContext
+                }
+
+                chunkIndex += batchSize
+                val progressPercent = ((chunkIndex.toFloat() / totalChunks) * 100).toInt().coerceIn(0, 100)
+                db.mediaTransferDao().updateProgress(messageId, chunkIndex, TransferStatus.SENDING.name, System.currentTimeMillis())
+                db.messageDao().updateTransferProgress(messageId, progressPercent)
+            }
+        }
+
+        var completeAckReceived = false
+        repeat(5) {
+            try {
+                kotlinx.coroutines.withTimeout(20_000) {
+                    ackFlow.first { it.first == messageId && it.second == -2 }
+                }
+                completeAckReceived = true
+                return@repeat
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                Log.w(TAG, "Timeout waiting for media COMPLETE ACK")
+            }
+        }
+
+        if (completeAckReceived) {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.COMPLETED.name, System.currentTimeMillis())
+            db.messageDao().updateMessageStatus(messageId, "sent")
+            Log.i(TAG, "Transfer Completed messageId=$messageId")
+        } else {
+            db.mediaTransferDao().updateStatus(messageId, TransferStatus.RETRYING.name, System.currentTimeMillis())
+        }
+    }
+
+    private suspend fun tryFastLaneTransfer(contact: com.astramesh.app.data.ContactEntity, file: File): RealtimeSendResult {
+        val lane = fastLane ?: return RealtimeSendResult.Unavailable("Fast Lane not configured.")
+        if (!lane.canAttempt(contact)) {
+            return RealtimeSendResult.Unavailable("No realtime DataChannel is available.")
+        }
+        if (file.length() > Int.MAX_VALUE) {
+            return RealtimeSendResult.Unavailable("File too large for current DataChannel staging buffer.")
+        }
+        return runCatching {
+            lane.trySendMedia(contact, file.readBytes())
+        }.getOrElse { e ->
+            Log.w(TAG, "Fast Lane unavailable; falling back to encrypted chunks", e)
+            RealtimeSendResult.Failed(e.message ?: "Fast Lane failed")
+        }
     }
 
     fun handleMediaPacket(packetType: String, jsonString: String, senderKey: String) {

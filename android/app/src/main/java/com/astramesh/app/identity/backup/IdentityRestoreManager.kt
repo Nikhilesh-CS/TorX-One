@@ -108,15 +108,26 @@ class IdentityRestoreManager(private val context: Context) {
                     }
                 }
 
+                val restoredBio = runCatching { dto.bio }.getOrNull().orEmpty()
+                val restoredStatus = runCatching { dto.statusMessage }.getOrNull().orEmpty()
+                val restoredProfileHash = runCatching { dto.profileHash }
+                    .getOrNull()
+                    .orEmpty()
+                    .ifBlank { "${identity.name}:${System.currentTimeMillis()}" }
+                val restoredProfileVersion = runCatching { dto.profileVersion }.getOrDefault(1).coerceAtLeast(1)
+                val restoredUpdatedAt = runCatching { dto.lastUpdatedAt }.getOrDefault(0L)
+                    .takeIf { it > 0L }
+                    ?: System.currentTimeMillis()
+
                 val restoredProfile = com.astramesh.app.data.ProfileEntity(
                     ownerKey = "LOCAL_USER",
                     name = identity.name,
-                    bio = dto.bio,
-                    statusMessage = dto.statusMessage,
+                    bio = restoredBio,
+                    statusMessage = restoredStatus,
                     avatarHash = dto.avatarHash,
-                    profileHash = dto.profileHash,
-                    profileVersion = dto.profileVersion,
-                    lastUpdatedAt = dto.lastUpdatedAt,
+                    profileHash = restoredProfileHash,
+                    profileVersion = restoredProfileVersion,
+                    lastUpdatedAt = restoredUpdatedAt,
                     avatarLocalPath = localAvatarPath
                 )
                 profileDao.insertProfile(restoredProfile)

@@ -49,9 +49,15 @@ interface MediaTransferDao {
     @Query("UPDATE media_transfers SET completedChunks = :completedChunks, status = :status, lastUpdatedAt = :timestamp WHERE messageId = :messageId")
     fun updateProgress(messageId: String, completedChunks: Int, status: String, timestamp: Long)
 
+    @Query("UPDATE media_transfers SET transport = :transport, lastUpdatedAt = :timestamp WHERE messageId = :messageId")
+    fun updateTransport(messageId: String, transport: String, timestamp: Long)
+
     @Query("UPDATE media_transfers SET status = :status, lastUpdatedAt = :timestamp WHERE messageId = :messageId")
     fun updateStatus(messageId: String, status: String, timestamp: Long)
 
     @Query("DELETE FROM media_transfers WHERE messageId = :messageId")
     fun deleteTransfer(messageId: String)
+
+    @Query("DELETE FROM media_transfers WHERE contactKey = :contactKey")
+    fun deleteTransfersForContact(contactKey: String)
 }

@@ -51,6 +51,9 @@ class MessageRouter(
             MeshProtocol.TYPE_MEDIA_CHUNK,
             MeshProtocol.TYPE_MEDIA_ACK,
             MeshProtocol.TYPE_MEDIA_COMPLETE,
+            MeshProtocol.TYPE_CALL_OFFER,
+            MeshProtocol.TYPE_CALL_ANSWER,
+            MeshProtocol.TYPE_ICE_CANDIDATE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
             MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
@@ -71,6 +74,9 @@ class MessageRouter(
             MeshProtocol.TYPE_MEDIA_CHUNK,
             MeshProtocol.TYPE_MEDIA_ACK,
             MeshProtocol.TYPE_MEDIA_COMPLETE,
+            MeshProtocol.TYPE_CALL_OFFER,
+            MeshProtocol.TYPE_CALL_ANSWER,
+            MeshProtocol.TYPE_ICE_CANDIDATE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
             MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
@@ -174,7 +180,13 @@ class MessageRouter(
         // 2. Try Nearby relay (flood to all connected peers)
         if (connected.isNotEmpty()) {
             Log.d(TAG, "[NEARBY] Relaying to ${connected.size} peers")
-            val wire = MeshProtocol.encodeRelayMessage(payload, messageId = messageId, senderOnion = myOnionAddress, type = if (messageType == MeshProtocol.TYPE_MSG) MeshProtocol.TYPE_RELAY else messageType)
+            val wire = MeshProtocol.encodeRelayMessage(
+                payload = payload,
+                messageId = messageId,
+                senderOnion = myOnionAddress,
+                type = MeshProtocol.TYPE_RELAY,
+                innerType = messageType
+            )
             connected.forEach { nearbyManager.sendRaw(it, wire) }
             return SendResult(true, Transport.NEARBY_RELAY)
         }
@@ -455,17 +467,18 @@ class MessageRouter(
         val payload = MeshProtocol.parseEncrypted(json) ?: return
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
+        val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
         val fingerprint = "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}"
 
         if (dest == mySigningKeyHex) {
-            handleEncrypted(json, fromEndpointId, json.optString("type"))
+            handleEncrypted(json, fromEndpointId, innerType)
             return
         }
 
         if (ttl <= 1) return
         if (!rememberRelayFingerprint(fingerprint)) return
 
-        val wire = MeshProtocol.encodeRelayMessage(payload, ttl - 1, messageId, senderOnion)
+        val wire = MeshProtocol.encodeRelayMessage(payload, ttl - 1, messageId, senderOnion, innerType = innerType)
         val connected = nearbyManager.connectedEndpoints.value
         connected.filter { it != fromEndpointId }.forEach { nearbyManager.sendRaw(it, wire) }
     }
@@ -526,6 +539,14 @@ class MessageRouter(
             messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) {
             val service = com.astramesh.app.service.AstraMeshService.getInstance()
             service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey)
+            return
+        }
+
+        if (messageType == MeshProtocol.TYPE_CALL_OFFER ||
+            messageType == MeshProtocol.TYPE_CALL_ANSWER ||
+            messageType == MeshProtocol.TYPE_ICE_CANDIDATE) {
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.callManager?.handleSignal(messageType, plaintext, senderKey)
             return
         }
 

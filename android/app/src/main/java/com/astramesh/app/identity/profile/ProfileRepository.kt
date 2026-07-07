@@ -5,7 +5,10 @@ import com.astramesh.app.data.ProfileDao
 import com.astramesh.app.data.ProfileEntity
 import com.astramesh.app.identity.IdentityManager
 import com.astramesh.app.media.ImageProcessor
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 
 interface ProfileRepository {
     fun getLocalProfile(): Flow<ProfileEntity?>
@@ -24,14 +27,15 @@ class ProfileRepositoryImpl(
     private val localUserKey = "LOCAL_USER"
 
     override fun getLocalProfile(): Flow<ProfileEntity?> {
-        return profileDao.getProfile(localUserKey)
+        return profileDao.getProfile(localUserKey).flowOn(Dispatchers.IO)
     }
 
     override fun getContactProfile(ownerKey: String): Flow<ProfileEntity?> {
-        return profileDao.getProfile(ownerKey)
+        return profileDao.getProfile(ownerKey).flowOn(Dispatchers.IO)
     }
 
     override suspend fun updateLocalProfile(name: String, bio: String, statusMessage: String, avatarUri: Uri?) {
+        withContext(Dispatchers.IO) {
         val currentProfile = profileDao.getProfileSync(localUserKey)
         
         var newAvatarHash = currentProfile?.avatarHash
@@ -66,10 +70,13 @@ class ProfileRepositoryImpl(
         )
 
         profileDao.insertProfile(updatedProfile)
+        }
     }
 
     override suspend fun saveContactProfile(profileEntity: ProfileEntity) {
-        profileDao.insertProfile(profileEntity)
+        withContext(Dispatchers.IO) {
+            profileDao.insertProfile(profileEntity)
+        }
     }
 
     private fun generateProfileHash(name: String, bio: String, status: String): String {
