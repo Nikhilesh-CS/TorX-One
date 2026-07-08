@@ -27,6 +27,8 @@ class PresenceManager(
 ) {
     private val _presence = MutableStateFlow<Map<String, PresenceState>>(emptyMap())
     val presence: StateFlow<Map<String, PresenceState>> = _presence.asStateFlow()
+    private val _lastSeen = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val lastSeen: StateFlow<Map<String, Long>> = _lastSeen.asStateFlow()
 
     private var cleanupJob: Job? = null
 
@@ -59,6 +61,11 @@ class PresenceManager(
                 updatedAt = json.optLong("updatedAt", now),
                 expiresAt = json.optLong("expiresAt", now + 8_000L)
             )
+            _lastSeen.value = _lastSeen.value + (senderKey to state.updatedAt)
+            if (state.activity == "offline") {
+                _presence.value = _presence.value - senderKey
+                return
+            }
             _presence.value = _presence.value + (senderKey to state)
             ensureCleanup()
         }
@@ -70,6 +77,10 @@ class PresenceManager(
             while (isActive) {
                 delay(1_000L)
                 val now = System.currentTimeMillis()
+                val expired = _presence.value.filterValues { it.expiresAt <= now }
+                if (expired.isNotEmpty()) {
+                    _lastSeen.value = _lastSeen.value + expired.mapValues { it.value.updatedAt }
+                }
                 val active = _presence.value.filterValues { it.expiresAt > now }
                 _presence.value = active
                 if (active.isEmpty()) {

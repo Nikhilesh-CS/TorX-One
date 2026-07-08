@@ -59,7 +59,9 @@ class MessageRouter(
             MeshProtocol.TYPE_PRESENCE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
-            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
+            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK,
+            MeshProtocol.TYPE_MUSIC_NOTE,
+            MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(endpointId, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, endpointId) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json, endpointId) }
@@ -84,7 +86,9 @@ class MessageRouter(
             MeshProtocol.TYPE_PRESENCE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
-            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
+            MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK,
+            MeshProtocol.TYPE_MUSIC_NOTE,
+            MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(null, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, null) }
             MeshProtocol.TYPE_READ -> scope.launch(Dispatchers.IO) { handleRead(json, null) }
@@ -267,8 +271,8 @@ class MessageRouter(
             ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
 
         val current = parseReactionMap(target.reactionsJson)
-        val mine = current[actorKey]?.toSet() ?: emptySet()
-        val action = if (mine.contains(emoji)) "remove" else "add"
+        val mine = current[actorKey]?.firstOrNull()
+        val action = if (mine == emoji) "remove" else "set"
         applyReactionToMessage(targetMessageId, actorKey, emoji, action)
 
         val reaction = ReactionOutboxEntity(
@@ -667,6 +671,18 @@ class MessageRouter(
             return
         }
 
+        if (messageType == MeshProtocol.TYPE_MUSIC_NOTE) {
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.musicNoteManager?.handleMusicNotePacket(plaintext, senderKey)
+            return
+        }
+
+        if (messageType == MeshProtocol.TYPE_MUSIC_SYNC) {
+            val service = com.astramesh.app.service.AstraMeshService.getInstance()
+            service?.listenTogetherManager?.handleSyncPacket(plaintext, senderKey)
+            return
+        }
+
         val chatPayload = decodeChatMessagePayload(plaintext)
 
         Log.d(TAG, "[RECV] Message from ${contact.name} (${chatPayload.text.length} chars)")
@@ -674,9 +690,6 @@ class MessageRouter(
         if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
             Log.d(TAG, "[RECV] Duplicate message ignored: $messageId")
             sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-            if (com.astramesh.app.service.ActiveConversationTracker.isActive(senderKey)) {
-                sendReadReceipt(messageId, senderKey)
-            }
             return
         }
 
@@ -689,7 +702,7 @@ class MessageRouter(
                 text = chatPayload.text,
                 timestamp = System.currentTimeMillis(),
                 direction = "received",
-                status = if (isActiveConversation) "read" else "delivered",
+                status = "delivered",
                 replyToId = chatPayload.replyToId,
                 replyToText = chatPayload.replyToText,
                 replyToSender = chatPayload.replyToSender,
@@ -711,9 +724,6 @@ class MessageRouter(
         // Send ACK back to sender
         if (messageId.isNotBlank()) {
             sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-            if (isActiveConversation) {
-                sendReadReceipt(messageId, senderKey)
-            }
         }
     }
 
@@ -784,7 +794,10 @@ class MessageRouter(
                 actorReactions.clear()
                 actorReactions.add(emoji)
             }
-            else -> actorReactions.add(emoji)
+            else -> {
+                actorReactions.clear()
+                actorReactions.add(emoji)
+            }
         }
 
         if (actorReactions.isEmpty()) {

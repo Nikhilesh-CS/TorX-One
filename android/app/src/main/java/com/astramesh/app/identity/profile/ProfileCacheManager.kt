@@ -7,7 +7,7 @@ import kotlinx.coroutines.withContext
 
 interface ProfileCacheManager {
     suspend fun getAvatarFile(ownerKey: String, resolution: String = "original"): File?
-    suspend fun saveAvatarBytes(ownerKey: String, resolution: String, data: ByteArray): File
+    suspend fun saveAvatarBytes(ownerKey: String, resolution: String, data: ByteArray, extension: String = ".webp"): File
     suspend fun clearCache(ownerKey: String)
 }
 
@@ -19,12 +19,15 @@ class ProfileCacheManagerImpl(private val context: Context) : ProfileCacheManage
         }
 
     override suspend fun getAvatarFile(ownerKey: String, resolution: String): File? = withContext(Dispatchers.IO) {
-        val file = File(profileDir, "${ownerKey}_avatar_$resolution.webp")
-        if (file.exists()) file else null
+        profileDir
+            .listFiles { _, name -> name.startsWith("${ownerKey}_avatar_$resolution.") }
+            ?.firstOrNull()
     }
 
-    override suspend fun saveAvatarBytes(ownerKey: String, resolution: String, data: ByteArray): File = withContext(Dispatchers.IO) {
-        val file = File(profileDir, "${ownerKey}_avatar_$resolution.webp")
+    override suspend fun saveAvatarBytes(ownerKey: String, resolution: String, data: ByteArray, extension: String): File = withContext(Dispatchers.IO) {
+        val safeExtension = extension.takeIf { it.startsWith(".") && it.length <= 8 } ?: ".webp"
+        profileDir.listFiles { _, name -> name.startsWith("${ownerKey}_avatar_$resolution.") }?.forEach { it.delete() }
+        val file = File(profileDir, "${ownerKey}_avatar_$resolution$safeExtension")
         file.writeBytes(data)
         file
     }

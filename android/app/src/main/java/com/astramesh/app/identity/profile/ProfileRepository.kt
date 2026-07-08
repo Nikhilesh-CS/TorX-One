@@ -45,13 +45,18 @@ class ProfileRepositoryImpl(
             val processed = imageProcessor.processAvatar(avatarUri).getOrThrow()
             newAvatarHash = processed.hash
             
-            // Save multi-res webp to disk cache
-            profileCacheManager.saveAvatarBytes(localUserKey, "original", processed.originalBytes)
+            // Preserve the original bytes for profile viewing and sync; only derived sizes are compressed.
+            val originalFile = profileCacheManager.saveAvatarBytes(
+                localUserKey,
+                "original",
+                processed.originalBytes,
+                processed.originalExtension
+            )
             profileCacheManager.saveAvatarBytes(localUserKey, "512", processed.size512Bytes)
             profileCacheManager.saveAvatarBytes(localUserKey, "256", processed.size256Bytes)
-            val thumbFile = profileCacheManager.saveAvatarBytes(localUserKey, "thumb", processed.thumbBytes)
+            profileCacheManager.saveAvatarBytes(localUserKey, "thumb", processed.thumbBytes)
             
-            newAvatarLocalPath = thumbFile.absolutePath
+            newAvatarLocalPath = originalFile.absolutePath
         }
 
         val profileHash = generateProfileHash(name, bio, statusMessage)

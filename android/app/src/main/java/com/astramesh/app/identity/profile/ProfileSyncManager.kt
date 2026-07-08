@@ -84,7 +84,7 @@ class ProfileSyncManager(
                 if (file.exists()) {
                     val bytes = file.readBytes()
                     val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
-                    sendProfilePhotoChunk(senderKey, requestedHash, b64)
+                    sendProfilePhotoChunk(senderKey, requestedHash, b64, ".${file.extension.ifBlank { "jpg" }}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to read local avatar for sending", e)
@@ -95,6 +95,7 @@ class ProfileSyncManager(
     private suspend fun handleProfilePhotoChunk(json: JSONObject, senderKey: String) {
         val avatarHash = json.optString("avatarHash", "")
         val dataB64 = json.optString("data", "")
+        val extension = json.optString("extension", ".jpg")
         
         if (avatarHash.isBlank() || dataB64.isBlank()) return
 
@@ -103,7 +104,7 @@ class ProfileSyncManager(
             try {
                 val bytes = java.util.Base64.getDecoder().decode(dataB64)
                 val cacheManager = ProfileCacheManagerImpl(context)
-                val file = cacheManager.saveAvatarBytes(senderKey, "thumb", bytes)
+                val file = cacheManager.saveAvatarBytes(senderKey, "original", bytes, extension)
 
                 // Update the database with the local path
                 val updatedProfile = profile.copy(avatarLocalPath = file.absolutePath)
@@ -155,9 +156,10 @@ class ProfileSyncManager(
         messageRouter.sendRawPayload(targetContactKey, json.toString(), MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO)
     }
 
-    private suspend fun sendProfilePhotoChunk(targetContactKey: String, avatarHash: String, dataB64: String) {
+    private suspend fun sendProfilePhotoChunk(targetContactKey: String, avatarHash: String, dataB64: String, extension: String) {
         val json = JSONObject()
             .put("avatarHash", avatarHash)
+            .put("extension", extension)
             .put("data", dataB64)
         messageRouter.sendRawPayload(targetContactKey, json.toString(), MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK)
     }

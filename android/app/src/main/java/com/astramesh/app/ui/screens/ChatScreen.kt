@@ -16,9 +16,14 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -209,6 +214,7 @@ fun ChatScreen(
     val contactOnion by viewModel.contactOnion.collectAsStateWithLifecycle()
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsStateWithLifecycle()
     val messages by viewModel.conversationEngine.messages.collectAsStateWithLifecycle()
+    val unreadCount by viewModel.unreadCount.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchEngine.searchQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchEngine.searchResults.collectAsStateWithLifecycle()
@@ -217,14 +223,24 @@ fun ChatScreen(
         ?.presenceManager
         ?.presence
         ?: kotlinx.coroutines.flow.MutableStateFlow<Map<String, com.astramesh.app.presence.PresenceState>>(emptyMap())).collectAsStateWithLifecycle()
-    val livePresenceLabel = presenceStates[contactKey]?.label
+    val lastSeenStates by (com.astramesh.app.service.AstraMeshService.getInstance()
+        ?.presenceManager
+        ?.lastSeen
+        ?: kotlinx.coroutines.flow.MutableStateFlow<Map<String, Long>>(emptyMap())).collectAsStateWithLifecycle()
+    val livePresenceLabel = presenceStates[contactKey]?.label ?: lastSeenStates[contactKey]?.let { formatLastSeenLabel(it) }
+    val conversationPresence = presenceStates[contactKey]
+    val typingLabel = conversationPresence?.label?.takeIf { conversationPresence.activity == "typing" }
 
     val listState = rememberLazyListState()
     val smartScrollEngine = remember(listState) { SmartScrollEngine(listState, scope) }
+    val isAtNewest by remember {
+        derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 80 }
+    }
 
     var text by remember { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<MessagePayload?>(null) }
     var reactionTarget by remember { mutableStateOf<MessagePayload?>(null) }
+    var reactionDetailsTarget by remember { mutableStateOf<MessagePayload?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var searchMode by remember { mutableStateOf(false) }
     var highlightedId by remember { mutableStateOf<String?>(null) }
@@ -232,6 +248,8 @@ fun ChatScreen(
     var showVoiceRecorder by remember { mutableStateOf(false) }
     var structuredAttachment by remember { mutableStateOf<String?>(null) }
     var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCameraAction by remember { mutableStateOf<String?>(null) }
     var pendingAudioAction by remember { mutableStateOf<String?>(null) }
 
     val reversedMessages = remember(messages) { messages.asReversed() }
@@ -257,9 +275,7 @@ fun ChatScreen(
 
     fun queueMediaUri(uri: Uri, mimeType: String, messageType: String) {
         scope.launch {
-            com.astramesh.app.service.AstraMeshService.getInstance()
-                ?.presenceManager
-                ?.sendPresence(contactKey, "uploading", "Uploading ${messageType.lowercase()}...")
+            sendPresence(contactKey, "uploading", "Uploading ${messageType.lowercase()}...")
             val queuedId = mediaTransferManager.queueMediaTransfer(contactKey, uri, mimeType, messageType)
             Toast.makeText(context, if (queuedId != null) "$messageType queued" else "Could not send $messageType", Toast.LENGTH_SHORT).show()
         }
@@ -272,12 +288,32 @@ fun ChatScreen(
         }
         pendingCameraUri = null
     }
+    val videoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { success ->
+        val uri = pendingVideoUri
+        if (success && uri != null) {
+            queueMediaUri(uri, "video/mp4", "VIDEO")
+        }
+        pendingVideoUri = null
+    }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            val uri = createTempMediaUri(context, "camera", ".jpg")
-            pendingCameraUri = uri
-            cameraLauncher.launch(uri)
+            when (pendingCameraAction) {
+                "video" -> {
+                    sendPresence(contactKey, "recording_video", "Recording video...")
+                    val uri = createTempMediaUri(context, "video", ".mp4")
+                    pendingVideoUri = uri
+                    videoLauncher.launch(uri)
+                }
+                else -> {
+                    sendPresence(contactKey, "taking_photo", "Taking photo...")
+                    val uri = createTempMediaUri(context, "camera", ".jpg")
+                    pendingCameraUri = uri
+                    cameraLauncher.launch(uri)
+                }
+            }
+            pendingCameraAction = null
         } else {
+            pendingCameraAction = null
             Toast.makeText(context, "Camera permission denied", Toast.LENGTH_SHORT).show()
         }
     }
@@ -290,6 +326,7 @@ fun ChatScreen(
         }
         when (action) {
             "call" -> {
+                sendPresence(contactKey, "in_call", "In call", ttlMs = 30_000L)
                 val service = com.astramesh.app.service.AstraMeshService.getInstance()
                 service?.callManager?.startAudioCall(contactKey)
                     ?: Toast.makeText(context, "Call service not ready", Toast.LENGTH_SHORT).show()
@@ -309,6 +346,12 @@ fun ChatScreen(
         val lastMessage = messages.lastOrNull()
         if (lastMessage != null && !searchMode) {
             smartScrollEngine.onNewMessageArrived(lastMessage.senderId == "me")
+        }
+    }
+
+    LaunchedEffect(isAtNewest, unreadCount, messages.size) {
+        if (isAtNewest && unreadCount > 0) {
+            viewModel.markVisibleMessagesRead()
         }
     }
 
@@ -334,18 +377,27 @@ fun ChatScreen(
         if (text.isNotBlank()) {
             delay(450)
             if (text.isNotBlank()) {
-                com.astramesh.app.service.AstraMeshService.getInstance()
-                    ?.presenceManager
-                    ?.sendPresence(contactKey, "typing", "Typing...")
+                sendPresence(contactKey, "typing", "Typing...")
             }
         }
     }
 
     LaunchedEffect(showVoiceRecorder) {
         if (showVoiceRecorder) {
-            com.astramesh.app.service.AstraMeshService.getInstance()
-                ?.presenceManager
-                ?.sendPresence(contactKey, "recording_voice", "Recording voice...")
+            sendPresence(contactKey, "recording_voice", "Recording voice...")
+        }
+    }
+
+    LaunchedEffect(contactKey) {
+        while (true) {
+            sendPresence(contactKey, "online", "Online", ttlMs = 30_000L)
+            delay(20_000L)
+        }
+    }
+
+    DisposableEffect(contactKey) {
+        onDispose {
+            sendPresence(contactKey, "offline", "Last seen just now", ttlMs = 1_000L)
         }
     }
 
@@ -396,6 +448,7 @@ fun ChatScreen(
                 },
                 onVoiceCall = {
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        sendPresence(contactKey, "in_call", "In call", ttlMs = 30_000L)
                         val service = com.astramesh.app.service.AstraMeshService.getInstance()
                         service?.callManager?.startAudioCall(contactKey)
                             ?: Toast.makeText(context, "Call service not ready", Toast.LENGTH_SHORT).show()
@@ -405,6 +458,7 @@ fun ChatScreen(
                     }
                 },
                 onVideoCall = {
+                    sendPresence(contactKey, "in_video_call", "In video call", ttlMs = 30_000L)
                     Toast.makeText(context, "Audio call first. Video layer will be added after audio is stable.", Toast.LENGTH_LONG).show()
                 }
             )
@@ -418,10 +472,12 @@ fun ChatScreen(
                 onOpenAttachmentSheet = { showAttachmentSheet = true },
                 onCamera = {
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        sendPresence(contactKey, "taking_photo", "Taking photo...")
                         val uri = createTempMediaUri(context, "camera", ".jpg")
                         pendingCameraUri = uri
                         cameraLauncher.launch(uri)
                     } else {
+                        pendingCameraAction = "photo"
                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 },
@@ -465,6 +521,7 @@ fun ChatScreen(
                         listState = listState,
                         selectedIds = selectedIds,
                         highlightedId = highlightedId,
+                        typingLabel = typingLabel,
                         onSelectToggle = { message ->
                             selectedIds = if (selectedIds.contains(message.id)) {
                                 selectedIds - message.id
@@ -474,6 +531,7 @@ fun ChatScreen(
                         },
                         onReply = { replyTo = it },
                         onLongPress = { reactionTarget = it },
+                        onReactionDetails = { reactionDetailsTarget = it },
                         onReplyClick = { replyId ->
                             val index = reversedMessages.indexOfFirst { it.id == replyId }
                             if (index >= 0) {
@@ -488,6 +546,9 @@ fun ChatScreen(
                                 viewModel.sendMessage(failed.text, failed.replyToId)
                                 Toast.makeText(context, "Retry queued", Toast.LENGTH_SHORT).show()
                             }
+                        },
+                        onMediaPresence = { activity, label ->
+                            sendPresence(contactKey, activity, label)
                         }
                     )
                 }
@@ -503,12 +564,46 @@ fun ChatScreen(
                     .padding(18.dp)
             ) {
                 FloatingActionButton(
-                    onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                    onClick = {
+                        scope.launch {
+                            listState.animateScrollToItem(0)
+                            viewModel.markVisibleMessagesRead()
+                        }
+                    },
                     containerColor = MaterialTheme.colorScheme.surface,
                     contentColor = MaterialTheme.colorScheme.primary,
                     shape = CircleShape
                 ) {
                     Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Jump to latest")
+                }
+            }
+            AnimatedVisibility(
+                visible = unreadCount > 0 && !isAtNewest,
+                enter = slideInVertically { it / 2 } + fadeIn(),
+                exit = slideOutVertically { it / 2 } + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 18.dp)
+            ) {
+                Surface(
+                    onClick = {
+                        scope.launch {
+                            listState.animateScrollToItem(0)
+                            viewModel.markVisibleMessagesRead()
+                        }
+                    },
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    Text(
+                        text = if (unreadCount == 1) "1 New Message" else "$unreadCount New Messages",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -525,11 +620,27 @@ fun ChatScreen(
         )
     }
 
+    reactionDetailsTarget?.let { target ->
+        ReactionDetailsDialog(
+            message = target,
+            contactKey = contactKey,
+            contactName = contactName,
+            onDismiss = { reactionDetailsTarget = null }
+        )
+    }
+
     if (showAttachmentSheet) {
         AttachmentSheet(
             onDismiss = { showAttachmentSheet = false },
-            onPick = { mimeType ->
+            onPick = { title, mimeType ->
                 showAttachmentSheet = false
+                when (title) {
+                    "GIF" -> sendPresence(contactKey, "choosing_gif", "Choosing GIF...")
+                    "Sticker" -> sendPresence(contactKey, "choosing_sticker", "Choosing sticker...")
+                    "Gallery" -> sendPresence(contactKey, "choosing_media", "Choosing media...")
+                    "Audio" -> sendPresence(contactKey, "choosing_audio", "Choosing audio...")
+                    "Document", "Mesh File" -> sendPresence(contactKey, "choosing_file", "Choosing file...")
+                }
                 attachmentPicker.launch(mimeType)
             },
             onAction = { title ->
@@ -537,10 +648,23 @@ fun ChatScreen(
                 when (title) {
                     "Camera" -> {
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            sendPresence(contactKey, "taking_photo", "Taking photo...")
                             val uri = createTempMediaUri(context, "camera", ".jpg")
                             pendingCameraUri = uri
                             cameraLauncher.launch(uri)
                         } else {
+                            pendingCameraAction = "photo"
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    }
+                    "Record Video" -> {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            sendPresence(contactKey, "recording_video", "Recording video...")
+                            val uri = createTempMediaUri(context, "video", ".mp4")
+                            pendingVideoUri = uri
+                            videoLauncher.launch(uri)
+                        } else {
+                            pendingCameraAction = "video"
                             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
                     }
@@ -553,6 +677,7 @@ fun ChatScreen(
                         }
                     }
                     "Location" -> {
+                        sendPresence(contactKey, "sharing_location", "Sharing location...")
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                             sendCurrentLocation(context, viewModel)
                         } else {
@@ -794,11 +919,14 @@ private fun MessageTimeline(
     listState: androidx.compose.foundation.lazy.LazyListState,
     selectedIds: Set<String>,
     highlightedId: String?,
+    typingLabel: String?,
     onSelectToggle: (MessagePayload) -> Unit,
     onReply: (MessagePayload) -> Unit,
     onLongPress: (MessagePayload) -> Unit,
+    onReactionDetails: (MessagePayload) -> Unit,
     onReplyClick: (String) -> Unit,
-    onFailedTap: (MessagePayload) -> Unit
+    onFailedTap: (MessagePayload) -> Unit,
+    onMediaPresence: (String, String) -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("MMM d, yyyy", Locale.getDefault()) }
     LazyColumn(
@@ -807,6 +935,11 @@ private fun MessageTimeline(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 16.dp)
     ) {
+        if (typingLabel != null) {
+            item(key = "typing_indicator") {
+                TypingIndicatorBubble(label = typingLabel)
+            }
+        }
         itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
             val nextOlder = messages.getOrNull(index + 1)
             val nextNewer = messages.getOrNull(index - 1)
@@ -832,8 +965,10 @@ private fun MessageTimeline(
                     onSelectToggle = { onSelectToggle(message) },
                     onReply = { onReply(message) },
                     onLongPress = { onLongPress(message) },
+                    onReactionDetails = { onReactionDetails(message) },
                     onReplyClick = onReplyClick,
-                    onFailedTap = { onFailedTap(message) }
+                    onFailedTap = { onFailedTap(message) },
+                    onMediaPresence = onMediaPresence
                 )
             }
         }
@@ -853,8 +988,10 @@ private fun SwipeReplyMessage(
     onSelectToggle: () -> Unit,
     onReply: () -> Unit,
     onLongPress: () -> Unit,
+    onReactionDetails: () -> Unit,
     onReplyClick: (String) -> Unit,
-    onFailedTap: () -> Unit
+    onFailedTap: () -> Unit,
+    onMediaPresence: (String, String) -> Unit
 ) {
     val isMine = message.senderId == "me"
     val scope = rememberCoroutineScope()
@@ -919,7 +1056,9 @@ private fun SwipeReplyMessage(
                 if (message.lifecycleState == MessageLifecycleState.FAILED) onFailedTap() else onSelectToggle()
             },
             onLongPress = onLongPress,
+            onReactionDetails = onReactionDetails,
             onReplyClick = onReplyClick,
+            onMediaPresence = onMediaPresence,
             modifier = Modifier.offset { IntOffset(dragOffset.value.roundToInt(), 0) }
         )
     }
@@ -937,7 +1076,9 @@ private fun MessageBubble(
     isHighlighted: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
+    onReactionDetails: () -> Unit,
     onReplyClick: (String) -> Unit,
+    onMediaPresence: (String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val config = LocalConfiguration.current
@@ -1002,7 +1143,13 @@ private fun MessageBubble(
                         Spacer(Modifier.height(7.dp))
                     }
                     if (message.hasAttachments) {
-                        MediaContent(message = message, isSent = isMine)
+                        MediaContent(
+                            message = message,
+                            isSent = isMine,
+                            onPresence = { activity, label ->
+                                if (!isMine) onMediaPresence(activity, label)
+                            }
+                        )
                         if (message.text.isNotBlank() && !message.text.startsWith("Media Message")) {
                             Spacer(Modifier.height(8.dp))
                         }
@@ -1037,7 +1184,7 @@ private fun MessageBubble(
                 }
             }
             if (reactions.isNotEmpty()) {
-                ReactionCapsules(reactions = reactions, isMine = isMine)
+                ReactionCapsules(reactions = reactions, isMine = isMine, onClick = onReactionDetails)
             }
         }
     }
@@ -1079,6 +1226,58 @@ private fun InlineReplyPreview(
                 overflow = TextOverflow.Ellipsis
             )
             Text(preview, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicatorBubble(label: String) {
+    val transition = rememberInfiniteTransition(label = "typingDots")
+    val dotAlphas = List(3) { index ->
+        transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 520, delayMillis = index * 120),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "typingDot$index"
+        )
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Surface(
+            shape = RoundedCornerShape(22.dp, 22.dp, 22.dp, 7.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            tonalElevation = 2.dp,
+            shadowElevation = 1.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                repeat(3) { index ->
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .alpha(dotAlphas[index].value)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
         }
     }
 }
@@ -1141,7 +1340,7 @@ private fun MessageStatusIcon(state: MessageLifecycleState, tint: Color) {
 }
 
 @Composable
-private fun ReactionCapsules(reactions: Map<String, Int>, isMine: Boolean) {
+private fun ReactionCapsules(reactions: Map<String, Int>, isMine: Boolean, onClick: () -> Unit) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         modifier = Modifier.padding(top = 4.dp, start = if (isMine) 0.dp else 8.dp, end = if (isMine) 8.dp else 0.dp)
@@ -1153,7 +1352,9 @@ private fun ReactionCapsules(reactions: Map<String, Int>, isMine: Boolean) {
                 label = "reactionCapsule$emoji"
             )
             Surface(
-                modifier = Modifier.scale(scale),
+                modifier = Modifier
+                    .scale(scale)
+                    .clickable(onClick = onClick),
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 2.dp
@@ -1378,6 +1579,22 @@ private fun shareDeviceInfo(viewModel: ChatViewModel) {
     )
 }
 
+private fun sendPresence(contactKey: String, activity: String, label: String, ttlMs: Long = 8_000L) {
+    com.astramesh.app.service.AstraMeshService.getInstance()
+        ?.presenceManager
+        ?.sendPresence(contactKey, activity, label, ttlMs)
+}
+
+private fun formatLastSeenLabel(timestamp: Long): String {
+    val elapsedSeconds = ((System.currentTimeMillis() - timestamp) / 1_000L).coerceAtLeast(0L)
+    return when {
+        elapsedSeconds < 60L -> "Last seen just now"
+        elapsedSeconds < 3_600L -> "Last seen ${elapsedSeconds / 60L} min ago"
+        elapsedSeconds < 86_400L -> "Last seen ${elapsedSeconds / 3_600L} hr ago"
+        else -> "Last seen ${elapsedSeconds / 86_400L} d ago"
+    }
+}
+
 private fun formatStructuredAttachment(type: String, heading: String, body: String): String {
     val cleanHeading = heading.trim().ifBlank { type }
     val cleanBody = body.trim()
@@ -1528,6 +1745,56 @@ private fun ReactionDialog(
     }
 }
 
+@Composable
+private fun ReactionDetailsDialog(
+    message: MessagePayload,
+    contactKey: String,
+    contactName: String,
+    onDismiss: () -> Unit
+) {
+    val reactionRows = remember(message.reactions, contactKey, contactName) {
+        message.reactions
+            .mapNotNull { (actor, emojis) ->
+                val emoji = emojis.firstOrNull { it.isNotBlank() } ?: return@mapNotNull null
+                val name = when (actor) {
+                    contactKey -> contactName
+                    "me" -> "You"
+                    else -> if (actor.length > 12) "You" else actor
+                }
+                emoji to name
+            }
+            .sortedBy { it.second }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reactions") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (reactionRows.isEmpty()) {
+                    Text("No reactions", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    reactionRows.forEach { (emoji, name) ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(emoji, style = MaterialTheme.typography.headlineSmall)
+                            Text(name, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
 private data class AttachmentAction(
     val title: String,
     val subtitle: String,
@@ -1539,7 +1806,7 @@ private data class AttachmentAction(
 @Composable
 private fun AttachmentSheet(
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit,
+    onPick: (String, String) -> Unit,
     onAction: (String) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1547,6 +1814,7 @@ private fun AttachmentSheet(
         listOf(
             AttachmentAction("Gallery", "Choose photos & videos", Icons.Rounded.Image, "image/*"),
             AttachmentAction("Camera", "Take a photo", Icons.Rounded.CameraAlt),
+            AttachmentAction("Record Video", "Capture video clip", Icons.Rounded.Videocam),
             AttachmentAction("Document", "PDF ZIP APK", Icons.Rounded.Description, "*/*"),
             AttachmentAction("Audio", "Send music", Icons.Rounded.AudioFile, "audio/*"),
             AttachmentAction("Voice Note", "Record instantly", Icons.Rounded.KeyboardVoice),
@@ -1590,7 +1858,7 @@ private fun AttachmentSheet(
                             action = action,
                             modifier = Modifier.weight(1f),
                             onClick = {
-                                if (action.mimeType != null) onPick(action.mimeType) else onAction(action.title)
+                                if (action.mimeType != null) onPick(action.title, action.mimeType) else onAction(action.title)
                             }
                         )
                     }

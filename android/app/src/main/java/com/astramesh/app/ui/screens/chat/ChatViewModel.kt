@@ -32,6 +32,10 @@ class ChatViewModel(
     private val _contactOnion = MutableStateFlow("")
     val contactOnion: StateFlow<String> = _contactOnion
 
+    val unreadCount: StateFlow<Int> = db.messageDao()
+        .getUnreadCountForContact(contactKey)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
     init {
         loadContact()
         observeMessages()
@@ -138,14 +142,6 @@ class ChatViewModel(
                     )
                 }
                 conversationEngine.replaceMessages(payloads)
-
-                entities.forEach { entity ->
-                    // Auto-read
-                    if (entity.direction == "received" && entity.status != "read") {
-                        db.messageDao().updateMessageStatus(entity.messageId, "read")
-                        messageRouter.sendReadReceipt(entity.messageId, contactKey)
-                    }
-                }
             }
         }
     }
@@ -176,6 +172,15 @@ class ChatViewModel(
         if (messageId.isBlank() || cleanEmoji.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
             messageRouter.toggleReaction(contactKey, messageId, cleanEmoji)
+        }
+    }
+
+    fun markVisibleMessagesRead() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val unread = db.messageDao().getUnreadMessagesSync(contactKey)
+            if (unread.isEmpty()) return@launch
+            unread.forEach { messageRouter.sendReadReceipt(it.messageId, contactKey) }
+            db.messageDao().markMessagesAsRead(contactKey)
         }
     }
 

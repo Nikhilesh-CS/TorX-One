@@ -26,6 +26,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.astramesh.app.data.AppDatabase
@@ -78,6 +80,7 @@ fun ContactProfileScreen(
     val status = profile?.statusMessage?.takeIf { it.isNotBlank() } ?: if (contact?.isConnected == true) "Online" else "Offline"
     val bio = profile?.bio?.takeIf { it.isNotBlank() } ?: "No bio shared yet."
     val fingerprint = contactKey.chunked(4).take(8).joinToString(" ")
+    var showAvatarViewer by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -139,7 +142,8 @@ fun ContactProfileScreen(
                         modifier = Modifier
                             .size(200.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable(enabled = avatarPath != null) { showAvatarViewer = true },
                         contentScale = ContentScale.Crop
                     )
                 }
@@ -276,7 +280,31 @@ fun ContactProfileScreen(
                 
                 Spacer(modifier = Modifier.height(AstraTheme.spacing.extraLarge))
             }
-    }
+
+            if (showAvatarViewer && avatarPath != null) {
+                Dialog(
+                    onDismissRequest = { showAvatarViewer = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.92f))
+                            .clickable { showAvatarViewer = false },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        AsyncImage(
+                            model = avatarPath,
+                            contentDescription = "Full size profile photo",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(18.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+            }
+        }
 }
 
 @Composable

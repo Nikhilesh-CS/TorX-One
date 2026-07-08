@@ -15,6 +15,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import java.util.UUID
 
 @Entity(tableName = "contacts")
 data class ContactEntity(
@@ -220,9 +221,48 @@ data class ReactionOutboxEntity(
     val retryCount: Int = 0
 )
 
+@Entity(tableName = "music_notes")
+data class MusicNoteEntity(
+    @PrimaryKey val noteId: String = UUID.randomUUID().toString(),
+    val authorId: String,
+    val authorName: String,
+    val authorPublicKey: String,
+    val signature: String,
+    val text: String,
+    val trackId: String,
+    val trackName: String,
+    val artist: String,
+    val album: String,
+    val albumArtUri: String?,
+    val provider: String,
+    val playbackPositionMs: Long,
+    val createdAt: Long,
+    val expiresAt: Long,
+    val visibility: String,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Dao
+interface MusicNoteDao {
+    @Query("SELECT * FROM music_notes WHERE expiresAt > :now ORDER BY createdAt DESC")
+    fun observeActiveNotes(now: Long = System.currentTimeMillis()): Flow<List<MusicNoteEntity>>
+
+    @Query("SELECT * FROM music_notes WHERE noteId = :noteId LIMIT 1")
+    fun getNote(noteId: String): MusicNoteEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertNote(note: MusicNoteEntity)
+
+    @Query("DELETE FROM music_notes WHERE noteId = :noteId")
+    fun deleteNote(noteId: String)
+
+    @Query("DELETE FROM music_notes WHERE expiresAt <= :now")
+    fun deleteExpired(now: Long = System.currentTimeMillis())
+}
+
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class],
-    version = 11,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class],
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -232,6 +272,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reactionOutboxDao(): ReactionOutboxDao
     abstract fun mediaTransferDao(): MediaTransferDao
     abstract fun profileDao(): ProfileDao
+    abstract fun musicNoteDao(): MusicNoteDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -383,6 +424,33 @@ abstract class AppDatabase : RoomDatabase() {
                         `createdAt` INTEGER NOT NULL,
                         `retryCount` INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(`reactionId`)
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_11_12 = object : androidx.room.migration.Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `music_notes` (
+                        `noteId` TEXT NOT NULL,
+                        `authorId` TEXT NOT NULL,
+                        `authorName` TEXT NOT NULL,
+                        `authorPublicKey` TEXT NOT NULL,
+                        `signature` TEXT NOT NULL,
+                        `text` TEXT NOT NULL,
+                        `trackId` TEXT NOT NULL,
+                        `trackName` TEXT NOT NULL,
+                        `artist` TEXT NOT NULL,
+                        `album` TEXT NOT NULL,
+                        `albumArtUri` TEXT,
+                        `provider` TEXT NOT NULL,
+                        `playbackPositionMs` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `expiresAt` INTEGER NOT NULL,
+                        `visibility` TEXT NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`noteId`)
                     )
                 """.trimIndent())
             }

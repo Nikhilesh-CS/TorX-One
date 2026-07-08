@@ -78,6 +78,10 @@ class AstraMeshService : Service() {
         private set
     lateinit var profileSyncManager: com.astramesh.app.identity.profile.ProfileSyncManager
         private set
+    lateinit var musicNoteManager: com.astramesh.app.music.MusicNoteManager
+        private set
+    lateinit var listenTogetherManager: com.astramesh.app.music.ListenTogetherManager
+        private set
     lateinit var settingsManager: com.astramesh.app.data.SettingsManager
         private set
 
@@ -117,7 +121,8 @@ class AstraMeshService : Service() {
                 AppDatabase.MIGRATION_7_8,
                 AppDatabase.MIGRATION_8_9,
                 AppDatabase.MIGRATION_9_10,
-                AppDatabase.MIGRATION_10_11
+                AppDatabase.MIGRATION_10_11,
+                AppDatabase.MIGRATION_11_12
             )
             .build()
 
@@ -134,6 +139,9 @@ class AstraMeshService : Service() {
         val imageProcessor = com.astramesh.app.media.ImageProcessor(this)
         val profileRepository = com.astramesh.app.identity.profile.ProfileRepositoryImpl(db.profileDao(), identityManager, profileCache, imageProcessor)
         profileSyncManager = com.astramesh.app.identity.profile.ProfileSyncManager(this, profileRepository, messageRouter)
+        val musicRepository = com.astramesh.app.music.MusicNoteRepositoryImpl(db.musicNoteDao())
+        musicNoteManager = com.astramesh.app.music.MusicNoteManager(serviceScope, db, identityManager, musicRepository, messageRouter)
+        listenTogetherManager = com.astramesh.app.music.ListenTogetherManager(serviceScope, messageRouter)
         
         settingsManager = com.astramesh.app.data.SettingsManager(this)
 

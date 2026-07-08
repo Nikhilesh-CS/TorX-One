@@ -18,6 +18,10 @@ object MeshProtocol {
     const val TYPE_PROFILE_UPDATE = "profile_update"
     const val TYPE_REQUEST_PROFILE_PHOTO = "req_profile_photo"
     const val TYPE_PROFILE_PHOTO_CHUNK = "profile_photo_chunk"
+
+    // ASTRA Music metadata and listen-together sync. No audio bytes are transferred.
+    const val TYPE_MUSIC_NOTE = "music_note"
+    const val TYPE_MUSIC_SYNC = "music_sync"
     
     // Media Transfer Protocol Types
     const val TYPE_MEDIA_OFFER = "media_offer"

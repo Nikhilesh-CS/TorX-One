@@ -64,7 +64,17 @@
             android:foregroundServiceType="dataSync"
             android:process=":webrtc_probe"
             android:exported="false" />
-            
+
+        <service
+            android:name=".music.MusicSessionNotificationListenerService"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

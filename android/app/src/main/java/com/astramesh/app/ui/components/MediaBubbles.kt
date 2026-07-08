@@ -51,12 +51,16 @@ import java.io.File
 import java.io.FileInputStream
 
 @Composable
-fun MediaContent(message: MessagePayload, isSent: Boolean) {
+fun MediaContent(
+    message: MessagePayload,
+    isSent: Boolean,
+    onPresence: (String, String) -> Unit = { _, _ -> }
+) {
     when (message.messageType) {
         "IMAGE" -> ImageBubble(message, isSent)
-        "VIDEO" -> VideoBubble(message, isSent)
-        "AUDIO", "VOICE" -> AudioBubble(message, isSent)
-        "DOCUMENT", "APK" -> FileBubble(message, isSent)
+        "VIDEO" -> VideoBubble(message, isSent, onPresence)
+        "AUDIO", "VOICE" -> AudioBubble(message, isSent, onPresence)
+        "DOCUMENT", "APK" -> FileBubble(message, isSent, onPresence)
         "TEXT" -> Text(
             message.text,
             fontSize = 16.sp,
@@ -127,7 +131,11 @@ fun ImageBubble(message: MessagePayload, isSent: Boolean) {
 }
 
 @Composable
-fun VideoBubble(message: MessagePayload, isSent: Boolean) {
+fun VideoBubble(
+    message: MessagePayload,
+    isSent: Boolean,
+    onPresence: (String, String) -> Unit = { _, _ -> }
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     Box(
         modifier = Modifier
@@ -135,7 +143,10 @@ fun VideoBubble(message: MessagePayload, isSent: Boolean) {
             .height(200.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color.Black.copy(alpha = 0.3f))
-            .clickable(enabled = message.localUri != null) { openAttachment(context, message) },
+            .clickable(enabled = message.localUri != null) {
+                onPresence("watching_video", "Watching video...")
+                openAttachment(context, message)
+            },
         contentAlignment = Alignment.Center
     ) {
         if (message.localUri != null) {
@@ -170,7 +181,11 @@ fun VideoBubble(message: MessagePayload, isSent: Boolean) {
 }
 
 @Composable
-fun AudioBubble(message: MessagePayload, isSent: Boolean) {
+fun AudioBubble(
+    message: MessagePayload,
+    isSent: Boolean,
+    onPresence: (String, String) -> Unit = { _, _ -> }
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -210,6 +225,7 @@ fun AudioBubble(message: MessagePayload, isSent: Boolean) {
                         } else {
                             existing.start()
                         }
+                        onPresence("listening_voice", "Listening to voice note...")
                         isPlaying = true
                     }
                 } catch (e: Exception) {
@@ -238,7 +254,11 @@ fun AudioBubble(message: MessagePayload, isSent: Boolean) {
 }
 
 @Composable
-fun FileBubble(message: MessagePayload, isSent: Boolean) {
+fun FileBubble(
+    message: MessagePayload,
+    isSent: Boolean,
+    onPresence: (String, String) -> Unit = { _, _ -> }
+) {
     val isApk = message.messageType == "APK"
     val context = androidx.compose.ui.platform.LocalContext.current
     
@@ -277,6 +297,7 @@ fun FileBubble(message: MessagePayload, isSent: Boolean) {
                     Text(if (isApk) "INSTALL" else "OPEN", color = if (isSent) Color.White else AccentViolet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
                 TextButton(onClick = { 
+                    onPresence("downloading_file", "Downloading file...")
                     saveAttachmentToDownloads(context, message)
                 }, contentPadding = PaddingValues(0.dp)) {
                     Text("SAVE", color = if (isSent) Color.White else AccentViolet, fontSize = 12.sp, fontWeight = FontWeight.Bold)
