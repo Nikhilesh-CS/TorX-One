@@ -43,9 +43,9 @@ val LocalReduceMotion = staticCompositionLocalOf { false }
 val LocalShowTransportIcons = staticCompositionLocalOf { true }
 
 fun Modifier.glassmorphism(
-    cornerRadius: Dp = 16.dp,
-    backgroundColor: Color = Color(0x15FFFFFF),
-    borderColor: Color = Color(0x20FFFFFF)
+    cornerRadius: Dp = 28.dp,
+    backgroundColor: Color = Color(0x26FFFFFF),
+    borderColor: Color = Color(0x1FFFFFFF)
 ): Modifier = this
     .clip(RoundedCornerShape(cornerRadius))
     .background(backgroundColor)

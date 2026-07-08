@@ -13,8 +13,8 @@ android {
         applicationId = "com.astramesh.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.0.8"
+        versionCode = 13
+        versionName = "1.0.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
