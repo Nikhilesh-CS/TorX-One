@@ -32,8 +32,6 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,7 +39,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,7 +51,6 @@ import com.astramesh.app.data.ContactEntity
 import com.astramesh.app.data.MusicNoteEntity
 import com.astramesh.app.identity.IdentityManager
 import com.astramesh.app.music.DetectedMusicTrack
-import com.astramesh.app.music.MediaSessionListener
 import com.astramesh.app.music.MusicNoteRepositoryImpl
 import com.astramesh.app.music.MusicNoteVisibility
 import com.astramesh.app.music.MusicProviderResolver
@@ -105,7 +101,6 @@ fun ChatListScreen(
         ?: kotlinx.coroutines.flow.MutableStateFlow(com.astramesh.app.music.ListenTogetherState()))
         .collectAsStateWithLifecycle()
     val musicResolver = remember(context) { MusicProviderResolver(context) }
-    val mediaSessionListener = remember(context) { MediaSessionListener(context) }
     val chatListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
     var showAddContact by remember { mutableStateOf(false) }
@@ -378,7 +373,6 @@ fun ChatListScreen(
 
     if (showCreateMusicNote) {
         CreateMusicNoteDialog(
-            mediaSessionListener = mediaSessionListener,
             onDismiss = { showCreateMusicNote = false },
             onPublish = { track, text, visibility, durationHours ->
                 val manager = com.astramesh.app.service.AstraMeshService.getInstance()?.musicNoteManager
@@ -809,109 +803,43 @@ private fun MusicNoteAvatarCard(
 
 @Composable
 private fun CreateMusicNoteDialog(
-    mediaSessionListener: MediaSessionListener,
     onDismiss: () -> Unit,
     onPublish: (DetectedMusicTrack, String, MusicNoteVisibility, Int) -> Unit
 ) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var track by remember { mutableStateOf<DetectedMusicTrack?>(null) }
     var noteText by remember { mutableStateOf("") }
     var durationHours by remember { mutableStateOf(24) }
     var visibility by remember { mutableStateOf(MusicNoteVisibility.CONTACTS) }
-    var refreshKey by remember { mutableStateOf(0) }
     var manualTitle by remember { mutableStateOf("") }
     var manualArtist by remember { mutableStateOf("") }
     var manualProvider by remember { mutableStateOf("Manual") }
-    var hasAutoDetectAccess by remember { mutableStateOf(mediaSessionListener.hasNotificationAccess()) }
-    var showAutoDetectExplanation by remember { mutableStateOf(false) }
-
-    LaunchedEffect(refreshKey, hasAutoDetectAccess) {
-        track = if (hasAutoDetectAccess) {
-            mediaSessionListener.detectCurrentTrack()
-        } else {
-            null
-        }
-    }
-
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                hasAutoDetectAccess = mediaSessionListener.hasNotificationAccess()
-                refreshKey++
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create Music Note") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                val currentTrack = track
-                if (currentTrack == null) {
-                    Text(
-                        "Enter the song manually. Auto Detect is optional and only reads active music metadata after you enable it.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (hasAutoDetectAccess) {
-                            TextButton(onClick = { refreshKey++ }) {
-                                Text("Refresh")
-                            }
-                        } else {
-                            TextButton(onClick = { showAutoDetectExplanation = true }) {
-                                Text("Enable Auto Detect")
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = manualTitle,
-                        onValueChange = { manualTitle = it.take(80) },
-                        label = { Text("Song name") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = manualArtist,
-                        onValueChange = { manualArtist = it.take(80) },
-                        label = { Text("Artist") },
-                        singleLine = true
-                    )
-                    OutlinedTextField(
-                        value = manualProvider,
-                        onValueChange = { manualProvider = it.take(40) },
-                        label = { Text("Music app") },
-                        singleLine = true
-                    )
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (currentTrack.albumArtUri != null) {
-                                AsyncImage(
-                                    model = currentTrack.albumArtUri,
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                                )
-                            } else {
-                                Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        Column(Modifier.weight(1f)) {
-                            Text(currentTrack.trackName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(currentTrack.artist, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(providerLabel(currentTrack.provider), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    }
-                }
+                Text(
+                    "Enter the song manually. This release does not request Android notification access, so Play Protect will not see ASTRA Music as a sensitive-data feature.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = manualTitle,
+                    onValueChange = { manualTitle = it.take(80) },
+                    label = { Text("Song name") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = manualArtist,
+                    onValueChange = { manualArtist = it.take(80) },
+                    label = { Text("Artist") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = manualProvider,
+                    onValueChange = { manualProvider = it.take(40) },
+                    label = { Text("Music app") },
+                    singleLine = true
+                )
                 OutlinedTextField(
                     value = noteText,
                     onValueChange = { noteText = it.take(60) },
@@ -939,7 +867,7 @@ private fun CreateMusicNoteDialog(
             }
         },
         confirmButton = {
-            val publishTrack = track ?: manualMusicTrack(manualTitle, manualArtist, manualProvider)
+            val publishTrack = manualMusicTrack(manualTitle, manualArtist, manualProvider)
             Button(
                 enabled = publishTrack != null,
                 onClick = { publishTrack?.let { onPublish(it, noteText, visibility, durationHours) } }
@@ -953,33 +881,6 @@ private fun CreateMusicNoteDialog(
             }
         }
     )
-
-    if (showAutoDetectExplanation) {
-        AlertDialog(
-            onDismissRequest = { showAutoDetectExplanation = false },
-            title = { Text("Enable Auto Detect?") },
-            text = {
-                Text(
-                    "Android controls music detection through Notification Listener access. ASTRA Mesh uses it only to read the currently playing song title, artist, music app, and artwork. Manual Music Notes work without this permission."
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showAutoDetectExplanation = false
-                        context.startActivity(mediaSessionListener.notificationAccessIntent())
-                    }
-                ) {
-                    Text("Open Settings")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAutoDetectExplanation = false }) {
-                    Text("Not now")
-                }
-            }
-        )
-    }
 }
 
 @Composable
