@@ -1,23 +1,20 @@
 package com.astramesh.app.updater
 
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.io.FileInputStream
 import java.net.URL
-import java.security.MessageDigest
 import javax.net.ssl.HttpsURLConnection
 
 data class UpdateInfo(
@@ -36,6 +33,7 @@ class GitHubUpdater(private val context: Context) {
     private val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L // 24 hours
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     suspend fun checkForUpdates(manual: Boolean = false): UpdateInfo? = withContext(Dispatchers.IO) {
         if (!manual) {
@@ -94,44 +92,88 @@ class GitHubUpdater(private val context: Context) {
             onError("No APK found in the release.")
             return
         }
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo.downloadUrl)).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        Thread {
+            val fileName = "astra-mesh-${updateInfo.version}.apk"
+            val outputDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: context.cacheDir
+            val apkFile = File(outputDir, fileName)
+
+            try {
+                if (apkFile.exists()) apkFile.delete()
+                outputDir.mkdirs()
+
+                val connection = (URL(updateInfo.downloadUrl).openConnection() as HttpsURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 30_000
+                    readTimeout = 120_000
+                    setRequestProperty("Accept", "application/octet-stream")
+                    instanceFollowRedirects = true
+                }
+
+                connection.inputStream.use { input ->
+                    apkFile.outputStream().use { output ->
+                        val totalBytes = connection.contentLengthLong.takeIf { it > 0L }
+                        val buffer = ByteArray(64 * 1024)
+                        var downloadedBytes = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            downloadedBytes += read
+                            totalBytes?.let { total ->
+                                postProgress(onProgress, (downloadedBytes.toFloat() / total.toFloat()).coerceIn(0f, 1f))
+                            }
+                        }
+                    }
+                }
+
+                postProgress(onProgress, 1f)
+                installApk(apkFile, onError)
+                postComplete(onComplete)
+            } catch (e: Exception) {
+                Log.e("GitHubUpdater", "Failed to download update", e)
+                apkFile.delete()
+                postError(onError, "Download failed: ${e.message}")
             }
-            context.startActivity(intent)
-            onProgress(1f)
-            onComplete()
-        } catch (e: Exception) {
-            Log.e("GitHubUpdater", "Failed to open update URL", e)
-            onError("Could not open the release download page: ${e.message}")
-        }
+        }.start()
     }
 
-    private fun installApk(fileName: String, onError: (String) -> Unit) {
+    private fun installApk(apkFile: File, onError: (String) -> Unit) {
         try {
-            val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), fileName)
-            if (!file.exists()) {
-                onError("Downloaded APK not found.")
+            if (!apkFile.exists()) {
+                postError(onError, "Downloaded APK not found.")
                 return
             }
 
             // Verify signature matches currently installed app
-            if (!verifyApkSignature(file)) {
-                onError("Security Error: The downloaded update's signature does not match the currently installed app. Update aborted to prevent hijacking.")
-                file.delete()
+            if (!verifyApkSignature(apkFile)) {
+                postError(onError, "Security Error: The downloaded update's signature does not match the currently installed app. Update aborted to prevent hijacking.")
+                apkFile.delete()
                 return
             }
 
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apkFile)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
             }
-            context.startActivity(intent)
+            mainHandler.post { context.startActivity(intent) }
         } catch (e: Exception) {
             Log.e("GitHubUpdater", "Failed to install APK", e)
-            onError("Failed to launch installer: ${e.message}")
+            postError(onError, "Failed to launch installer: ${e.message}")
         }
+    }
+
+    private fun postProgress(onProgress: (Float) -> Unit, value: Float) {
+        mainHandler.post { onProgress(value) }
+    }
+
+    private fun postComplete(onComplete: () -> Unit) {
+        mainHandler.post { onComplete() }
+    }
+
+    private fun postError(onError: (String) -> Unit, message: String) {
+        mainHandler.post { onError(message) }
     }
 
     private fun verifyApkSignature(apkFile: File): Boolean {

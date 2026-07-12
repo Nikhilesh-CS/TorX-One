@@ -65,18 +65,17 @@ class MainActivity : ComponentActivity() {
 
     private val requiredPermissions: Array<String>
         get() {
-            val perms = mutableListOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            )
+            val perms = mutableListOf<String>()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                perms.add(Manifest.permission.BLUETOOTH_SCAN)
-                perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                perms += Manifest.permission.BLUETOOTH_SCAN
+                perms += Manifest.permission.BLUETOOTH_ADVERTISE
+                perms += Manifest.permission.BLUETOOTH_CONNECT
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    perms += Manifest.permission.NEARBY_WIFI_DEVICES
+                }
+            } else {
+                perms += Manifest.permission.ACCESS_FINE_LOCATION
+                perms += Manifest.permission.ACCESS_COARSE_LOCATION
             }
             return perms.toTypedArray()
         }

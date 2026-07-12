@@ -20,7 +20,7 @@ class ProfileSyncManager(
     private val TAG = "ProfileSyncManager"
     private val scope = CoroutineScope(Dispatchers.IO)
     private val localUserKey = "LOCAL_USER"
-    private val maxSyncedAvatarBytes = 512L * 1024L
+    private val maxSyncedAvatarBytes = 2L * 1024L * 1024L
     private val lastProfileSyncAt = ConcurrentHashMap<String, Long>()
 
     fun handleProfilePacket(type: String, payload: String, senderKey: String) {
@@ -51,6 +51,7 @@ class ProfileSyncManager(
 
         if (currentProfile == null || version > currentProfile.profileVersion) {
             Log.d(TAG, "Received newer profile version $version from $senderKey")
+            val avatarChanged = avatarHash.isNotBlank() && avatarHash != currentProfile?.avatarHash
 
             val newProfile = ProfileEntity(
                 ownerKey = senderKey,
@@ -61,7 +62,7 @@ class ProfileSyncManager(
                 profileHash = profileHash,
                 profileVersion = version,
                 lastUpdatedAt = lastUpdatedAt,
-                avatarLocalPath = currentProfile?.avatarLocalPath
+                avatarLocalPath = currentProfile?.avatarLocalPath.takeUnless { avatarChanged }
             )
 
             profileRepository.saveContactProfile(newProfile)
@@ -92,9 +93,6 @@ class ProfileSyncManager(
                     cacheManager.getAvatarFile(localUserKey, "256"),
                     cacheManager.getAvatarFile(localUserKey, "thumb")
                 ).firstOrNull { it.exists() && it.length() <= maxSyncedAvatarBytes }
-                    ?: cacheManager.getAvatarFile(localUserKey, "512")?.takeIf { it.exists() && it.length() <= maxSyncedAvatarBytes }
-                    ?: cacheManager.getAvatarFile(localUserKey, "256")?.takeIf { it.exists() }
-                    ?: cacheManager.getAvatarFile(localUserKey, "thumb")?.takeIf { it.exists() }
                     ?: return
                 if (file.exists()) {
                     val bytes = file.readBytes()

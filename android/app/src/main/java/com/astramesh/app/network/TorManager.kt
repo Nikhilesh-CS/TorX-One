@@ -115,45 +115,13 @@ class TorManager(private val context: Context) {
                 
                 addTorLog("[TOR] Device ABI:\n${android.os.Build.SUPPORTED_ABIS.joinToString()}")
 
-                val nativeDir = File(context.applicationInfo.nativeLibraryDir)
-                val libTor = File(nativeDir, "libtor.so")
-                
-                val torBinary: File
-                if (libTor.exists()) {
-                    torBinary = libTor
-                    addTorLog("[TOR] Found libtor.so in nativeLibraryDir")
-                } else {
-                    val fallback = nativeDir.listFiles()?.firstOrNull { it.name.contains("tor") && !it.name.contains("crypto") && !it.name.contains("ssl") }
-                    if (fallback != null) {
-                        torBinary = fallback
-                        addTorLog("[TOR] Found fallback ${fallback.name} in nativeLibraryDir")
-                    } else {
-                        // Very old Android versions might still allow execution from filesDir, but this is a last resort.
-                        torBinary = File(torDir, "tor")
-                        if (!torBinary.exists()) {
-                            var extracted = false
-                            for (abi in android.os.Build.SUPPORTED_ABIS) {
-                                try {
-                                    context.assets.open("tor/$abi/tor").use { input ->
-                                        torBinary.outputStream().use { output ->
-                                            input.copyTo(output)
-                                        }
-                                    }
-                                    extracted = true
-                                    addTorLog("[TOR] Extracted from assets for $abi to filesDir")
-                                    break
-                                } catch (e: Exception) {
-                                }
-                            }
-                            if (!extracted) {
-                                _lastError.value = "Tor binary not found in native or assets"
-                                addTorLog("[ERROR] Tor binary missing")
-                                isRunning.set(false)
-                                updateState(TorState.Failed("Tor binary not found"))
-                                return@launch
-                            }
-                        }
-                    }
+                val torBinary = resolveTorExecutable(torDir)
+                if (torBinary == null) {
+                    _lastError.value = "Tor executable not found or failed version check"
+                    addTorLog("[ERROR] Tor executable missing or invalid")
+                    isRunning.set(false)
+                    updateState(TorState.Failed("Tor executable not found"))
+                    return@launch
                 }
 
                 if (!torBinary.canExecute()) {
@@ -171,24 +139,13 @@ class TorManager(private val context: Context) {
                 addTorLog("[TOR] Starting process")
                 addTorLog("[TOR] Binary type: ${describeBinaryType(torBinary)}")
 
-                var versionCheck = runTorVersionCheck(torBinary)
+                val versionCheck = runTorVersionCheck(torBinary)
                 if (!versionCheck.success) {
+                    _lastError.value = versionCheck.output
                     addTorLog("[TOR] Execution test failed: ${versionCheck.output}")
-                    addTorLog("[TOR] Trying bundled asset replacement before giving up")
-
-                    if (extractTorExecutableFromAssets(torBinary)) {
-                        torBinary.setExecutable(true)
-                        addTorLog("[TOR] Replacement binary type: ${describeBinaryType(torBinary)}")
-                        versionCheck = runTorVersionCheck(torBinary)
-                    }
-
-                    if (!versionCheck.success) {
-                        _lastError.value = versionCheck.output
-                        addTorLog("[TOR] Execution test failed: ${versionCheck.output}")
-                        isRunning.set(false)
-                        updateState(TorState.Failed("Tor execution test failed"))
-                        return@launch
-                    }
+                    isRunning.set(false)
+                    updateState(TorState.Failed("Tor execution test failed"))
+                    return@launch
                 }
 
                 addTorLog("[TOR] Execution test passed: ${versionCheck.output}")
@@ -494,11 +451,6 @@ class TorManager(private val context: Context) {
     }
 
     private fun getActiveTorBinary(): File {
-        val nativeDir = File(context.applicationInfo.nativeLibraryDir)
-        val libTor = File(nativeDir, "libtor.so")
-        if (libTor.exists()) return libTor
-        val fallback = nativeDir.listFiles()?.firstOrNull { it.name.contains("tor") && !it.name.contains("crypto") && !it.name.contains("ssl") }
-        if (fallback != null) return fallback
         return File(context.filesDir, "tor/tor")
     }
 
@@ -548,10 +500,77 @@ class TorManager(private val context: Context) {
         }
     }
 
+    private fun resolveTorExecutable(torDir: File): File? {
+        val target = File(torDir, "tor")
+        target.parentFile?.mkdirs()
+
+        if (target.exists()) {
+            target.setExecutable(true)
+            val existingCheck = runTorVersionCheck(target)
+            if (existingCheck.success) {
+                addTorLog("[TOR] Using prepared executable from filesDir")
+                return target
+            }
+            addTorLog("[TOR] Existing filesDir executable failed: ${existingCheck.output}")
+            target.delete()
+        }
+
+        if (extractTorExecutableFromAssets(target)) {
+            target.setExecutable(true)
+            val assetCheck = runTorVersionCheck(target)
+            if (assetCheck.success) {
+                addTorLog("[TOR] Using executable extracted from assets")
+                return target
+            }
+            addTorLog("[TOR] Asset executable failed: ${assetCheck.output}")
+            target.delete()
+        }
+
+        if (copyPackagedNativeTorToExecutable(target)) {
+            target.setExecutable(true)
+            val nativeCheck = runTorVersionCheck(target)
+            if (nativeCheck.success) {
+                addTorLog("[TOR] Using executable prepared from packaged native Tor")
+                return target
+            }
+            addTorLog("[TOR] Packaged native Tor failed: ${nativeCheck.output}")
+            target.delete()
+        }
+
+        return null
+    }
+
+    private fun copyPackagedNativeTorToExecutable(target: File): Boolean {
+        val source = findPackagedNativeTor() ?: return false
+        return try {
+            addTorLog("[TOR] Preparing packaged native Tor from ${source.name}")
+            addTorLog("[TOR] Packaged native binary type: ${describeBinaryType(source)}")
+            source.copyTo(target, overwrite = true)
+            true
+        } catch (e: Exception) {
+            addTorLog("[TOR] Failed to prepare packaged native Tor: ${e.message}")
+            false
+        }
+    }
+
+    private fun findPackagedNativeTor(): File? {
+        val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+        val libTor = File(nativeDir, "libtor.so")
+        if (libTor.exists()) return libTor
+        return nativeDir.listFiles()
+            ?.filter { it.isFile }
+            ?.firstOrNull { file ->
+                file.name.contains("tor", ignoreCase = true) &&
+                    !file.name.contains("crypto", ignoreCase = true) &&
+                    !file.name.contains("ssl", ignoreCase = true)
+            }
+    }
+
     private fun extractTorExecutableFromAssets(torBinary: File): Boolean {
         for (abi in Build.SUPPORTED_ABIS) {
             try {
                 val assetPath = "tor/$abi/tor"
+                torBinary.parentFile?.mkdirs()
                 context.assets.open(assetPath).use { input ->
                     torBinary.outputStream().use { output ->
                         input.copyTo(output)

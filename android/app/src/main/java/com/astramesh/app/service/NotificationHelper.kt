@@ -8,7 +8,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.core.app.Person
 import androidx.core.app.RemoteInput
 import com.astramesh.app.MainActivity
 import com.astramesh.app.R
@@ -124,26 +123,24 @@ object NotificationHelper {
             0, "Reply", replyPendingIntent
         ).addRemoteInput(remoteInput).build()
 
-        // Build Messaging Style
-        val userPerson = Person.Builder().setName("Me").build()
-        val senderPerson = Person.Builder().setName(contact.name).build()
-
-        val style = NotificationCompat.MessagingStyle(userPerson)
-        style.setConversationTitle(contact.name)
-
-        unreadMessages.forEach { msg ->
-            val person = if (msg.direction == "sent") userPerson else senderPerson
-            style.addMessage(msg.text, msg.timestamp, person)
+        val messageCount = unreadMessages.size
+        val contentText = if (messageCount == 1) {
+            "New encrypted message"
+        } else {
+            "$messageCount new encrypted messages"
         }
 
         // Build actual notification
         val builder = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setStyle(style)
+            .setContentTitle(contact.name)
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.InboxStyle().addLine(contentText))
             .setColor(0xFF00A884.toInt()) // WhatsApp Green
             .setContentIntent(openPendingIntent)
             .setAutoCancel(true)
             .setGroup("AstraMesh_Messages")
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .addAction(replyAction)
             .addAction(markReadAction)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

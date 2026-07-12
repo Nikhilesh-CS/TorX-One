@@ -63,6 +63,7 @@ import com.astramesh.app.ui.components.AstraAvatar
 import com.astramesh.app.ui.components.DiscoveryStatusChip
 import com.astramesh.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -81,7 +82,10 @@ fun ChatListScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val contacts by db.contactDao().getAllContacts().collectAsStateWithLifecycle(initialValue = emptyList())
+    val contactsState by remember(db) {
+        db.contactDao().getAllContacts().map<List<ContactEntity>, List<ContactEntity>?> { it }
+    }.collectAsStateWithLifecycle(initialValue = null)
+    val contacts = contactsState.orEmpty()
     val nearbyDevices by nearbyManager.nearbyDevices.collectAsStateWithLifecycle()
     val pendingRequests by nearbyManager.pendingRequests.collectAsStateWithLifecycle()
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsStateWithLifecycle()
@@ -253,7 +257,14 @@ fun ChatListScreen(
                 PremiumSectionHeader("Messages", Color(0xFF9AF6D0))
             }
 
-            if (contacts.isEmpty()) {
+            if (contactsState == null) {
+                item {
+                    com.astramesh.app.ui.components.AstraEmptyState(
+                        title = "Loading conversations",
+                        message = "Restoring your secure chat list..."
+                    )
+                }
+            } else if (contacts.isEmpty()) {
                 item {
                     com.astramesh.app.ui.components.AstraEmptyState(
                         title = "No conversations yet",
