@@ -1,6 +1,6 @@
-# Astra Mesh — Shared Protocol Specification
+# TorX One — Shared Protocol Specification
 
-This document defines the cryptographic and transport rules that Astra Mesh
+This document defines the cryptographic and transport rules that TorX One
 clients must implement to interoperate across platforms.
 
 The intended architecture is:
@@ -32,7 +32,7 @@ Each identity contains two keypairs:
 | Encryption | X25519 | 32-byte public + 32-byte secret | `crypto_box_keypair()` |
 | Signing | Ed25519 | 32-byte public + 64-byte secret | `crypto_sign_keypair()` |
 
-The Ed25519 public key is the user's stable **address key** inside Astra Mesh.
+The Ed25519 public key is the user's stable **address key** inside TorX One.
 
 ### 1.2 Message encryption
 
@@ -119,7 +119,7 @@ astra:<base64(JSON({
 
 ### 2.2 Semantics
 
-- `s` is the contact's unique identity inside Astra Mesh.
+- `s` is the contact's unique identity inside TorX One.
 - `e` is used for `crypto_box` encryption.
 - `o` is optional because a peer may be nearby-only, Tor-capable, or not yet ready.
 - A contact string may be reshared later when the user's Tor address changes.
@@ -128,7 +128,7 @@ astra:<base64(JSON({
 
 ## 3. Transport model
 
-Astra Mesh uses the same encrypted payload across multiple transports.
+TorX One uses the same encrypted payload across multiple transports.
 Transport selection is a client policy decision, not a cryptographic change.
 
 ### 3.1 Transport priority
@@ -178,7 +178,7 @@ Used when two nearby peers first connect so they can exchange contact data.
 
 Rules:
 
-- `contact` must be a valid Astra contact string
+- `contact` must be a valid TorX One contact string
 - clients should send `hello` after a nearby connection is established
 - receiving a valid `hello` may create or update the local contact record
 

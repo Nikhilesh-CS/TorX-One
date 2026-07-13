@@ -1,10 +1,10 @@
-# Astra Mesh - iOS Client
+# TorX One - iOS Client
 
-This is the native iOS client for Astra Mesh, built with Swift and SwiftUI.
+This is the native iOS client for TorX One, built with Swift and SwiftUI.
 
 ## Important status note
 
-The intended Astra Mesh architecture is now:
+The intended TorX One architecture is now:
 
 - nearby peer-to-peer messaging
 - nearby multi-hop forwarding
@@ -24,14 +24,14 @@ Since this codebase was generated on a Windows machine, the Xcode project file (
 1. **Create the Project:**
    - Open Xcode and select **Create a new Xcode project**.
    - Select **iOS > App** and click Next.
-   - Product Name: `AstraMesh`
+   - Product Name: `TorX One`
    - Interface: **SwiftUI**
    - Language: **Swift**
-   - Save the project to a temporary location, then move the `AstraMesh.xcodeproj` file into this directory (`astra-mesh/ios/`).
+   - Save the project to a temporary location, then move the `TorX One.xcodeproj` file into this directory (`astra-mesh/ios/`).
 
 2. **Add Source Files:**
-   - Drag all the folders (`Crypto`, `Models`, `Network`, `Storage`, `ViewModels`, `Views`) and the Swift files (`AstraMeshApp.swift`, `ContentView.swift`) into your Xcode project navigator.
-   - Choose "Create groups" and make sure the `AstraMesh` target is checked.
+   - Drag all the folders (`Crypto`, `Models`, `Network`, `Storage`, `ViewModels`, `Views`) and the Swift files (`TorX OneApp.swift`, `ContentView.swift`) into your Xcode project navigator.
+   - Choose "Create groups" and make sure the `TorX One` target is checked.
 
 3. **Install Dependencies (Swift Package Manager):**
    - In Xcode, go to **File > Add Package Dependencies...**

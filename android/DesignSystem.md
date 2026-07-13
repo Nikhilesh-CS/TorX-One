@@ -1,6 +1,6 @@
-# AstraMesh Design System & UX Standards
+# TorX One Design System & UX Standards
 
-This document serves as the living reference for the Universal UI, UX, and Micro-Interaction Standards (Production Bible Section 01). Every screen, dialog, and component in AstraMesh must adhere to these guidelines to ensure WhatsApp/Telegram-level polish and consistency.
+This document serves as the living reference for the Universal UI, UX, and Micro-Interaction Standards (Production Bible Section 01). Every screen, dialog, and component in TorX One must adhere to these guidelines to ensure WhatsApp/Telegram-level polish and consistency.
 
 ## 1. Design Tokens
 

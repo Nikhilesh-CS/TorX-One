@@ -1,4 +1,4 @@
-# ASTRA Mesh
+﻿# TorX One
 
 <div align="center">
   <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android" />
@@ -11,14 +11,14 @@
 <h3 align="center">Your Network. Your Privacy. Your Freedom.</h3>
 
 <p align="center">
-  <b>ASTRA Mesh</b> is a privacy-first Android messenger for decentralized, serverless communication over Tor hidden services and local mesh transports.
+  <b>TorX One</b> is a privacy-first Android messenger for decentralized, serverless communication over Tor hidden services and local mesh transports.
 </p>
 
 <p align="center">
-  <a href="https://github.com/Nikhilesh-CS/Astra-mesh/releases/latest"><b>Download Latest APK</b></a>
-  ·
-  <a href="https://github.com/Nikhilesh-CS/Astra-mesh/issues">Report Issue</a>
-  ·
+  <a href="https://github.com/Nikhilesh-CS/TorX-One/releases/latest"><b>Download Latest APK</b></a>
+  Â·
+  <a href="https://github.com/Nikhilesh-CS/TorX-One/issues">Report Issue</a>
+  Â·
   <a href="SECURITY.md">Security Policy</a>
 </p>
 
@@ -26,13 +26,13 @@
 
 ## Overview
 
-ASTRA Mesh is built around a simple principle: private communication should not depend on phone numbers, centralized servers, or platform-controlled identity systems.
+TorX One is built around a simple principle: private communication should not depend on phone numbers, centralized servers, or platform-controlled identity systems.
 
-Each Android device can run as its own private communication node. The app creates a local identity, starts an embedded Tor service, exposes a Tor v3 onion address, and allows trusted peers to connect directly. For nearby communication, ASTRA Mesh also supports local Bluetooth and Wi-Fi Direct transport.
+Each Android device can run as its own private communication node. The app creates a local identity, starts an embedded Tor service, exposes a Tor v3 onion address, and allows trusted peers to connect directly. For nearby communication, TorX One also supports local Bluetooth and Wi-Fi Direct transport.
 
 The goal is to make secure communication resilient, portable, and user-controlled.
 
-## Why ASTRA Mesh
+## Why TorX One
 
 - No phone number required
 - No central messaging server
@@ -45,7 +45,7 @@ The goal is to make secure communication resilient, portable, and user-controlle
 
 ## Current Android Status
 
-ASTRA Mesh is currently in beta and under active development.
+TorX One is currently in beta and under active development.
 
 The latest Android build focuses on:
 
@@ -58,13 +58,13 @@ The latest Android build focuses on:
 
 For testers, use the latest APK from:
 
-https://github.com/Nikhilesh-CS/Astra-mesh/releases/latest
+https://github.com/Nikhilesh-CS/TorX-One/releases/latest
 
 ## Core Features
 
 ### Private Identity
 
-ASTRA Mesh creates a local cryptographic identity and shows a visible fingerprint so users can verify who they are communicating with.
+TorX One creates a local cryptographic identity and shows a visible fingerprint so users can verify who they are communicating with.
 
 ### Tor Hidden Service Transport
 
@@ -85,16 +85,16 @@ The official Founder profile is verified using the Founder signing public key. A
 ## Architecture
 
 ```text
-┌─────────────────────┐        Tor Network        ┌─────────────────────┐
-│   ASTRA Mesh App    │  ◀──────────────────────▶  │   ASTRA Mesh App    │
-│   Android Device A  │                            │   Android Device B  │
-└──────────┬──────────┘                            └──────────┬──────────┘
-           │                                                  │
-           ▼                                                  ▼
-┌─────────────────────┐                            ┌─────────────────────┐
-│ Local Tor Service   │                            │ Local Tor Service   │
-│ v3 Onion Address    │                            │ v3 Onion Address    │
-└─────────────────────┘                            └─────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”        Tor Network        â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚   TorX One App    â”‚  â—€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–¶  â”‚   TorX One App    â”‚
+â”‚   Android Device A  â”‚                            â”‚   Android Device B  â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+           â”‚                                                  â”‚
+           â–¼                                                  â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”                            â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ Local Tor Service   â”‚                            â”‚ Local Tor Service   â”‚
+â”‚ v3 Onion Address    â”‚                            â”‚ v3 Onion Address    â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 Nearby mode can also use Bluetooth and Wi-Fi Direct for local transport when peers are close to each other.
@@ -116,25 +116,25 @@ Nearby mode can also use Bluetooth and Wi-Fi Direct for local transport when pee
 ### For Testers
 
 1. Open the latest release:
-   https://github.com/Nikhilesh-CS/Astra-mesh/releases/latest
+   https://github.com/Nikhilesh-CS/TorX-One/releases/latest
 2. Download the APK asset.
 3. Install it on an Android device.
-4. Launch ASTRA Mesh and wait for Tor to show connected.
+4. Launch TorX One and wait for Tor to show connected.
 5. Share your identity QR code or onion address only with people you trust.
 
 ### For Developers
 
 ```bash
-git clone https://github.com/Nikhilesh-CS/Astra-mesh.git
-cd Astra-mesh/android
+git clone https://github.com/Nikhilesh-CS/TorX-One.git
+cd TorX-One/android
 ./gradlew assembleDebug
 ```
 
 For Windows PowerShell:
 
 ```powershell
-git clone https://github.com/Nikhilesh-CS/Astra-mesh.git
-cd Astra-mesh\android
+git clone https://github.com/Nikhilesh-CS/TorX-One.git
+cd TorX-One\android
 .\gradlew.bat assembleDebug
 ```
 
@@ -150,7 +150,7 @@ Physical Android devices are recommended for Tor and nearby transport testing.
 
 ## Security Notes
 
-ASTRA Mesh is privacy-first, but it is still beta software. Do not rely on it for high-risk operational security without independent review.
+TorX One is privacy-first, but it is still beta software. Do not rely on it for high-risk operational security without independent review.
 
 Current protections include:
 
@@ -181,7 +181,7 @@ Security roadmap:
 
 ## Project Status for Demonstrations
 
-ASTRA Mesh is suitable for prototype demonstrations, technical review, and controlled tester feedback. For public demos, use the latest release APK and clearly describe the app as a beta privacy communication prototype.
+TorX One is suitable for prototype demonstrations, technical review, and controlled tester feedback. For public demos, use the latest release APK and clearly describe the app as a beta privacy communication prototype.
 
 Recommended demo flow:
 
@@ -221,3 +221,4 @@ Distributed under the MIT License. See [LICENSE](LICENSE) for details.
 - [Guardian Project](https://guardianproject.info/)
 - [Android Open Source Project](https://source.android.com/)
 - [Material Design](https://m3.material.io/)
+

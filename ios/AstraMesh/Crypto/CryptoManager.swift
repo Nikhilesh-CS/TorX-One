@@ -2,7 +2,7 @@ import Foundation
 import Sodium
 
 /// Singleton manager for all cryptographic operations using libsodium.
-/// Implements the Astra Mesh protocol spec exactly.
+/// Implements the TorX One protocol spec exactly.
 final class CryptoManager {
     
     static let shared = CryptoManager()

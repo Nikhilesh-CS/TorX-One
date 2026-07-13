@@ -1,6 +1,6 @@
-# Contributing to AstraMesh
+# Contributing to TorX One
 
-First off, thank you for considering contributing to AstraMesh! It's people like you that make AstraMesh such a great tool.
+First off, thank you for considering contributing to TorX One! It's people like you that make TorX One such a great tool.
 
 ## Where do I go from here?
 
@@ -8,7 +8,7 @@ If you've noticed a bug or have a feature request, make sure to check our [Issue
 
 ## Fork & create a branch
 
-If this is something you think you can fix, then fork AstraMesh and create a branch with a descriptive name.
+If this is something you think you can fix, then fork TorX One and create a branch with a descriptive name.
 
 A good branch name would be (where issue #325 is the ticket you're working on):
 
@@ -26,10 +26,10 @@ At this point, you're ready to make your changes. Feel free to ask for help!
 
 ## Make a Pull Request
 
-At this point, you should switch back to your master branch and make sure it's up to date with AstraMesh's master branch:
+At this point, you should switch back to your master branch and make sure it's up to date with TorX One's master branch:
 
 ```sh
-git remote add upstream https://github.com/Nikhilesh-CS/AstraMesh.git
+git remote add upstream https://github.com/Nikhilesh-CS/TorX-One.git
 git checkout main
 git pull upstream main
 ```

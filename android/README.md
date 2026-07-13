@@ -1,4 +1,4 @@
-# Astra Mesh - Android Client
+# TorX One - Android Client
 
 Native Android client built with Kotlin and Jetpack Compose.
 
@@ -21,7 +21,7 @@ Native Android client built with Kotlin and Jetpack Compose.
 
 ## Adding a Distant Contact
 
-1. Both users install Orbot and open Astra Mesh (Orbot will expose a `.onion` address).
+1. Both users install Orbot and open TorX One (Orbot will expose a `.onion` address).
 2. Tap the **copy** FAB on the chat list to share your contact key (`astra:…` includes your `.onion`).
 3. The other user taps **add contact** and pastes your key.
 4. Send messages — the app routes via Tor automatically when the peer is not nearby.

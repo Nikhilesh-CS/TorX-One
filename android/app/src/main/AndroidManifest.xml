@@ -24,11 +24,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:name=".AstraMeshApplication"
+        android:name=".TorXOneApplication"
         android:allowBackup="false"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AstraMesh"
+        android:theme="@style/Theme.TorXOne"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
         android:extractNativeLibs="true"
@@ -39,7 +39,7 @@
             android:exported="true"
             android:label="@string/app_name"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.AstraMesh">
+            android:theme="@style/Theme.TorXOne">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -47,7 +47,7 @@
         </activity>
 
         <service 
-            android:name=".service.AstraMeshService"
+            android:name=".service.TorXOneService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 

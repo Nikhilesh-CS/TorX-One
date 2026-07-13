@@ -30,7 +30,7 @@ struct SetupView: View {
                             )
                         )
                     
-                    Text("Astra Mesh")
+                    Text("TorX One")
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     

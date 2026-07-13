@@ -33,7 +33,7 @@
 -keep class com.goterl.lazysodium.** { *; }
 
 # Preserve Room models
--keep class com.astramesh.app.data.** { *; }
+-keep class com.torxone.app.data.** { *; }
 
 # Preserve Tor classes
 -keep class info.guardianproject.tor.** { *; }

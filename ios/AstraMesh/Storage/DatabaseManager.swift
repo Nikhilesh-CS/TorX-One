@@ -27,7 +27,7 @@ final class DatabaseManager {
             appropriateFor: nil,
             create: true
         )
-        let dbURL = documentsURL.appendingPathComponent("astramesh.sqlite")
+        let dbURL = documentsURL.appendingPathComponent("torxone.sqlite")
         
         dbQueue = try DatabaseQueue(path: dbURL.path)
         

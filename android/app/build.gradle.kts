@@ -19,10 +19,10 @@ fun signingProperty(name: String, envName: String): String? {
         ?.takeIf { it.isNotBlank() }
 }
 
-val releaseStoreFilePath = signingProperty("storeFile", "ASTRAMESH_RELEASE_STORE_FILE")
-val releaseStorePassword = signingProperty("storePassword", "ASTRAMESH_RELEASE_STORE_PASSWORD")
-val releaseKeyAlias = signingProperty("keyAlias", "ASTRAMESH_RELEASE_KEY_ALIAS")
-val releaseKeyPassword = signingProperty("keyPassword", "ASTRAMESH_RELEASE_KEY_PASSWORD")
+val releaseStoreFilePath = signingProperty("storeFile", "TORXONE_RELEASE_STORE_FILE")
+val releaseStorePassword = signingProperty("storePassword", "TORXONE_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = signingProperty("keyAlias", "TORXONE_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = signingProperty("keyPassword", "TORXONE_RELEASE_KEY_PASSWORD")
 val hasReleaseSigning = listOf(
     releaseStoreFilePath,
     releaseStorePassword,
@@ -31,11 +31,11 @@ val hasReleaseSigning = listOf(
 ).all { !it.isNullOrBlank() }
 
 android {
-    namespace = "com.astramesh.app"
+    namespace = "com.torxone.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.astramesh.app"
+        applicationId = "com.torxone.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 22
@@ -130,6 +130,13 @@ dependencies {
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("com.google.zxing:core:3.5.3")
+
+    // QR scanning
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
 
     // Accompanist (permissions)
     implementation("com.google.accompanist:accompanist-permissions:0.34.0")

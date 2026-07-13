@@ -1,7 +1,7 @@
 import Foundation
 import Sodium
 
-/// WebSocket relay client implementing the Astra Mesh wire protocol.
+/// WebSocket relay client implementing the TorX One wire protocol.
 /// Uses URLSessionWebSocketTask (built-in iOS 13+).
 class RelayClient: ObservableObject {
     

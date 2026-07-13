@@ -10,7 +10,7 @@ struct Identity: Codable {
     let signingPublicKey: Bytes
     let signingSecretKey: Bytes
     
-    /// The signing public key as a lowercase hex string — used as the user's stable Astra Mesh address.
+    /// The signing public key as a lowercase hex string — used as the user's stable TorX One address.
     var signingPublicKeyHex: String {
         return encodeHex(signingPublicKey)
     }

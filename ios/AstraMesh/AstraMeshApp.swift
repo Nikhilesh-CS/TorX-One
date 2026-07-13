@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct AstraMeshApp: App {
+struct TorX OneApp: App {
     @StateObject private var chatViewModel = ChatViewModel()
     
     var body: some Scene {

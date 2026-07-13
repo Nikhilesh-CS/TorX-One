@@ -1,5 +1,5 @@
 /**
- * Astra Mesh — Relay Server
+ * TorX One — Relay Server
  *
  * A zero-knowledge relay that:
  *   1. Authenticates clients via Ed25519 challenge-response

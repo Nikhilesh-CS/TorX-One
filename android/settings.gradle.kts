@@ -15,12 +15,12 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AstraMesh"
+rootProject.name = "TorX One"
 include(":app")
 
 // Keep Gradle intermediates out of the OneDrive-synchronised working tree.
 // Windows/OneDrive can otherwise hold packaging files open during release builds.
-val localBuildRoot = File(System.getenv("LOCALAPPDATA"), "AstraMeshGradleBuild")
+val localBuildRoot = File(System.getenv("LOCALAPPDATA"), "TorXOneGradleBuild")
 gradle.beforeProject {
     layout.buildDirectory.set(localBuildRoot.resolve(name))
 }

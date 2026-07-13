@@ -28,7 +28,7 @@ class ChatViewModel: ObservableObject {
     
     // MARK: - Constants
     
-    private let identityKeychainKey = "astramesh.identity"
+    private let identityKeychainKey = "torxone.identity"
     private let relayURL = "ws://localhost:3000"
     
     init() {

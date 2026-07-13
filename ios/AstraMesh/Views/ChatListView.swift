@@ -65,7 +65,7 @@ struct ChatListView: View {
                     .scrollContentBackground(.hidden)
                 }
             }
-            .navigationTitle("Astra Mesh")
+            .navigationTitle("TorX One")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -116,7 +116,7 @@ struct MyKeySheet: View {
                     Text("Your Contact Key")
                         .font(.headline)
                     
-                    Text("Share this string with others so they can add you on Astra Mesh. A future Tor-capable iOS build can include your .onion address here as well.")
+                    Text("Share this string with others so they can add you on TorX One. A future Tor-capable iOS build can include your .onion address here as well.")
                         .multilineTextAlignment(.center)
                         .foregroundColor(.gray)
                     
