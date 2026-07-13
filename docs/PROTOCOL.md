@@ -1,4 +1,4 @@
-# TorX One — Shared Protocol Specification
+# TorX One Shared Protocol Specification
 
 This document defines the cryptographic and transport rules that TorX One
 clients must implement to interoperate across platforms.
@@ -89,7 +89,9 @@ valid = crypto_sign_verify_detached(
 
 ## 2. Contact string format
 
-Users exchange identities with a copyable `astra:` contact string:
+Users exchange identities with a copyable contact string.
+
+The current URI prefix is `astra:`. This is a legacy protocol prefix from the earlier project name and is kept for compatibility with existing identities and backups until a code-level migration is implemented.
 
 ```
 astra:<base64(JSON({

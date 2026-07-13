@@ -16,9 +16,9 @@
 
 <p align="center">
   <a href="https://github.com/Nikhilesh-CS/TorX-One/releases/latest"><b>Download Latest APK</b></a>
-  Â·
+  ·
   <a href="https://github.com/Nikhilesh-CS/TorX-One/issues">Report Issue</a>
-  Â·
+  ·
   <a href="SECURITY.md">Security Policy</a>
 </p>
 
@@ -38,7 +38,7 @@ The goal is to make secure communication resilient, portable, and user-controlle
 - No central messaging server
 - Tor hidden service identity for remote reachability
 - Bluetooth and Wi-Fi Direct support for nearby transport
-- End-to-end encrypted message path using X25519 and ChaCha20-Poly1305
+- App-layer encrypted message path using libsodium `crypto_box_easy`
 - Identity fingerprint and onion address visibility for verification
 - Founder verification tied to a cryptographic signing key, not a display name
 - In-app update flow through GitHub Releases
@@ -76,7 +76,7 @@ Bluetooth and Wi-Fi Direct support allow local peer discovery and communication 
 
 ### End-to-End Encryption
 
-The Android app uses X25519 key agreement with ChaCha20-Poly1305 authenticated encryption for secure message exchange.
+The Android app uses libsodium-compatible `crypto_box_easy` message encryption. In protocol terms, this is X25519 public-key encryption with XSalsa20-Poly1305 authenticated encryption.
 
 ### Founder Verification
 
@@ -85,16 +85,16 @@ The official Founder profile is verified using the Founder signing public key. A
 ## Architecture
 
 ```text
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”        Tor Network        â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚   TorX One App    â”‚  â—€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–¶  â”‚   TorX One App    â”‚
-â”‚   Android Device A  â”‚                            â”‚   Android Device B  â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
-           â”‚                                                  â”‚
-           â–¼                                                  â–¼
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”                            â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-â”‚ Local Tor Service   â”‚                            â”‚ Local Tor Service   â”‚
-â”‚ v3 Onion Address    â”‚                            â”‚ v3 Onion Address    â”‚
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                            â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
++---------------------+        Tor Network        +---------------------+
+|   TorX One App      | <-----------------------> |   TorX One App      |
+|   Android Device A  |                           |   Android Device B  |
++----------+----------+                           +----------+----------+
+           |                                                 |
+           v                                                 v
++---------------------+                           +---------------------+
+| Local Tor Service   |                           | Local Tor Service   |
+| v3 Onion Address    |                           | v3 Onion Address    |
++---------------------+                           +---------------------+
 ```
 
 Nearby mode can also use Bluetooth and Wi-Fi Direct for local transport when peers are close to each other.
@@ -110,6 +110,24 @@ Nearby mode can also use Bluetooth and Wi-Fi Direct for local transport when pee
 - Embedded Tor
 - LazySodium / libsodium
 - GitHub Releases for APK distribution
+
+## Documentation
+
+Full project documentation is available in the [docs](docs/README.md) folder.
+
+Recommended reading:
+
+- [Overview](docs/OVERVIEW.md)
+- [Installation Guide](docs/INSTALLATION.md)
+- [User Guide](docs/USER_GUIDE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Security Model](docs/SECURITY_MODEL.md)
+- [Protocol Specification](docs/PROTOCOL.md)
+- [QR Contacts](docs/QR_CONTACTS.md)
+- [Identity Backup and Restore](docs/BACKUP_RESTORE.md)
+- [Release Process](docs/RELEASE_PROCESS.md)
+- [Ideathon Brief](docs/IDEATHON_BRIEF.md)
+- [FAQ](docs/FAQ.md)
 
 ## Installation
 
@@ -156,7 +174,7 @@ Current protections include:
 
 - Local identity generation
 - Identity fingerprint visibility
-- X25519 and ChaCha20-Poly1305 message encryption
+- libsodium `crypto_box_easy` message encryption
 - Tor hidden service transport
 - Founder badge verification by signing public key
 - Password-protected identity backup and restore
