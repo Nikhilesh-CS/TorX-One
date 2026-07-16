@@ -1,111 +1,131 @@
-# AstraMesh
+# TorX One
 
-<div align="center">
-  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android" />
-  <img src="https://img.shields.io/badge/Kotlin-0095D5?&style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin" />
-  <img src="https://img.shields.io/badge/Tor-7D4698?style=for-the-badge&logo=tor&logoColor=white" alt="Tor" />
-  <img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="License" />
-  <img src="https://img.shields.io/badge/Status-Active_Development-orange?style=for-the-badge" alt="Active Development" />
-</div>
+> **Privacy isn't a feature. It's a fundamental right.**
 
-<h3 align="center">"Decentralized peer-to-peer messaging powered by Tor hidden services."</h3>
+TorX One is a research-driven Android prototype exploring private, resilient, and user-controlled communication. It combines cryptographic identity, Tor hidden-service reachability, nearby transport options, QR-based contact exchange, and a mobile-first experience.
 
----
+This repository documents the research foundation, problem analysis, and architectural motivation behind the prototype.
 
-AstraMesh is a privacy-first, serverless, decentralized Android messenger. It enables direct onion-to-onion communication, removing the need for any centralized infrastructure or phone numbers. All communication is routed securely over the Tor network.
+## Executive summary
 
-## 🚀 Features
+Digital communication is now essential for personal relationships, education, healthcare, journalism, business, and emergency response. End-to-end encryption has improved the confidentiality of message content, but important challenges remain: metadata exposure, platform-controlled identity, centralized infrastructure, and limited resilience during outages or network restrictions.
 
-- **Tor Hidden Services Integration**: Every device hosts its own V3 onion service.
-- **Anonymous Communication**: No phone numbers, no emails, no central identity servers.
-- **Peer-to-Peer Messaging**: Direct end-to-end messaging with no middlemen.
-- **No Central Servers**: 100% decentralized architecture.
-- **Bluetooth & Wi-Fi Local Communication**: Offline mesh capabilities via Google Nearby Connections (Beta).
-- **Secure Local Storage**: Hardware-encrypted keys and local database storage.
-- **Material 3 Interface**: Modern, beautiful, and responsive UI built with Jetpack Compose.
-- **Automatic GitHub Updates**: In-app updater bypassing traditional app stores.
-- **Privacy-First Architecture**: Designed strictly for minimal metadata collection.
-- **Open-Source**: Transparent and verifiable codebase.
+TorX One investigates whether communication can become more private, resilient, and user-controlled through decentralized identity and privacy-preserving networking. It is not intended to claim that existing secure messengers are ineffective. Instead, it explores an alternative combination of ideas from decentralized systems, anonymous networking, secure messaging, and nearby communication.
 
-## 🛠 Technology Stack
+## Problem statement
 
-- **Kotlin**: 100% Kotlin codebase.
-- **Android SDK**: Native Android application (Min SDK 26).
-- **Tor Embedded Binary**: Guardian Project's embedded Tor daemon.
-- **Material Design 3**: UI built with Jetpack Compose.
-- **Coroutines & Flows**: Modern reactive threading.
-- **GitHub Releases API**: Automated app distribution.
-- **LazySodium**: Cryptographic primitives.
+Modern messaging platforms have made major progress in protecting message contents. However, many communication systems still depend on centralized infrastructure for identity management, contact discovery, message delivery, account recovery, and service availability.
 
-## 🏗 Architecture
+This creates five connected problems:
 
-AstraMesh works by converting your smartphone into a secure Tor hidden service node.
+1. **Identity ownership:** identities are often tied to a phone number, email address, or platform account. If that account is unavailable, users may lose access to their communication network.
+2. **Metadata privacy:** even when message content is encrypted, timing, frequency, relationship patterns, and network activity can reveal sensitive information.
+3. **Digital profiling:** users increasingly see services and advertisements influenced by searches, browsing, application activity, and other available signals. This has increased concern about tracking, profiling, and control over personal data.
+4. **Infrastructure dependency:** centralized services can become single points of failure during outages, censorship, infrastructure failures, or regional restrictions.
+5. **Resilient communication:** disasters, unstable connectivity, and restricted networks create a need for communication that can use more than one transport path.
+
+### The gap in existing privacy-focused apps
+
+Privacy-oriented applications already exist, but they make different trade-offs. Some prioritize excellent end-to-end encryption while retaining account or relay infrastructure. Some provide anonymity or decentralization but require a more complex setup. Some support peer-to-peer or nearby communication but have limited remote reachability.
+
+The research gap is the opportunity to explore one understandable mobile system that integrates:
+
+- user-owned cryptographic identity;
+- privacy-oriented routing and Tor hidden-service reachability;
+- nearby Bluetooth/Wi-Fi communication options;
+- simple QR and fingerprint-based contact verification;
+- modular transports for future extension; and
+- an everyday user experience that clearly shows security state.
+
+TorX One does not claim that existing projects are bad. Its difference is architectural: it brings these capabilities together in one Android-first prototype so that identity, reachability, routing, verification, and usability can be studied as one system.
+
+## Research motivation
+
+TorX One began with research rather than with a feature list. The project asks:
+
+- Which privacy problems have already been solved?
+- Which limitations remain in current systems?
+- What trade-offs do existing secure messengers make?
+- Can a modular architecture combine user-controlled identity with multiple transport mechanisms?
+
+### Research themes reviewed
+
+#### Metadata-resistant encrypted messaging
+
+Research on metadata-resistant messaging demonstrates that protecting message text alone is not comprehensive privacy. Metadata can reveal social relationships, communication patterns, activity timelines, and network behavior.
+
+**Insight:** encryption protects what people say; metadata may still reveal who communicates, how often, and when.
+
+**TorX One direction:** investigate privacy at the architectural level by considering identity, routing, reachability, and transport—not only message encryption.
+
+#### Comparative studies of Android messaging applications
+
+Comparative research on privacy-focused Android messengers shows that systems such as Signal, Session, Briar, and SimpleX make different choices around encryption, identity, relays, decentralization, offline operation, usability, and trust assumptions.
+
+**Insight:** no single design maximizes privacy, decentralization, offline capability, usability, and flexibility at the same time.
+
+**TorX One direction:** explore a modular combination of user-controlled identity, Tor reachability, nearby transports, and visible verification in a single mobile prototype.
+
+## Proposed solution
+
+TorX One explores a communication model in which:
+
+- a device creates and stores a local cryptographic identity;
+- contacts can be exchanged through QR codes and checked using identity fingerprints;
+- a device can expose a Tor v3 hidden service for private remote reachability;
+- nearby Bluetooth/Wi-Fi transport can support local or intermittent connectivity scenarios; and
+- application-layer cryptographic protection is used for message payloads.
+
+Tor routing and message encryption solve different problems. Tor helps reduce exposure of a device's network location and provides onion-service reachability. The cryptographic message layer protects payload contents between authorized identities. A Tor connection by itself should not be described as end-to-end encryption.
+
+## Core capabilities
+
+- Local cryptographic identity and fingerprint display
+- Tor v3 hidden-service address generation and connectivity status
+- Nearby Bluetooth/Wi-Fi transport foundation
+- QR-based identity/contact exchange and scanning
+- Encrypted identity backup and restore
+- Security-state visibility for users
+- Modular Android architecture for future transports and features
+
+## Technical architecture
 
 ```text
-  User A Device                          User B Device
-+---------------+                      +---------------+
-| AstraMesh App |                      | AstraMesh App |
-+-------+-------+                      +-------+-------+
-        |                                      ^
-        v                                      |
-+-------+-------+                      +-------+-------+
-|  Tor Daemon   |  --- Tor Network --- |  Tor Daemon   |
-+-------+-------+                      +---------------+
-|  Local Onion  |                      |  Peer Onion   |
-+---------------+                      +---------------+
+User A device                         User B device
+┌─────────────────┐                  ┌─────────────────┐
+│ TorX One app    │                  │ TorX One app    │
+│ Identity + chat │                  │ Identity + chat │
+└───────┬─────────┘                  └─────────┬───────┘
+        │                                      │
+        ├── App-layer encrypted payloads ──────┤
+        │                                      │
+   ┌────▼────┐       Tor network        ┌─────▼───┐
+   │ Tor v3  │ ◄──────────────────────► │ Tor v3  │
+   │ onion   │                           │ onion   │
+   └─────────┘                           └─────────┘
+        ▲                                      ▲
+        └──── nearby Bluetooth/Wi-Fi option ──┘
 ```
-*(Direct End-to-End Communication)*
 
-## 📥 Installation
+The prototype is Android-first and uses Kotlin, Jetpack Compose, coroutines/flows, an embedded Tor binary, local persistence, and cryptographic libraries. Legacy `astra:` contact identifiers may remain for compatibility while the product branding is TorX One.
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/Nikhilesh-CS/AstraMesh.git
-   ```
-2. **Open in Android Studio.**
-3. **Build and Run:** Sync gradle and run the `app-debug` build on a physical Android device. (Note: Tor daemon startup might fail on an emulator depending on the ABI).
+## Why it matters
 
-### Requirements
-- **Android 8.0 (API 26)** or higher.
-- Background execution and notification permissions are required for the daemon to stay alive.
+TorX One is designed for people who need more control over identity and communication paths: privacy-conscious users, journalists, activists, researchers, communities in restricted networks, and people who may need communication during outages or infrastructure disruption.
 
-## 📱 Usage Guide
+The intended contribution is architectural exploration—not a claim that one prototype eliminates every privacy or availability risk. Future work includes stronger metadata resistance, formal security review, broader transport interoperability, improved offline delivery, and independent usability testing.
 
-1. **Start Tor**: Launch the app and wait for the Tor daemon to reach **Bootstrap 100%**.
-2. **Get your Address**: Once connected, AstraMesh will display your unique `.onion` address.
-3. **Add a Contact**: Obtain your peer's onion address (via out-of-band communication like a secure QR scan or signal message) and add it to your contacts.
-4. **Ping**: Check the connectivity status of your peer via the built-in Ping feature.
-5. **Chat**: Once the peer is online, begin secure chatting.
+## Project status
 
-## 🛣 Roadmap
+TorX One is an active research prototype. Features and security properties may evolve as testing, review, and implementation continue. Do not use the prototype as the sole communication channel for high-risk situations without independently evaluating its threat model.
 
-**Phase 1:** Core Tor connectivity and basic messaging capabilities. *(Current)*
-**Phase 2:** Message persistence, reliable background notifications, and UI enhancements.
-**Phase 3:** Forward-secure E2E encryption layering, friend management, and local mesh grouping.
-**Phase 4:** Full decentralized ecosystem integration and cross-platform native support.
+## License
 
-## 🤝 Contributing
+TorX One is distributed under the MIT License. See [LICENSE](LICENSE).
 
-We welcome contributions!
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests.
-
-## 🛡 Security
-
-If you discover a security vulnerability within AstraMesh, please send an e-mail to the maintainers rather than creating a public issue. See [SECURITY.md](SECURITY.md) for more details on responsible disclosure.
-
-## 📜 License
-
-Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
-
-## 🙏 Acknowledgements
+## Acknowledgements
 
 - [The Tor Project](https://www.torproject.org/)
 - [Android Open Source Project](https://source.android.com/)
-- [Material Design Team](https://m3.material.io/)
+- [Jetpack Compose](https://developer.android.com/jetpack/compose)
 - [Guardian Project](https://guardianproject.info/)
