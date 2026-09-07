@@ -168,7 +168,7 @@ class CallManager(
         val answer = AstraSessionDescription("answer", signal.sdp ?: return)
         activeEngine?.handleRemoteDescription(answer)
         val peerName = contact?.name ?: "Unknown Contact"
-        stateStore.update(CallUiState.Connecting(callId, senderKey, peerName, signal.mode))
+        stateStore.update(CallUiState.Accepted(callId, senderKey, peerName, signal.mode))
     }
 
     private fun handleIce(signal: CallSignal) {
@@ -194,7 +194,7 @@ class CallManager(
                     stateStore.update(CallUiState.Connected(callId, peerKey, peerName, result.mode))
                 } else {
                     // For WebRTC: Connecting state. Connected state will be set by ICE callback.
-                    stateStore.update(CallUiState.Connecting(callId, peerKey, peerName, result.mode))
+                    stateStore.update(CallUiState.Negotiating(callId, peerKey, peerName, result.mode))
                 }
             }
             is CallStartResult.Fallback -> {

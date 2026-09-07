@@ -24,6 +24,12 @@ data class CallStats(
 
 sealed class CallUiState {
     data object Idle : CallUiState()
+    data class Outgoing(
+        val callId: String,
+        val peerKey: String,
+        val peerName: String,
+        val mode: CallMode
+    ) : CallUiState()
     data class Ringing(
         val callId: String,
         val peerKey: String,
@@ -31,7 +37,25 @@ sealed class CallUiState {
         val direction: CallDirection,
         val mode: CallMode
     ) : CallUiState()
-    data class Connecting(
+    data class Accepted(
+        val callId: String,
+        val peerKey: String,
+        val peerName: String,
+        val mode: CallMode
+    ) : CallUiState()
+    data class Negotiating(
+        val callId: String,
+        val peerKey: String,
+        val peerName: String,
+        val mode: CallMode
+    ) : CallUiState()
+    data class IceConnecting(
+        val callId: String,
+        val peerKey: String,
+        val peerName: String,
+        val mode: CallMode
+    ) : CallUiState()
+    data class MediaConnecting(
         val callId: String,
         val peerKey: String,
         val peerName: String,
@@ -46,6 +70,12 @@ sealed class CallUiState {
         val isSpeaker: Boolean = false,
         val callDurationSeconds: Int = 0,
         val stats: CallStats = CallStats()
+    ) : CallUiState()
+    data class Reconnecting(
+        val callId: String,
+        val peerKey: String,
+        val peerName: String,
+        val mode: CallMode
     ) : CallUiState()
     data class Ended(val reason: String, val durationSeconds: Int = 0) : CallUiState()
     data class Unavailable(val reason: String) : CallUiState()

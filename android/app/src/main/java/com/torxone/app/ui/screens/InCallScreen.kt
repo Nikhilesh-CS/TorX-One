@@ -89,7 +89,12 @@ fun InCallScreen(
     // Active Call States (Ringing, Connecting, Connected)
     val peerName = when (state) {
         is CallUiState.Ringing -> state.peerName
-        is CallUiState.Connecting -> state.peerName
+        is CallUiState.Outgoing -> state.peerName
+        is CallUiState.Accepted -> state.peerName
+        is CallUiState.Negotiating -> state.peerName
+        is CallUiState.IceConnecting -> state.peerName
+        is CallUiState.MediaConnecting -> state.peerName
+        is CallUiState.Reconnecting -> state.peerName
         is CallUiState.Connected -> state.peerName
         else -> ""
     }
@@ -146,7 +151,12 @@ fun InCallScreen(
                 // Status / Timer
                 val statusText = when (state) {
                     is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming WhatsApp Call" else "Ringing..."
-                    is CallUiState.Connecting -> "Connecting..."
+                    is CallUiState.Outgoing -> "Calling..."
+                    is CallUiState.Accepted -> "Connecting..."
+                    is CallUiState.Negotiating -> "Securing Call..."
+                    is CallUiState.IceConnecting -> "Connecting to peer..."
+                    is CallUiState.MediaConnecting -> "Starting audio..."
+                    is CallUiState.Reconnecting -> "Reconnecting..."
                     is CallUiState.Connected -> formatDuration(state.callDurationSeconds)
                     else -> ""
                 }
@@ -189,7 +199,12 @@ fun InCallScreen(
                             )
                         }
                     }
-                    is CallUiState.Connecting -> {
+                    is CallUiState.Outgoing,
+                    is CallUiState.Accepted,
+                    is CallUiState.Negotiating,
+                    is CallUiState.IceConnecting,
+                    is CallUiState.MediaConnecting,
+                    is CallUiState.Reconnecting -> {
                         CallActionButton(
                             icon = Icons.Default.CallEnd,
                             color = Color(0xFFE53935),

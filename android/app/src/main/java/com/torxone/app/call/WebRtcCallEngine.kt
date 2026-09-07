@@ -40,6 +40,9 @@ class WebRtcCallEngine(
     private var activeCallId: String? = null
     private var activePeerKey: String? = null
     private var activeMode: CallMode = CallMode.AUDIO
+    
+    private var isIceConnected = false
+    private var isMediaReceived = false
 
     override fun isAvailable(context: CallRouteContext): Boolean {
         // WebRTC is now always available — the native library is bundled
@@ -138,24 +141,49 @@ class WebRtcCallEngine(
                 }
             },
             onConnected = {
+                isIceConnected = true
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
-                Log.d(TAG, "Call connected: $callId")
-                stateStore.update(CallUiState.Connected(
-                    callId = callId,
-                    peerKey = peerKey,
-                    peerName = "", // Will be updated by CallManager
-                    mode = activeMode
-                ))
+                Log.d(TAG, "ICE connected: $callId")
+                if (isMediaReceived) {
+                    checkFullyConnected()
+                } else {
+                    stateStore.update(CallUiState.IceConnecting(callId, peerKey, "", activeMode))
+                }
             },
             onDisconnected = {
                 Log.d(TAG, "Call disconnected")
                 cleanup()
                 stateStore.update(CallUiState.Ended("Connection lost"))
+            },
+            onRemoteTrackReceived = {
+                isMediaReceived = true
+                val callId = activeCallId ?: return@WebRtcClient
+                val peerKey = activePeerKey ?: return@WebRtcClient
+                Log.d(TAG, "Media received: $callId")
+                if (isIceConnected) {
+                    checkFullyConnected()
+                } else {
+                    stateStore.update(CallUiState.MediaConnecting(callId, peerKey, "", activeMode))
+                }
             }
         )
         rtcClient.initialize()
         return rtcClient
+    }
+
+    private fun checkFullyConnected() {
+        if (isIceConnected && isMediaReceived) {
+            val callId = activeCallId ?: return
+            val peerKey = activePeerKey ?: return
+            Log.d(TAG, "Call fully connected (ICE + Media): $callId")
+            stateStore.update(CallUiState.Connected(
+                callId = callId,
+                peerKey = peerKey,
+                peerName = "", // Will be updated by CallManager
+                mode = activeMode
+            ))
+        }
     }
 
     private fun cleanup() {
@@ -164,5 +192,7 @@ class WebRtcCallEngine(
         audioRouteManager.stopCallAudio()
         activeCallId = null
         activePeerKey = null
+        isIceConnected = false
+        isMediaReceived = false
     }
 }

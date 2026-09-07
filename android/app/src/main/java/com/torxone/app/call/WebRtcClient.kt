@@ -16,7 +16,8 @@ class WebRtcClient(
     private val iceServerProvider: IceServerProvider,
     private val onIceCandidate: (AstraIceCandidate) -> Unit,
     private val onConnected: () -> Unit,
-    private val onDisconnected: () -> Unit
+    private val onDisconnected: () -> Unit,
+    private val onRemoteTrackReceived: () -> Unit
 ) {
     companion object {
         private const val TAG = "WebRtcClient"
@@ -96,7 +97,15 @@ class WebRtcClient(
                 override fun onRemoveStream(stream: MediaStream?) {}
                 override fun onDataChannel(channel: DataChannel?) {}
                 override fun onRenegotiationNeeded() {}
-                override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {}
+                override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
+                    Log.d(TAG, "Remote track received")
+                    val track = receiver?.track()
+                    if (track is AudioTrack) {
+                        track.setEnabled(true)
+                        Log.d(TAG, "Remote audio track enabled")
+                        onRemoteTrackReceived()
+                    }
+                }
             }
         )
 
