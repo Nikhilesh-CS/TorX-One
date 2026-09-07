@@ -81,6 +81,7 @@ fun SettingsScreen(
     val bluetoothScanning by settingsManager.bluetoothScanningFlow.collectAsStateWithLifecycle(initialValue = true)
     val wifiDirectScanning by settingsManager.wifiDirectScanningFlow.collectAsStateWithLifecycle(initialValue = true)
     val backgroundSyncFrequency by settingsManager.backgroundSyncFrequencyFlow.collectAsStateWithLifecycle(initialValue = "normal")
+    val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
     val localProfile by db.profileDao().getProfile("LOCAL_USER").collectAsStateWithLifecycle(initialValue = null)
     var isBatteryOptimizationIgnored by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
     
@@ -101,6 +102,12 @@ fun SettingsScreen(
     var backupPassword by remember { mutableStateOf("") }
     var backupError by remember { mutableStateOf<String?>(null) }
     var isBackupWorking by remember { mutableStateOf(false) }
+
+    // App Lock States
+    var showAppLockSetup by remember { mutableStateOf(false) }
+    var appLockPassword by remember { mutableStateOf("") }
+    var appLockError by remember { mutableStateOf<String?>(null) }
+    val biometricAuthManager = remember { com.astramesh.app.security.BiometricAuthManager(context as androidx.fragment.app.FragmentActivity) }
 
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null) {
@@ -319,6 +326,21 @@ fun SettingsScreen(
                     checked = torModeEnabled,
                     onCheckedChange = { 
                         scope.launch { settingsManager.setTorEnabled(it) } 
+                    }
+                )
+            }
+            item {
+                SettingsSwitchItem(
+                    icon = Icons.Rounded.Lock,
+                    title = "App Lock",
+                    subtitle = "Require authentication to open",
+                    checked = appLockEnabled,
+                    onCheckedChange = { checked -> 
+                        if (checked) {
+                            showAppLockSetup = true
+                        } else {
+                            scope.launch { settingsManager.setAppLockEnabled(false) }
+                        }
                     }
                 )
             }
@@ -698,6 +720,61 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showImportDialog = false }, enabled = !isBackupWorking) {
+                    Text("Cancel", color = MutedGray)
+                }
+            }
+        )
+    }
+
+    if (showAppLockSetup) {
+        AlertDialog(
+            onDismissRequest = { showAppLockSetup = false; appLockPassword = ""; appLockError = null },
+            containerColor = CardSurface,
+            title = { Text("Setup App Lock", color = SoftWhite) },
+            text = {
+                Column {
+                    Text("Enable biometric authentication and set a fallback password.", color = MutedGray)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = appLockPassword,
+                        onValueChange = { appLockPassword = it },
+                        label = { Text("Fallback Password", color = MutedGray) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = AccentCyan,
+                            unfocusedBorderColor = DimGray,
+                            focusedTextColor = SoftWhite,
+                            unfocusedTextColor = SoftWhite
+                        )
+                    )
+                    if (appLockError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(appLockError ?: "", color = AstraTheme.colors.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        try {
+                            biometricAuthManager.setupAppLockWithPassword(appLockPassword)
+                            scope.launch { settingsManager.setAppLockEnabled(true) }
+                            showAppLockSetup = false
+                            appLockPassword = ""
+                            appLockError = null
+                            showToast("App Lock Enabled")
+                        } catch (e: Exception) {
+                            appLockError = "Failed to enable lock: ${e.message}"
+                        }
+                    },
+                    enabled = appLockPassword.length >= 4
+                ) {
+                    Text("Enable", color = AccentCyan)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAppLockSetup = false; appLockPassword = ""; appLockError = null }) {
                     Text("Cancel", color = MutedGray)
                 }
             }

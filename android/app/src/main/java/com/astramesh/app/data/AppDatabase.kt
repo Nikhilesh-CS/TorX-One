@@ -264,8 +264,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class],
-    version = 12,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class],
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -276,6 +276,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun mediaTransferDao(): MediaTransferDao
     abstract fun profileDao(): ProfileDao
     abstract fun musicNoteDao(): MusicNoteDao
+    abstract fun pendingEncryptedPayloadDao(): PendingEncryptedPayloadDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -454,6 +455,20 @@ abstract class AppDatabase : RoomDatabase() {
                         `visibility` TEXT NOT NULL,
                         `updatedAt` INTEGER NOT NULL,
                         PRIMARY KEY(`noteId`)
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_12_13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `pending_encrypted_payloads` (
+                        `messageId` TEXT NOT NULL,
+                        `fromSigningKey` TEXT NOT NULL,
+                        `rawJson` TEXT NOT NULL,
+                        `receivedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`messageId`)
                     )
                 """.trimIndent())
             }

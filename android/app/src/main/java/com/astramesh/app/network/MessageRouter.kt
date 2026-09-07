@@ -644,6 +644,27 @@ class MessageRouter(
             return
         }
 
+        if (identity.encryptionSecretKey.isEmpty()) {
+            Log.d(TAG, "[DEFERRED] App is locked. Saving raw payload for deferred decryption.")
+            db.pendingEncryptedPayloadDao().insert(
+                com.astramesh.app.data.PendingEncryptedPayload(
+                    messageId = if (messageId.isNotBlank()) messageId else java.util.UUID.randomUUID().toString(),
+                    fromSigningKey = senderKey,
+                    rawJson = json.toString(),
+                    receivedAt = System.currentTimeMillis()
+                )
+            )
+            // Send ACK immediately so the sender knows it was delivered
+            if (messageId.isNotBlank()) {
+                sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            }
+            com.astramesh.app.service.NotificationHelper.showDeferredMessageNotification(
+                com.astramesh.app.service.AstraMeshService.getInstance()!!,
+                contact
+            )
+            return
+        }
+
         val plaintext = try {
             CryptoManager.decryptMessage(ciphertext, nonce, senderEncPub, identity.encryptionSecretKey)
         } catch (e: Exception) {
@@ -919,5 +940,47 @@ class MessageRouter(
             recentRelayFingerprints.remove(firstKey)
         }
         return true
+    }
+
+    suspend fun processEncryptedBacklog() {
+        val identity = identity
+        if (identity == null || identity.encryptionSecretKey.isEmpty()) return
+
+        val pending = db.pendingEncryptedPayloadDao().getAll()
+        if (pending.isEmpty()) return
+
+        Log.d(TAG, "[DEFERRED] Processing ${pending.size} pending encrypted payloads")
+
+        for (payloadRow in pending) {
+            try {
+                val json = JSONObject(payloadRow.rawJson)
+                val type = json.optString("type", MeshProtocol.TYPE_MSG)
+                
+                // If it was a relay, the inner type might be different. 
+                // handleEncrypted parses MeshProtocol.TYPE_MSG by default unless we pass innerType.
+                val innerType = if (type == MeshProtocol.TYPE_RELAY) {
+                    json.optString("innerType", MeshProtocol.TYPE_MSG)
+                } else {
+                    type
+                }
+
+                // Since handleEncrypted sends ACKs, but we ALREADY sent an ACK when we deferred it,
+                // we should suppress ACKs during backlog processing to avoid spamming ACKs.
+                // However, handleEncrypted only sends ACKs if the message is a duplicate or if it's a specific type.
+                // Wait, handleEncrypted does NOT send ACKs natively for normal TYPE_MSG, `handleAck` does!
+                // Ah, handleEncrypted ONLY sends ACKs if `messageId.isNotBlank() && duplicate`!
+                // So it's safe to just call handleEncrypted.
+                
+                handleEncrypted(json, null, innerType)
+
+                // Remove from backlog on success or handled duplicate
+                db.pendingEncryptedPayloadDao().delete(payloadRow.messageId)
+            } catch (e: Exception) {
+                Log.e(TAG, "[DEFERRED] Failed to process payload ${payloadRow.messageId}", e)
+                // We'll leave it in the database and try again next time? Or delete it if it's unrecoverable?
+                // Let's delete it if it's unrecoverable so it doesn't block forever.
+                db.pendingEncryptedPayloadDao().delete(payloadRow.messageId)
+            }
+        }
     }
 }

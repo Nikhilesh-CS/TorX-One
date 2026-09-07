@@ -23,6 +23,8 @@ class SettingsManager(private val context: Context) {
         val BLUETOOTH_SCANNING = booleanPreferencesKey("bluetooth_scanning")
         val WIFI_DIRECT_SCANNING = booleanPreferencesKey("wifi_direct_scanning")
         val BACKGROUND_SYNC_FREQUENCY = stringPreferencesKey("background_sync_frequency")
+        val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
+        val APP_LOCK_UPDATE_NOTIFIED = booleanPreferencesKey("app_lock_update_notified")
     }
 
     val torEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -95,5 +97,21 @@ class SettingsManager(private val context: Context) {
 
     suspend fun setBackgroundSyncFrequency(frequency: String) {
         context.dataStore.edit { preferences -> preferences[BACKGROUND_SYNC_FREQUENCY] = frequency }
+    }
+
+    val appLockEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[APP_LOCK_ENABLED] ?: false
+    }
+
+    suspend fun setAppLockEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences -> preferences[APP_LOCK_ENABLED] = enabled }
+    }
+
+    val appLockUpdateNotifiedFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[APP_LOCK_UPDATE_NOTIFIED] ?: false
+    }
+
+    suspend fun setAppLockUpdateNotified(notified: Boolean) {
+        context.dataStore.edit { preferences -> preferences[APP_LOCK_UPDATE_NOTIFIED] = notified }
     }
 }

@@ -22,6 +22,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fingerprint
 import com.astramesh.app.crypto.CryptoManager
 import com.astramesh.app.identity.IdentityManager
 import com.astramesh.app.identity.backup.IdentityRestoreManager
@@ -128,7 +130,6 @@ fun OnboardingPage1() {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Icon/Graphic placeholder
         Box(
             modifier = Modifier
                 .size(120.dp)
@@ -236,15 +237,82 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
     var name by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
+    val context = LocalContext.current
+    val activity = context as? androidx.fragment.app.FragmentActivity
+    val biometricAuthManager = remember(activity) { activity?.let { com.astramesh.app.security.BiometricAuthManager(it) } }
+    val settingsManager = remember(context) { com.astramesh.app.data.SettingsManager(context) }
+    val scope = rememberCoroutineScope()
+    var showBiometricPromptDialog by remember { mutableStateOf(false) }
 
-    fun createIdentity() {
+    fun finalizeIdentity(enableAppLock: Boolean) {
         val cleanName = name.trim()
         if (cleanName.isNotBlank() && password.isNotBlank()) {
             val identity = CryptoManager.generateIdentity(cleanName)
             identityManager.saveIdentity(identity)
+            if (enableAppLock && biometricAuthManager != null) {
+                biometricAuthManager.setupAppLockWithPassword(password)
+                scope.launch {
+                    settingsManager.setAppLockEnabled(true)
+                }
+            }
             focusManager.clearFocus(force = true)
             onIdentityCreated()
         }
+    }
+
+    fun handleCreateClick() {
+        if (biometricAuthManager?.canAuthenticate() == com.astramesh.app.security.BiometricCapability.Available) {
+            showBiometricPromptDialog = true
+        } else {
+            finalizeIdentity(enableAppLock = false)
+        }
+    }
+
+    if (showBiometricPromptDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showBiometricPromptDialog = false
+                finalizeIdentity(enableAppLock = false)
+            },
+            icon = {
+                Icon(
+                    Icons.Default.Fingerprint,
+                    contentDescription = null,
+                    tint = AstraTheme.colors.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+            },
+            title = {
+                Text("Enable Biometric Lock?")
+            },
+            text = {
+                Text(
+                    "Would you like to lock AstraMesh with Face or Fingerprint? Only you will be able to open the app, and your password will serve as the backup key.",
+                    color = Color.White.copy(alpha = 0.8f)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBiometricPromptDialog = false
+                        finalizeIdentity(enableAppLock = true)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AstraTheme.colors.primary)
+                ) {
+                    Text("Enable Biometrics")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showBiometricPromptDialog = false
+                        finalizeIdentity(enableAppLock = false)
+                    }
+                ) {
+                    Text("Skip for Now", color = Color.White.copy(alpha = 0.7f))
+                }
+            }
+        )
     }
 
     Column(
@@ -316,7 +384,7 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
                 ),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { createIdentity() }),
+                keyboardActions = KeyboardActions(onDone = { handleCreateClick() }),
                 textStyle = MaterialTheme.typography.bodyLarge
             )
 
@@ -324,7 +392,7 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
 
             Button(
                 onClick = {
-                    createIdentity()
+                    handleCreateClick()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -345,7 +413,6 @@ fun OnboardingPage4(identityManager: IdentityManager, onIdentityCreated: () -> U
 
         Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
 
-        val context = LocalContext.current
         val coroutineScope = rememberCoroutineScope()
         var showRestoreDialog by remember { mutableStateOf(false) }
         var restorePassword by remember { mutableStateOf("") }

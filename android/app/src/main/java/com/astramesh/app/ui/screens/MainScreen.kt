@@ -124,7 +124,8 @@ fun MainScreen(
             composable("security") {
                 SecurityCenterScreen(
                     identityManager = identityManager,
-                    torManager = torManager
+                    torManager = torManager,
+                    settingsManager = settingsManager
                 )
             }
             composable("settings") {

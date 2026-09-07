@@ -115,6 +115,7 @@ dependencies {
     implementation("com.goterl:lazysodium-android:5.1.0@aar")
     implementation("net.java.dev.jna:jna:5.14.0@aar")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.biometric:biometric:1.2.0-alpha05")
 
     // Google Nearby Connections (P2P offline)
     implementation("com.google.android.gms:play-services-nearby:19.1.0")
