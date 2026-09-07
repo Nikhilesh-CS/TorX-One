@@ -121,8 +121,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-nearby:19.1.0")
 
     // WebRTC runtime for calls/DataChannel. Kept behind RealtimeEngine so it can be replaced.
-    implementation("io.github.webrtc-sdk:android:144.7559.09")
-
     // Room Database
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")

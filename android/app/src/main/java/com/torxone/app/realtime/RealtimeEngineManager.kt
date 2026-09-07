@@ -11,7 +11,6 @@ class RealtimeEngineManager(
     engines: List<RealtimeEngine>? = null
 ) {
     private val engines: List<RealtimeEngine> = engines ?: listOf(
-        LibWebRtcEngine(context.applicationContext),
         DisabledRealtimeEngine()
     )
 
@@ -26,9 +25,5 @@ class RealtimeEngineManager(
 
     fun select(route: RealtimeRoute): RealtimeEngine {
         return engines.firstOrNull { it.isAvailable(route) } ?: DisabledRealtimeEngine()
-    }
-
-    fun isWebRtcRuntimeCompatible(): Boolean {
-        return WebRtcProbeStore.isCompatible(context)
     }
 }

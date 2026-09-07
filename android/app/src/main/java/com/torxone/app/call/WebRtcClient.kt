@@ -13,16 +13,13 @@ import org.webrtc.audio.JavaAudioDeviceModule
  */
 class WebRtcClient(
     private val context: Context,
+    private val iceServerProvider: IceServerProvider,
     private val onIceCandidate: (AstraIceCandidate) -> Unit,
     private val onConnected: () -> Unit,
     private val onDisconnected: () -> Unit
 ) {
     companion object {
         private const val TAG = "WebRtcClient"
-        private val ICE_SERVERS = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
-        )
     }
 
     private var peerConnectionFactory: PeerConnectionFactory? = null
@@ -57,8 +54,9 @@ class WebRtcClient(
         Log.d(TAG, "PeerConnectionFactory created successfully")
     }
 
-    fun createPeerConnection() {
-        val rtcConfig = PeerConnection.RTCConfiguration(ICE_SERVERS).apply {
+    suspend fun createPeerConnection() {
+        val iceServers = iceServerProvider.getIceServers()
+        val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             iceTransportsType = PeerConnection.IceTransportsType.ALL

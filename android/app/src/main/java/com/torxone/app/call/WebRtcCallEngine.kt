@@ -129,6 +129,7 @@ class WebRtcCallEngine(
     private fun createAndInitClient(): WebRtcClient {
         val rtcClient = WebRtcClient(
             context = context,
+            iceServerProvider = DefaultIceServerProvider(),
             onIceCandidate = { candidate ->
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient

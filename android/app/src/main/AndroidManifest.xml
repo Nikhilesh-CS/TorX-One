@@ -52,11 +52,6 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
-        <service
-            android:name=".realtime.WebRtcRuntimeProbeService"
-            android:foregroundServiceType="dataSync"
-            android:process=":webrtc_probe"
-            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
