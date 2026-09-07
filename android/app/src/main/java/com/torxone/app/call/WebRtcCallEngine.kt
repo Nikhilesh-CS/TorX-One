@@ -126,7 +126,8 @@ class WebRtcCallEngine(
 
     override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {
         Log.d(TAG, "Handling ICE restart renegotiation offer from $peerKey")
-        val answer = client?.acceptRenegotiation(offer) ?: return
+        client?.setRemoteDescriptionSuspend(offer)
+        val answer = client?.createAnswer() ?: return
         signaling.sendAnswer(peerKey, callId, activeMode, answer)
     }
 

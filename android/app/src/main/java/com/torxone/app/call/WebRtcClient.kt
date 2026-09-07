@@ -226,26 +226,17 @@ class WebRtcClient(
         Log.d(TAG, "Remote description set: ${description.type}")
     }
 
-    suspend fun acceptRenegotiation(offer: AstraSessionDescription): AstraSessionDescription {
+    suspend fun setRemoteDescriptionSuspend(offer: AstraSessionDescription) {
         return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             val type = SessionDescription.Type.OFFER
             val sdp = SessionDescription(type, offer.description)
             peerConnection?.setRemoteDescription(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription?) {}
                 override fun onSetSuccess() {
-                    Log.d(TAG, "Renegotiation remote description set, creating answer...")
+                    Log.d(TAG, "Renegotiation remote description set successfully")
                     pendingIceCandidates.forEach { peerConnection?.addIceCandidate(it) }
                     pendingIceCandidates.clear()
-                    
-                    // Now create answer
-                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                        try {
-                            val answer = createAnswer()
-                            continuation.resumeWith(Result.success(answer))
-                        } catch (e: Exception) {
-                            continuation.resumeWith(Result.failure(e))
-                        }
-                    }
+                    continuation.resumeWith(Result.success(Unit))
                 }
                 override fun onCreateFailure(error: String?) {}
                 override fun onSetFailure(error: String?) {
@@ -277,11 +268,20 @@ class WebRtcClient(
         return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             peerConnection?.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
-                    sdp?.let {
-                        peerConnection?.setLocalDescription(NoOpSdpObserver(), it)
-                        continuation.resumeWith(Result.success(
-                            AstraSessionDescription("offer", it.description)
-                        ))
+                    sdp?.let { localSdp ->
+                        peerConnection?.setLocalDescription(object : SdpObserver {
+                            override fun onCreateSuccess(sdp: SessionDescription?) {}
+                            override fun onSetSuccess() {
+                                continuation.resumeWith(Result.success(
+                                    AstraSessionDescription("offer", localSdp.description)
+                                ))
+                            }
+                            override fun onCreateFailure(error: String?) {}
+                            override fun onSetFailure(error: String?) {
+                                Log.e(TAG, "Set local description failed: $error")
+                                continuation.resumeWith(Result.failure(RuntimeException("Set local description failed: $error")))
+                            }
+                        }, localSdp)
                     }
                 }
                 override fun onCreateFailure(error: String?) {
