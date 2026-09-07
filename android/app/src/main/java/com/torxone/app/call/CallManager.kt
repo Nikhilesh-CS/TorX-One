@@ -6,7 +6,9 @@ import com.torxone.app.data.AppDatabase
 import com.torxone.app.network.MessageRouter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -17,25 +19,28 @@ class CallManager(
 ) {
     companion object {
         private const val TAG = "CallManager"
+        private const val RING_TIMEOUT_MS = 30_000L
     }
 
     val stateStore = CallStateStore()
+    val audioRouteManager = AudioRouteManager(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val signaling = CallSignalingHandler(messageRouter)
     private val permissions = AudioVideoPermissionManager(context)
-    private val engines = listOf(
-        LanAudioEngine(context),
-        BluetoothWalkieTalkieEngine(),
-        WebRtcCallEngine(),
-        VoiceNoteCallEngine(messageRouter),
-        DisabledCallEngine("No call engine is available for this route.")
-    )
+
+    private val webRtcEngine = WebRtcCallEngine(context, signaling, stateStore, audioRouteManager)
+    private val voiceNoteEngine = VoiceNoteCallEngine(messageRouter)
+    private val engines: List<CallEngine> = listOf(webRtcEngine, voiceNoteEngine)
     private val adaptiveRouter = AdaptiveCallRouter(messageRouter, engines)
+
     private var activeEngine: CallEngine? = null
     private var activeCallId: String? = null
     private var activePeerKey: String? = null
     private var activeMode: CallMode = CallMode.AUDIO
     private var pendingOffer: AstraSessionDescription? = null
+    private var durationJob: Job? = null
+    private var ringTimeoutJob: Job? = null
+    private var callStartTimeMs: Long = 0L
 
     fun startAudioCall(peerKey: String) {
         scope.launch {
@@ -57,6 +62,7 @@ class CallManager(
             activeCallId = callId
             activePeerKey = peerKey
             stateStore.update(CallUiState.Ringing(callId, peerKey, contact.name, CallDirection.OUTGOING, CallMode.AUDIO))
+            startRingTimeout()
 
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
@@ -84,6 +90,7 @@ class CallManager(
                 stateStore.update(CallUiState.Unavailable("Microphone permission is required."))
                 return@launch
             }
+            cancelRingTimeout()
             val routeContext = adaptiveRouter.buildContext(contact)
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
@@ -97,16 +104,34 @@ class CallManager(
     }
 
     fun rejectIncomingCall() {
+        cancelRingTimeout()
         endCall("Call declined")
     }
 
     fun endCall(reason: String = "Call ended") {
+        cancelRingTimeout()
+        stopDurationTimer()
+        val duration = if (callStartTimeMs > 0) {
+            ((System.currentTimeMillis() - callStartTimeMs) / 1000).toInt()
+        } else 0
         activeEngine?.end()
         activeEngine = null
         activeCallId = null
         activePeerKey = null
         pendingOffer = null
-        stateStore.update(CallUiState.Ended(reason))
+        callStartTimeMs = 0L
+        stateStore.update(CallUiState.Ended(reason, duration))
+    }
+
+    fun toggleMute() {
+        val muted = audioRouteManager.toggleMute()
+        (activeEngine as? WebRtcCallEngine)?.setMicEnabled(!muted)
+        stateStore.updateConnectedState(isMuted = muted)
+    }
+
+    fun toggleSpeaker() {
+        val speaker = audioRouteManager.toggleSpeaker()
+        stateStore.updateConnectedState(isSpeaker = speaker)
     }
 
     fun handleSignal(packetType: String, rawPayload: String, senderKey: String) {
@@ -126,21 +151,24 @@ class CallManager(
 
     private suspend fun handleOffer(signal: CallSignal, senderKey: String) {
         val contact = db.contactDao().getContact(senderKey)
-        val peerName = contact?.name ?: "TorX One contact"
+        val peerName = contact?.name ?: "Unknown Contact"
         val offer = AstraSessionDescription("offer", signal.sdp ?: return)
         activeCallId = signal.callId
         activePeerKey = senderKey
         activeMode = signal.mode
         pendingOffer = offer
         stateStore.update(CallUiState.Ringing(signal.callId, senderKey, peerName, CallDirection.INCOMING, signal.mode))
+        startRingTimeout()
     }
 
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
+        cancelRingTimeout()
         val contact = db.contactDao().getContact(senderKey)
         val callId = signal.callId
         val answer = AstraSessionDescription("answer", signal.sdp ?: return)
         activeEngine?.handleRemoteDescription(answer)
-        stateStore.update(CallUiState.Connecting(callId, senderKey, contact?.name ?: "TorX One contact", signal.mode))
+        val peerName = contact?.name ?: "Unknown Contact"
+        stateStore.update(CallUiState.Connecting(callId, senderKey, peerName, signal.mode))
     }
 
     private fun handleIce(signal: CallSignal) {
@@ -160,12 +188,14 @@ class CallManager(
         when (result) {
             is CallStartResult.Started -> {
                 activeMode = result.mode
-                val state = if (result.mode == CallMode.VOICE_NOTE || result.mode == CallMode.WALKIE_TALKIE) {
-                    CallUiState.Connected(callId, peerKey, peerName, result.mode)
+                if (result.mode == CallMode.VOICE_NOTE || result.mode == CallMode.WALKIE_TALKIE) {
+                    cancelRingTimeout()
+                    startDurationTimer()
+                    stateStore.update(CallUiState.Connected(callId, peerKey, peerName, result.mode))
                 } else {
-                    CallUiState.Connecting(callId, peerKey, peerName, result.mode)
+                    // For WebRTC: Connecting state. Connected state will be set by ICE callback.
+                    stateStore.update(CallUiState.Connecting(callId, peerKey, peerName, result.mode))
                 }
-                stateStore.update(state)
             }
             is CallStartResult.Fallback -> {
                 val fallback = engines.firstOrNull { it.capabilities.type == result.preferredEngine }
@@ -187,6 +217,51 @@ class CallManager(
             }
             is CallStartResult.Failed -> {
                 stateStore.update(CallUiState.Unavailable(result.reason))
+            }
+        }
+    }
+
+    // ──────────────────────── Duration Timer ────────────────────────
+
+    private fun startDurationTimer() {
+        callStartTimeMs = System.currentTimeMillis()
+        durationJob = scope.launch {
+            var seconds = 0
+            while (true) {
+                delay(1000)
+                seconds++
+                stateStore.updateConnectedState(durationSeconds = seconds)
+            }
+        }
+    }
+
+    private fun stopDurationTimer() {
+        durationJob?.cancel()
+        durationJob = null
+    }
+
+    // ──────────────────────── Ring Timeout ────────────────────────
+
+    private fun startRingTimeout() {
+        ringTimeoutJob = scope.launch {
+            delay(RING_TIMEOUT_MS)
+            Log.d(TAG, "Ring timeout — ending call")
+            endCall("No answer")
+        }
+    }
+
+    private fun cancelRingTimeout() {
+        ringTimeoutJob?.cancel()
+        ringTimeoutJob = null
+    }
+
+    // Start duration timer when WebRTC reports Connected
+    init {
+        scope.launch {
+            stateStore.state.collect { state ->
+                if (state is CallUiState.Connected && durationJob == null) {
+                    startDurationTimer()
+                }
             }
         }
     }

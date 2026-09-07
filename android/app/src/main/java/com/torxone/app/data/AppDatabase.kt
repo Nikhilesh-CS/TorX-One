@@ -68,10 +68,26 @@ data class ConnectionRequestEntity(
 
 @Dao
 interface ContactDao {
-    @Query("SELECT * FROM contacts")
+    @Query("""
+        SELECT c.* FROM contacts c
+        LEFT JOIN (
+            SELECT contactKey, MAX(timestamp) AS last_msg_time
+            FROM messages
+            GROUP BY contactKey
+        ) m ON c.signingPublicKey = m.contactKey
+        ORDER BY COALESCE(m.last_msg_time, 0) DESC, c.name ASC
+    """)
     fun getAllContacts(): Flow<List<ContactEntity>>
 
-    @Query("SELECT * FROM contacts")
+    @Query("""
+        SELECT c.* FROM contacts c
+        LEFT JOIN (
+            SELECT contactKey, MAX(timestamp) AS last_msg_time
+            FROM messages
+            GROUP BY contactKey
+        ) m ON c.signingPublicKey = m.contactKey
+        ORDER BY COALESCE(m.last_msg_time, 0) DESC, c.name ASC
+    """)
     fun getAllContactsSync(): List<ContactEntity>
 
     @Query("SELECT * FROM contacts WHERE signingPublicKey = :signingPublicKey LIMIT 1")

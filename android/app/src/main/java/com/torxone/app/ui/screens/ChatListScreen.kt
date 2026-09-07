@@ -443,7 +443,7 @@ fun ChatListScreen(
     }
 
     if (listenTogetherState.incomingInvite) {
-        val inviterName = contacts.firstOrNull { it.signingPublicKey == listenTogetherState.peerKey }?.name ?: "TorX One contact"
+        val inviterName = contacts.firstOrNull { it.signingPublicKey == listenTogetherState.peerKey }?.name ?: "Unknown Contact"
         AlertDialog(
             onDismissRequest = { listenTogetherManager?.rejectIncomingInvite() },
             title = { Text("Listen Together?") },
@@ -478,7 +478,7 @@ fun ChatListScreen(
     if (listenTogetherState.active || listenTogetherState.awaitingResponse) {
         ListenTogetherSessionDialog(
             state = listenTogetherState,
-            peerName = contacts.firstOrNull { it.signingPublicKey == listenTogetherState.peerKey }?.name ?: "TorX One contact",
+            peerName = contacts.firstOrNull { it.signingPublicKey == listenTogetherState.peerKey }?.name ?: "Unknown Contact",
             onDismiss = { },
             onPlay = {
                 val state = listenTogetherState

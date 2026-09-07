@@ -19,18 +19,20 @@ class AdaptiveCallRouter(
     }
 
     fun selectAudioEngine(context: CallRouteContext): CallEngine? {
+        // WebRTC handles all transports — it has its own NAT traversal
         val priority = when (context.transport) {
             Transport.NEARBY_DIRECT -> listOf(
-                CallEngineType.LAN_AUDIO,
-                CallEngineType.BLUETOOTH_WALKIE_TALKIE,
                 CallEngineType.WEBRTC,
                 CallEngineType.VOICE_NOTE
             )
             Transport.NEARBY_RELAY -> listOf(
-                CallEngineType.BLUETOOTH_WALKIE_TALKIE,
+                CallEngineType.WEBRTC,
                 CallEngineType.VOICE_NOTE
             )
-            Transport.TOR -> listOf(CallEngineType.VOICE_NOTE)
+            Transport.TOR -> listOf(
+                CallEngineType.WEBRTC,
+                CallEngineType.VOICE_NOTE
+            )
             Transport.FAILED -> emptyList()
         }
 

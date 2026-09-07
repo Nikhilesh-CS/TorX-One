@@ -145,6 +145,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 forceRecompose++
                             } else if (event == androidx.lifecycle.Lifecycle.Event.ON_START) {
                                 forceRecompose++
+                            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    service.identityManager.isAwaitingExternalActivity = false
+                                }, 500)
+                                forceRecompose++
                             }
                         }
                         lifecycleOwner.lifecycle.addObserver(observer)
@@ -421,11 +426,13 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
                     meshService?.let { activeService ->
                         val callState by activeService.callManager.stateStore.state.collectAsState()
-                        CallOverlay(
+                        com.torxone.app.ui.screens.InCallScreen(
                             state = callState,
                             onAccept = { activeService.callManager.acceptIncomingCall() },
                             onReject = { activeService.callManager.rejectIncomingCall() },
                             onEnd = { activeService.callManager.endCall() },
+                            onToggleMute = { activeService.callManager.toggleMute() },
+                            onToggleSpeaker = { activeService.callManager.toggleSpeaker() },
                             onDismissEnded = { activeService.callManager.stateStore.reset() }
                         )
                     }
@@ -468,81 +475,5 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
         // NOTE: We do NOT stop TorXOneService here.
         // The service keeps running in the background so Tor stays alive.
-    }
-}
-
-@Composable
-private fun CallOverlay(
-    state: CallUiState,
-    onAccept: () -> Unit,
-    onReject: () -> Unit,
-    onEnd: () -> Unit,
-    onDismissEnded: () -> Unit
-) {
-    when (state) {
-        CallUiState.Idle -> Unit
-        is CallUiState.Ringing -> {
-            AlertDialog(
-                onDismissRequest = { },
-                title = { Text(if (state.direction == CallDirection.INCOMING) "Incoming audio call" else "Calling...") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(state.peerName)
-                        Text("Encrypted signaling. Audio stream uses WebRTC over the local route.")
-                    }
-                },
-                confirmButton = {
-                    if (state.direction == CallDirection.INCOMING) {
-                        Button(onClick = onAccept) { Text("Accept") }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = if (state.direction == CallDirection.INCOMING) onReject else onEnd) {
-                        Text(if (state.direction == CallDirection.INCOMING) "Reject" else "Cancel")
-                    }
-                },
-                shape = RoundedCornerShape(24.dp)
-            )
-        }
-        is CallUiState.Connecting -> {
-            AlertDialog(
-                onDismissRequest = { },
-                title = { Text("Connecting audio call") },
-                text = { Text(state.peerName) },
-                confirmButton = {
-                    TextButton(onClick = onEnd) { Text("End") }
-                }
-            )
-        }
-        is CallUiState.Connected -> {
-            AlertDialog(
-                onDismissRequest = { },
-                title = { Text("Audio call connected") },
-                text = { Text(state.peerName) },
-                confirmButton = {
-                    Button(onClick = onEnd) { Text("End call") }
-                }
-            )
-        }
-        is CallUiState.Ended -> {
-            AlertDialog(
-                onDismissRequest = onDismissEnded,
-                title = { Text("Call ended") },
-                text = { Text(state.reason) },
-                confirmButton = {
-                    TextButton(onClick = onDismissEnded) { Text("Close") }
-                }
-            )
-        }
-        is CallUiState.Unavailable -> {
-            AlertDialog(
-                onDismissRequest = onDismissEnded,
-                title = { Text("Call unavailable") },
-                text = { Text(state.reason) },
-                confirmButton = {
-                    TextButton(onClick = onDismissEnded) { Text("Close") }
-                }
-            )
-        }
     }
 }

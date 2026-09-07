@@ -10,6 +10,7 @@ object MeshProtocol {
     const val TYPE_ACK = "ack"
     const val TYPE_READ = "read"
     const val TYPE_REACTION = "reaction"
+    const val TYPE_POLL_VOTE = "poll_vote"
     const val TYPE_PRESENCE = "presence"
     const val TYPE_PING = "ping"
     const val TYPE_PONG = "pong"

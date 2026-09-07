@@ -58,6 +58,7 @@ class MessageRouter(
             MeshProtocol.TYPE_CALL_ANSWER,
             MeshProtocol.TYPE_ICE_CANDIDATE,
             MeshProtocol.TYPE_REACTION,
+            MeshProtocol.TYPE_POLL_VOTE,
             MeshProtocol.TYPE_PRESENCE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
@@ -85,6 +86,7 @@ class MessageRouter(
             MeshProtocol.TYPE_CALL_ANSWER,
             MeshProtocol.TYPE_ICE_CANDIDATE,
             MeshProtocol.TYPE_REACTION,
+            MeshProtocol.TYPE_POLL_VOTE,
             MeshProtocol.TYPE_PRESENCE,
             MeshProtocol.TYPE_PROFILE_UPDATE,
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
@@ -706,6 +708,11 @@ class MessageRouter(
             return
         }
 
+        if (messageType == MeshProtocol.TYPE_POLL_VOTE) {
+            handlePollVotePacket(plaintext, senderKey)
+            return
+        }
+
         if (messageType == MeshProtocol.TYPE_PRESENCE) {
             service?.presenceManager?.handlePresencePacket(plaintext, senderKey)
             return
@@ -872,6 +879,46 @@ class MessageRouter(
             if (array.length() > 0) json.put(actor, array)
         }
         return if (json.length() == 0) null else json.toString()
+    }
+
+    // ──────────────────────── POLL VOTES ────────────────────────
+
+    private fun handlePollVotePacket(raw: String, senderKey: String) {
+        runCatching {
+            val json = JSONObject(raw)
+            val targetMessageId = json.getString("targetMessageId")
+            val optionIndex = json.getInt("optionIndex")
+            applyPollVote(targetMessageId, senderKey, optionIndex)
+        }.onFailure { e ->
+            Log.w(TAG, "Invalid poll vote packet", e)
+        }
+    }
+
+    private fun applyPollVote(messageId: String, voterKey: String, optionIndex: Int) {
+        val message = db.messageDao().getMessageById(messageId) ?: return
+        // Poll votes are stored in reactionsJson as: { "voterKey": ["optionIndex"] }
+        val votes = parseReactionMap(message.reactionsJson)
+        votes[voterKey] = listOf(optionIndex.toString())
+        db.messageDao().updateReactions(messageId, encodeReactionMap(votes))
+    }
+
+    suspend fun sendPollVote(contactKey: String, targetMessageId: String, optionIndex: Int): SendResult {
+        val actorKey = mySigningKeyHex.ifBlank {
+            identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty()
+        }
+        if (actorKey.isBlank()) return SendResult(false, Transport.FAILED, "Not logged in")
+
+        // Apply locally first
+        applyPollVote(targetMessageId, actorKey, optionIndex)
+
+        // Send to peer
+        val payload = JSONObject()
+            .put("astraType", "poll_vote")
+            .put("targetMessageId", targetMessageId)
+            .put("optionIndex", optionIndex)
+            .put("voterKey", actorKey)
+            .toString()
+        return sendRawPayload(contactKey, payload, MeshProtocol.TYPE_POLL_VOTE)
     }
 
     private data class ChatMessagePayload(

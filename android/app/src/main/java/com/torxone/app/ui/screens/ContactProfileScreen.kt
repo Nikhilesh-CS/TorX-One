@@ -99,7 +99,7 @@ fun ContactProfileScreen(
 
     val contact = uiState.contact
     val profile = uiState.profile
-    val displayName = profile?.name?.takeIf { it.isNotBlank() } ?: contact?.name ?: "TorX One contact"
+    val displayName = profile?.name?.takeIf { it.isNotBlank() } ?: contact?.name ?: "Unknown Contact"
     val isFounderProfile = FounderProfile.isFounderProfile(contactKey)
     val avatarPath = profile?.avatarLocalPath
     val status = when {

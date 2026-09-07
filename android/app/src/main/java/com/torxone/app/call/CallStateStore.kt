@@ -16,6 +16,12 @@ enum class CallMode {
     VOICE_NOTE
 }
 
+data class CallStats(
+    val bitrateKbps: Int = 0,
+    val packetLossPercent: Float = 0f,
+    val roundTripMs: Int = 0
+)
+
 sealed class CallUiState {
     data object Idle : CallUiState()
     data class Ringing(
@@ -35,9 +41,13 @@ sealed class CallUiState {
         val callId: String,
         val peerKey: String,
         val peerName: String,
-        val mode: CallMode
+        val mode: CallMode,
+        val isMuted: Boolean = false,
+        val isSpeaker: Boolean = false,
+        val callDurationSeconds: Int = 0,
+        val stats: CallStats = CallStats()
     ) : CallUiState()
-    data class Ended(val reason: String) : CallUiState()
+    data class Ended(val reason: String, val durationSeconds: Int = 0) : CallUiState()
     data class Unavailable(val reason: String) : CallUiState()
 }
 
@@ -51,5 +61,21 @@ class CallStateStore {
 
     fun reset() {
         _state.value = CallUiState.Idle
+    }
+
+    /** Update mute/speaker/duration on the currently Connected state without replacing the whole state. */
+    fun updateConnectedState(
+        isMuted: Boolean? = null,
+        isSpeaker: Boolean? = null,
+        durationSeconds: Int? = null,
+        stats: CallStats? = null
+    ) {
+        val current = _state.value as? CallUiState.Connected ?: return
+        _state.value = current.copy(
+            isMuted = isMuted ?: current.isMuted,
+            isSpeaker = isSpeaker ?: current.isSpeaker,
+            callDurationSeconds = durationSeconds ?: current.callDurationSeconds,
+            stats = stats ?: current.stats
+        )
     }
 }

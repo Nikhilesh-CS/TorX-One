@@ -31,6 +31,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -111,6 +112,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -233,10 +235,21 @@ fun ChatScreen(
     val conversationPresence = presenceStates[contactKey]
     val typingLabel = conversationPresence?.label?.takeIf { conversationPresence.activity == "typing" }
 
+    val activeService = remember { com.torxone.app.service.TorXOneService.getInstance() }
+
     val listState = rememberLazyListState()
     val smartScrollEngine = remember(listState) { SmartScrollEngine(listState, scope) }
     val isAtNewest by remember {
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 80 }
+    }
+
+    // Auto-scroll to newest message (index 0) if user is near bottom
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            if (listState.firstVisibleItemIndex <= 2) {
+                listState.animateScrollToItem(0)
+            }
+        }
     }
 
     var text by remember { mutableStateOf("") }
@@ -249,10 +262,12 @@ fun ChatScreen(
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var showVoiceRecorder by remember { mutableStateOf(false) }
     var structuredAttachment by remember { mutableStateOf<String?>(null) }
-    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
-    var pendingVideoUri by remember { mutableStateOf<Uri?>(null) }
-    var pendingCameraAction by remember { mutableStateOf<String?>(null) }
-    var pendingAudioAction by remember { mutableStateOf<String?>(null) }
+    var pendingCameraUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingVideoUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingCameraUri = pendingCameraUriString?.let { Uri.parse(it) }
+    val pendingVideoUri = pendingVideoUriString?.let { Uri.parse(it) }
+    var pendingCameraAction by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingAudioAction by rememberSaveable { mutableStateOf<String?>(null) }
 
     val reversedMessages = remember(messages) { messages.asReversed() }
     val isNearbyOnline = connectedEndpoints.contains(contactEndpoint)
@@ -260,9 +275,11 @@ fun ChatScreen(
     val inSelectionMode = selectedIds.isNotEmpty()
 
     val attachmentPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        activeService?.identityManager?.isAwaitingExternalActivity = false
         if (uri == null) return@rememberLauncherForActivityResult
         val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
         val messageType = when {
+            mimeType == "image/gif" -> "GIF"
             mimeType.startsWith("image/") -> "IMAGE"
             mimeType.startsWith("video/") -> "VIDEO"
             mimeType.startsWith("audio/") -> "AUDIO"
@@ -284,18 +301,20 @@ fun ChatScreen(
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        activeService?.identityManager?.isAwaitingExternalActivity = false
         val uri = pendingCameraUri
         if (success && uri != null) {
             queueMediaUri(uri, "image/jpeg", "IMAGE")
         }
-        pendingCameraUri = null
+        pendingCameraUriString = null
     }
     val videoLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo()) { success ->
+        activeService?.identityManager?.isAwaitingExternalActivity = false
         val uri = pendingVideoUri
         if (success && uri != null) {
             queueMediaUri(uri, "video/mp4", "VIDEO")
         }
-        pendingVideoUri = null
+        pendingVideoUriString = null
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -303,13 +322,15 @@ fun ChatScreen(
                 "video" -> {
                     sendPresence(contactKey, "recording_video", "Recording video...")
                     val uri = createTempMediaUri(context, "video", ".mp4")
-                    pendingVideoUri = uri
+                    pendingVideoUriString = uri.toString()
+                    activeService?.identityManager?.isAwaitingExternalActivity = true
                     videoLauncher.launch(uri)
                 }
                 else -> {
                     sendPresence(contactKey, "taking_photo", "Taking photo...")
                     val uri = createTempMediaUri(context, "camera", ".jpg")
-                    pendingCameraUri = uri
+                    pendingCameraUriString = uri.toString()
+                    activeService?.identityManager?.isAwaitingExternalActivity = true
                     cameraLauncher.launch(uri)
                 }
             }
@@ -470,6 +491,7 @@ fun ChatScreen(
             ChatComposer(
                 text = text,
                 replyTo = replyTo,
+                contactName = contactName,
                 onTextChange = { text = it },
                 onCancelReply = { replyTo = null },
                 onOpenAttachmentSheet = { showAttachmentSheet = true },
@@ -477,7 +499,8 @@ fun ChatScreen(
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                         sendPresence(contactKey, "taking_photo", "Taking photo...")
                         val uri = createTempMediaUri(context, "camera", ".jpg")
-                        pendingCameraUri = uri
+                        pendingCameraUriString = uri.toString()
+                        activeService?.identityManager?.isAwaitingExternalActivity = true
                         cameraLauncher.launch(uri)
                     } else {
                         pendingCameraAction = "photo"
@@ -498,6 +521,9 @@ fun ChatScreen(
                         viewModel.sendMessage(outgoing, replyTo?.id)
                         text = ""
                         replyTo = null
+                        scope.launch {
+                            listState.animateScrollToItem(0)
+                        }
                     }
                 }
             )
@@ -521,6 +547,7 @@ fun ChatScreen(
                 else -> {
                     MessageTimeline(
                         messages = reversedMessages,
+                        senderName = contactName,
                         listState = listState,
                         selectedIds = selectedIds,
                         highlightedId = highlightedId,
@@ -644,6 +671,7 @@ fun ChatScreen(
                     "Audio" -> sendPresence(contactKey, "choosing_audio", "Choosing audio...")
                     "Document", "Mesh File" -> sendPresence(contactKey, "choosing_file", "Choosing file...")
                 }
+                activeService?.identityManager?.isAwaitingExternalActivity = true
                 attachmentPicker.launch(mimeType)
             },
             onAction = { title ->
@@ -653,7 +681,8 @@ fun ChatScreen(
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                             sendPresence(contactKey, "taking_photo", "Taking photo...")
                             val uri = createTempMediaUri(context, "camera", ".jpg")
-                            pendingCameraUri = uri
+                            pendingCameraUriString = uri.toString()
+                            activeService?.identityManager?.isAwaitingExternalActivity = true
                             cameraLauncher.launch(uri)
                         } else {
                             pendingCameraAction = "photo"
@@ -664,7 +693,8 @@ fun ChatScreen(
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                             sendPresence(contactKey, "recording_video", "Recording video...")
                             val uri = createTempMediaUri(context, "video", ".mp4")
-                            pendingVideoUri = uri
+                            pendingVideoUriString = uri.toString()
+                            activeService?.identityManager?.isAwaitingExternalActivity = true
                             videoLauncher.launch(uri)
                         } else {
                             pendingCameraAction = "video"
@@ -690,7 +720,10 @@ fun ChatScreen(
                     "Contact" -> shareOwnContact(viewModel)
                     "Share Device" -> shareDeviceInfo(viewModel)
                     "Poll", "Code Snippet", "Calendar" -> structuredAttachment = title
-                    else -> attachmentPicker.launch("*/*")
+                    else -> {
+                        activeService?.identityManager?.isAwaitingExternalActivity = true
+                        attachmentPicker.launch("*/*")
+                    }
                 }
             }
         )
@@ -914,6 +947,7 @@ private fun SelectionHeader(
 @Composable
 private fun MessageTimeline(
     messages: List<MessagePayload>,
+    senderName: String,
     listState: androidx.compose.foundation.lazy.LazyListState,
     selectedIds: Set<String>,
     highlightedId: String?,
@@ -955,6 +989,7 @@ private fun MessageTimeline(
                 SwipeReplyMessage(
                     message = message,
                     showSenderName = !sameSenderAsOlder && message.senderId != "me",
+                    senderName = senderName,
                     compactWithPrevious = sameSenderAsOlder,
                     compactWithNext = sameSenderAsNewer,
                     isSelected = selectedIds.contains(message.id),
@@ -978,6 +1013,7 @@ private fun MessageTimeline(
 private fun SwipeReplyMessage(
     message: MessagePayload,
     showSenderName: Boolean,
+    senderName: String,
     compactWithPrevious: Boolean,
     compactWithNext: Boolean,
     isSelected: Boolean,
@@ -1046,6 +1082,7 @@ private fun SwipeReplyMessage(
             message = message,
             isMine = isMine,
             showSenderName = showSenderName,
+            senderName = senderName,
             compactWithPrevious = compactWithPrevious,
             compactWithNext = compactWithNext,
             isSelected = isSelected,
@@ -1068,6 +1105,7 @@ private fun MessageBubble(
     message: MessagePayload,
     isMine: Boolean,
     showSenderName: Boolean,
+    senderName: String,
     compactWithPrevious: Boolean,
     compactWithNext: Boolean,
     isSelected: Boolean,
@@ -1109,7 +1147,7 @@ private fun MessageBubble(
         Column(horizontalAlignment = if (isMine) Alignment.End else Alignment.Start) {
             if (showSenderName) {
                 Text(
-                    text = "TorX One contact",
+                    text = senderName,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp, bottom = 4.dp)
@@ -1133,7 +1171,7 @@ private fun MessageBubble(
                     if (message.replyToId != null) {
                         InlineReplyPreview(
                             isMine = isMine,
-                            sender = message.replyToSender.replySenderLabel(isMine),
+                            sender = message.replyToSender.replySenderLabel(isMine, senderName),
                             type = message.replyToType ?: "TEXT",
                             preview = message.replyToText ?: "Original message unavailable",
                             onClick = { onReplyClick(message.replyToId) }
@@ -1152,7 +1190,13 @@ private fun MessageBubble(
                             Spacer(Modifier.height(8.dp))
                         }
                     }
-                    if (message.text.isNotBlank() && !message.text.startsWith("Media Message") && !message.text.startsWith("Receiving ")) {
+                    if (message.text.startsWith("[Poll:JSON]")) {
+                        PollCard(
+                            message = message,
+                            isMine = isMine,
+                            textColor = textColor
+                        )
+                    } else if (message.text.isNotBlank() && !message.text.startsWith("Media Message") && !message.text.startsWith("Receiving ")) {
                         Text(
                             text = com.torxone.app.ui.utils.TextUtils.parseMarkdown(
                                 message.text,
@@ -1280,11 +1324,11 @@ private fun TypingIndicatorBubble(label: String) {
     }
 }
 
-private fun String?.replySenderLabel(isCurrentMessageMine: Boolean): String {
+private fun String?.replySenderLabel(isCurrentMessageMine: Boolean, peerName: String = "Unknown Contact"): String {
     return when (this) {
         null -> "Original"
-        "me" -> if (isCurrentMessageMine) "You" else "TorX One contact"
-        else -> if (isCurrentMessageMine) "TorX One contact" else "You"
+        "me" -> if (isCurrentMessageMine) "You" else peerName
+        else -> if (isCurrentMessageMine) peerName else "You"
     }
 }
 
@@ -1391,9 +1435,147 @@ private fun DatePill(date: String) {
 }
 
 @Composable
+private fun PollCard(
+    message: MessagePayload,
+    isMine: Boolean,
+    textColor: Color
+) {
+    val pollData = remember(message.text) {
+        runCatching {
+            val jsonStr = message.text.removePrefix("[Poll:JSON]")
+            val json = org.json.JSONObject(jsonStr)
+            val question = json.getString("question")
+            val optArr = json.getJSONArray("options")
+            val options = List(optArr.length()) { i -> optArr.getString(i) }
+            question to options
+        }.getOrNull()
+    }
+
+    if (pollData == null) {
+        Text(message.text, color = textColor, style = MaterialTheme.typography.bodyLarge)
+        return
+    }
+
+    val (question, options) = pollData
+    val scope = rememberCoroutineScope()
+
+    // Parse votes from reactions map: { voterKey: ["optionIndex"] }
+    val voteCounts = remember(message.reactions) {
+        val counts = mutableMapOf<Int, Int>()
+        message.reactions.forEach { (_, votes) ->
+            votes.firstOrNull()?.toIntOrNull()?.let { idx ->
+                counts[idx] = (counts[idx] ?: 0) + 1
+            }
+        }
+        counts
+    }
+    val totalVotes = voteCounts.values.sum()
+
+    // Determine if current user already voted
+    val myVoteIndex = remember(message.reactions) {
+        val myKey = com.torxone.app.service.TorXOneService.getInstance()
+            ?.messageRouter?.mySigningKeyHex.orEmpty()
+        if (myKey.isNotBlank()) {
+            message.reactions[myKey]?.firstOrNull()?.toIntOrNull()
+        } else null
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("📊", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                question,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = textColor
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        options.forEachIndexed { index, option ->
+            val count = voteCounts[index] ?: 0
+            val fraction = if (totalVotes > 0) count.toFloat() / totalVotes else 0f
+            val isMyVote = myVoteIndex == index
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clickable {
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val service = com.torxone.app.service.TorXOneService.getInstance()
+                            service?.messageRouter?.sendPollVote(
+                                message.senderId.takeIf { it != "me" }
+                                    ?: message.id.substringBefore("_"),
+                                message.id,
+                                index
+                            )
+                        }
+                    },
+                shape = RoundedCornerShape(10.dp),
+                color = if (isMyVote)
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                else
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                border = if (isMyVote)
+                    BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                else
+                    BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            ) {
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    // Progress bar background
+                    if (totalVotes > 0) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction)
+                                .height(40.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                    RoundedCornerShape(10.dp)
+                                )
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            option,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = textColor,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (totalVotes > 0) {
+                            Text(
+                                "$count",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isMyVote) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (totalVotes > 0) {
+            Text(
+                "$totalVotes vote${if (totalVotes != 1) "s" else ""}",
+                style = MaterialTheme.typography.labelSmall,
+                color = textColor.copy(alpha = 0.5f),
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun ChatComposer(
     text: String,
     replyTo: MessagePayload?,
+    contactName: String,
     onTextChange: (String) -> Unit,
     onCancelReply: () -> Unit,
     onOpenAttachmentSheet: () -> Unit,
@@ -1418,7 +1600,7 @@ private fun ChatComposer(
                 exit = fadeOut() + slideOutVertically { it / 2 }
             ) {
                 replyTo?.let {
-                    ComposerReplyPreview(message = it, onCancel = onCancelReply)
+                    ComposerReplyPreview(message = it, peerName = contactName, onCancel = onCancelReply)
                     Spacer(Modifier.height(8.dp))
                 }
             }
@@ -1477,7 +1659,7 @@ private fun ChatComposer(
 }
 
 @Composable
-private fun ComposerReplyPreview(message: MessagePayload, onCancel: () -> Unit) {
+private fun ComposerReplyPreview(message: MessagePayload, peerName: String, onCancel: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1496,7 +1678,7 @@ private fun ComposerReplyPreview(message: MessagePayload, onCancel: () -> Unit) 
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                if (message.senderId == "me") "Replying to You • ${message.messageType.replyTypeLabel()}" else "Replying to TorX One contact • ${message.messageType.replyTypeLabel()}",
+                if (message.senderId == "me") "Replying to You • ${message.messageType.replyTypeLabel()}" else "Replying to $peerName • ${message.messageType.replyTypeLabel()}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
@@ -1597,7 +1779,16 @@ private fun formatStructuredAttachment(type: String, heading: String, body: Stri
     val cleanHeading = heading.trim().ifBlank { type }
     val cleanBody = body.trim()
     return when (type) {
-        "Poll" -> "[Poll]\n$cleanHeading\nOptions:\n$cleanBody"
+        "Poll" -> {
+            val options = cleanBody.lines().filter { it.isNotBlank() }
+            val json = org.json.JSONObject()
+            json.put("type", "poll")
+            json.put("question", cleanHeading)
+            val optArray = org.json.JSONArray()
+            options.forEach { optArray.put(it.trim()) }
+            json.put("options", optArray)
+            "[Poll:JSON]${json}"
+        }
         "Code Snippet" -> "[Code]\n$cleanHeading\n```\n$cleanBody\n```"
         "Calendar" -> "[Calendar]\n$cleanHeading\n$cleanBody"
         else -> "[$type]\n$cleanHeading\n$cleanBody"

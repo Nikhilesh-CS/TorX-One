@@ -100,7 +100,7 @@ class MusicNoteManager(
                 val note = MusicNoteEntity(
                     noteId = json.getString("noteId"),
                     authorId = senderKey,
-                    authorName = json.optString("authorName", "TorX One contact"),
+                    authorName = json.optString("authorName", "Unknown Contact"),
                     authorPublicKey = senderKey,
                     signature = json.optString("signature", ""),
                     text = json.optString("text", "").take(60),

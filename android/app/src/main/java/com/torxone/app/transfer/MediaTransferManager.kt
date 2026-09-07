@@ -135,6 +135,7 @@ class MediaTransferManager(
         return try {
             val typeDir = when (messageType) {
                 "IMAGE" -> "images"
+                "GIF" -> "gifs"
                 "VIDEO" -> "videos"
                 "AUDIO" -> "audio"
                 "VOICE" -> "voice_notes"
@@ -145,6 +146,17 @@ class MediaTransferManager(
             
             val sandboxDir = File(context.getExternalFilesDir("media"), typeDir)
             if (!sandboxDir.exists()) sandboxDir.mkdirs()
+
+            // GIFs must be copied raw — NEVER decode/recompress or animation frames are lost
+            if (messageType == "GIF") {
+                val destFile = File(sandboxDir, "${messageId}.gif")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                return destFile
+            }
 
             if (messageType == "IMAGE") {
                 val destFile = File(sandboxDir, "${messageId}.jpg")
@@ -562,6 +574,7 @@ class MediaTransferManager(
         if (msg.checksum == null || finalChecksum == msg.checksum) {
             val typeDir = when (msg.messageType) {
                 "IMAGE" -> "images"
+                "GIF" -> "gifs"
                 "VIDEO" -> "videos"
                 "AUDIO" -> "audio"
                 "VOICE" -> "voice_notes"
@@ -577,6 +590,13 @@ class MediaTransferManager(
 
             db.mediaTransferDao().updateStatus(messageId, TransferStatus.COMPLETED.name, System.currentTimeMillis())
             db.messageDao().markMediaDelivered(messageId, "delivered", destFile.absolutePath)
+
+            // Update message text from "Receiving..." to proper description
+            val displayText = msg.fileName?.let { "Media Message (${msg.messageType})" } ?: "Media Message (${msg.messageType})"
+            db.openHelper.writableDatabase.execSQL(
+                "UPDATE messages SET text = ? WHERE messageId = ?",
+                arrayOf(displayText, messageId)
+            )
             
             // Send COMPLETE ACK back
             val payload = JSONObject().apply { put("msgId", messageId) }.toString()

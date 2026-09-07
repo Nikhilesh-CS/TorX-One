@@ -148,10 +148,13 @@ dependencies {
 
     // Coil for image loading
     implementation("io.coil-kt:coil-compose:2.6.0")
+    implementation("io.coil-kt:coil-gif:2.6.0")
 
     // DataStore for Settings
     implementation("androidx.datastore:datastore-preferences:1.0.0")
-    
+
+    // WebRTC for real-time voice/video calling
+    implementation("io.getstream:stream-webrtc-android:1.1.1")
     // ----------------------------------------------------
     // Testing Dependencies
     // ----------------------------------------------------

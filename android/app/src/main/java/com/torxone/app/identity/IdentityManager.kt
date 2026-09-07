@@ -35,14 +35,16 @@ class IdentityManager(context: Context) {
     private var cachedEncSec: ByteArray? = null
     private var cachedSigSec: ByteArray? = null
 
+    var isAwaitingExternalActivity: Boolean = false
+
     fun lockSession() {
-        if (isAppLockEnabled) {
+        if (isAppLockEnabled && !isAwaitingExternalActivity) {
             isSessionUnlocked = false
         }
     }
 
     fun relockSession() {
-        if (isAppLockEnabled) {
+        if (isAppLockEnabled && !isAwaitingExternalActivity) {
             isSessionUnlocked = false
         }
     }
