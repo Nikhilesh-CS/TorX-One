@@ -50,6 +50,7 @@ class WebRtcCallEngine(
     
     private var isIceConnected = false
     private var isMediaReceived = false
+    private var isCleaningUp = false
 
     override fun isAvailable(context: CallRouteContext): Boolean {
         // WebRTC is now always available — the native library is bundled
@@ -143,14 +144,16 @@ class WebRtcCallEngine(
     }
 
     private fun createAndInitClient(): WebRtcClient {
+        isCleaningUp = false
         engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val rtcClient = WebRtcClient(
             context = context,
             iceServerProvider = DefaultIceServerProvider(),
             onIceCandidate = { candidate ->
+                if (isCleaningUp) return@WebRtcClient
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
-                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                engineScope?.launch(Dispatchers.IO) {
                     signaling.sendIceCandidate(peerKey, callId, activeMode, candidate)
                 }
             },
@@ -168,12 +171,14 @@ class WebRtcCallEngine(
                 }
             },
             onDisconnected = {
+                if (isCleaningUp) return@WebRtcClient
                 Log.d(TAG, "Call disconnected, triggering reconnect")
                 stateStore.update(CallUiState.Reconnecting(activeCallId ?: "", activePeerKey ?: "", "", activeMode))
                 isIceConnected = false
                 // WebRtcClient will fire onReconnecting next if it was truly a disconnect
             },
             onReconnecting = {
+                if (isCleaningUp) return@WebRtcClient
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
                 Log.d(TAG, "Call reconnecting (ICE Restart): $callId")
@@ -194,7 +199,9 @@ class WebRtcCallEngine(
                             Log.e(TAG, "Failed to perform ICE restart", e)
                         }
                         
-                        kotlinx.coroutines.delay(4000)
+                        // Wait for a long interval to prevent overlapping negotiations
+                        // If it succeeds, the onConnected callback cancels this job
+                        kotlinx.coroutines.delay(10000)
                         
                         if (System.currentTimeMillis() - startTime > 30000) {
                             Log.e(TAG, "Reconnection timed out")
@@ -238,6 +245,8 @@ class WebRtcCallEngine(
     }
 
     private fun cleanup() {
+        if (isCleaningUp) return
+        isCleaningUp = true
         engineScope?.cancel()
         engineScope = null
         reconnectJob?.cancel()

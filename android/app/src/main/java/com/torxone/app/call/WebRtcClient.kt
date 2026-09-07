@@ -143,11 +143,20 @@ class WebRtcClient(
         return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             peerConnection?.createOffer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
-                    sdp?.let {
-                        peerConnection?.setLocalDescription(NoOpSdpObserver(), it)
-                        continuation.resumeWith(Result.success(
-                            AstraSessionDescription("offer", it.description)
-                        ))
+                    sdp?.let { localSdp ->
+                        peerConnection?.setLocalDescription(object : SdpObserver {
+                            override fun onCreateSuccess(sdp: SessionDescription?) {}
+                            override fun onSetSuccess() {
+                                continuation.resumeWith(Result.success(
+                                    AstraSessionDescription("offer", localSdp.description)
+                                ))
+                            }
+                            override fun onCreateFailure(error: String?) {}
+                            override fun onSetFailure(error: String?) {
+                                Log.e(TAG, "Set local description failed: $error")
+                                continuation.resumeWith(Result.failure(RuntimeException("Set local description failed: $error")))
+                            }
+                        }, localSdp)
                     }
                 }
                 override fun onCreateFailure(error: String?) {
@@ -169,11 +178,20 @@ class WebRtcClient(
         return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
             peerConnection?.createAnswer(object : SdpObserver {
                 override fun onCreateSuccess(sdp: SessionDescription?) {
-                    sdp?.let {
-                        peerConnection?.setLocalDescription(NoOpSdpObserver(), it)
-                        continuation.resumeWith(Result.success(
-                            AstraSessionDescription("answer", it.description)
-                        ))
+                    sdp?.let { localSdp ->
+                        peerConnection?.setLocalDescription(object : SdpObserver {
+                            override fun onCreateSuccess(sdp: SessionDescription?) {}
+                            override fun onSetSuccess() {
+                                continuation.resumeWith(Result.success(
+                                    AstraSessionDescription("answer", localSdp.description)
+                                ))
+                            }
+                            override fun onCreateFailure(error: String?) {}
+                            override fun onSetFailure(error: String?) {
+                                Log.e(TAG, "Set local description failed: $error")
+                                continuation.resumeWith(Result.failure(RuntimeException("Set local description failed: $error")))
+                            }
+                        }, localSdp)
                     }
                 }
                 override fun onCreateFailure(error: String?) {
