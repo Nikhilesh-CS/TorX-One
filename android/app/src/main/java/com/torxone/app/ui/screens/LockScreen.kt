@@ -21,6 +21,7 @@ import com.torxone.app.security.BiometricAuthManager
 import com.torxone.app.security.BiometricCapability
 import com.torxone.app.ui.components.PremiumAuroraBackground
 import com.torxone.app.ui.components.premiumGlass
+import com.torxone.app.ui.theme.AstraTheme
 
 @Composable
 fun LockScreen(
