@@ -77,7 +77,7 @@ fun ContactProfileScreen(
         uiState = withContext(Dispatchers.IO) {
             val contact = db.contactDao().getContact(contactKey)
             val profile = db.profileDao().getProfileSync(contactKey)
-            val messages = db.messageDao().getMessagesForContactSync(contactKey)
+            val messages = db.messageDao().getMessagesForConversationSync(contactKey)
             val mediaItems = messages.filter { it.messageType in setOf("IMAGE", "VIDEO", "GIF", "STICKER") }
             val fileItems = messages.filter { it.messageType in setOf("DOCUMENT", "APK", "AUDIO", "VOICE") }
             val linkItems = messages.flatMap { message ->

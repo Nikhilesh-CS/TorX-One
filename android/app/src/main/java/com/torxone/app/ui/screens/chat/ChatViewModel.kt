@@ -33,7 +33,7 @@ class ChatViewModel(
     val contactOnion: StateFlow<String> = _contactOnion
 
     val unreadCount: StateFlow<Int> = db.messageDao()
-        .getUnreadCountForContact(contactKey)
+        .getUnreadCountForConversation(contactKey)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     init {
@@ -58,7 +58,7 @@ class ChatViewModel(
     private fun observeMessages() {
         viewModelScope.launch(Dispatchers.IO) {
             _messageLimit.flatMapLatest { limit ->
-                db.messageDao().getMessagesForContact(contactKey, limit)
+                db.messageDao().getMessagesForConversation(contactKey, limit = limit)
             }.collect { entities ->
                 _isLoading.value = false
                 val payloads = entities.map { entity ->

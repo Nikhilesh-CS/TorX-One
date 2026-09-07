@@ -38,6 +38,12 @@ object MeshProtocol {
     const val TYPE_CALL_ANSWER = "call_answer"
     const val TYPE_ICE_CANDIDATE = "ice_candidate"
     
+    // Group signaling
+    const val TYPE_GROUP_INVITE = "group_invite"
+    const val TYPE_GROUP_JOIN = "group_join"
+    const val TYPE_GROUP_UPDATE = "group_update"
+    const val TYPE_GROUP_LEAVE = "group_leave"
+    
     const val DEFAULT_TTL = 5
     // Single encrypted frames are for chat/control metadata, not large media.
     // Large files still use the chunked media-transfer pipeline.

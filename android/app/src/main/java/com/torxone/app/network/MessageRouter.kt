@@ -64,6 +64,10 @@ class MessageRouter(
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
             MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK,
             MeshProtocol.TYPE_MUSIC_NOTE,
+            MeshProtocol.TYPE_GROUP_INVITE,
+            MeshProtocol.TYPE_GROUP_JOIN,
+            MeshProtocol.TYPE_GROUP_UPDATE,
+            MeshProtocol.TYPE_GROUP_LEAVE,
             MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(endpointId, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, endpointId) }
@@ -92,6 +96,10 @@ class MessageRouter(
             MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO,
             MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK,
             MeshProtocol.TYPE_MUSIC_NOTE,
+            MeshProtocol.TYPE_GROUP_INVITE,
+            MeshProtocol.TYPE_GROUP_JOIN,
+            MeshProtocol.TYPE_GROUP_UPDATE,
+            MeshProtocol.TYPE_GROUP_LEAVE,
             MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(null, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, null) }

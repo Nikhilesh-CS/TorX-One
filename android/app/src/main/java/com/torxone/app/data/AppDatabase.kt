@@ -33,6 +33,8 @@ data class MessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val messageId: String,
     val contactKey: String,
+    val conversationType: String = "direct", // "direct" or "group"
+    val senderKey: String? = null,
     val text: String,
     val timestamp: Long,
     val direction: String,
@@ -56,6 +58,65 @@ data class MessageEntity(
     val transferStatus: String? = null,
     val reactionsJson: String? = null
 )
+
+@Entity(tableName = "groups")
+data class GroupEntity(
+    @PrimaryKey val groupId: String,
+    val name: String,
+    val avatarUri: String? = null,
+    val creatorKey: String,
+    val createdAt: Long,
+    val myRole: String
+)
+
+@Entity(
+    tableName = "group_members",
+    primaryKeys = ["groupId", "memberKey"],
+    foreignKeys = [
+        androidx.room.ForeignKey(
+            entity = GroupEntity::class,
+            parentColumns = ["groupId"],
+            childColumns = ["groupId"],
+            onDelete = androidx.room.ForeignKey.CASCADE
+        )
+    ]
+)
+data class GroupMemberEntity(
+    val groupId: String,
+    val memberKey: String,
+    val role: String,
+    val joinedAt: Long
+)
+
+@Dao
+interface GroupDao {
+    @Query("SELECT * FROM groups ORDER BY createdAt DESC")
+    fun getAllGroups(): Flow<List<GroupEntity>>
+
+    @Query("SELECT * FROM groups WHERE groupId = :groupId LIMIT 1")
+    fun getGroup(groupId: String): GroupEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertGroup(group: GroupEntity)
+
+    @Query("DELETE FROM groups WHERE groupId = :groupId")
+    fun deleteGroup(groupId: String)
+
+    @Query("SELECT * FROM group_members WHERE groupId = :groupId")
+    fun getGroupMembers(groupId: String): Flow<List<GroupMemberEntity>>
+
+    @Query("SELECT * FROM group_members WHERE groupId = :groupId")
+    fun getGroupMembersSync(groupId: String): List<GroupMemberEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertGroupMember(member: GroupMemberEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertGroupMembers(members: List<GroupMemberEntity>)
+
+    @Query("DELETE FROM group_members WHERE groupId = :groupId AND memberKey = :memberKey")
+    fun deleteGroupMember(groupId: String, memberKey: String)
+}
 
 @Entity(tableName = "connection_requests")
 data class ConnectionRequestEntity(
@@ -118,26 +179,26 @@ interface ContactDao {
 @Dao
 interface MessageDao {
     @Transaction
-    @Query("SELECT * FROM messages WHERE id IN (SELECT id FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
-    fun getMessagesForContact(contactKey: String, limit: Int = 100): Flow<List<MessageEntity>>
+    @Query("SELECT * FROM messages WHERE id IN (SELECT id FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType ORDER BY timestamp DESC LIMIT :limit) ORDER BY timestamp ASC")
+    fun getMessagesForConversation(contactKey: String, conversationType: String = "direct", limit: Int = 100): Flow<List<MessageEntity>>
 
-    @Query("SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp DESC LIMIT 1")
-    fun getLastMessageForContact(contactKey: String): Flow<MessageEntity?>
+    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType ORDER BY timestamp DESC LIMIT 1")
+    fun getLastMessageForConversation(contactKey: String, conversationType: String = "direct"): Flow<MessageEntity?>
 
-    @Query("SELECT COUNT(*) FROM messages WHERE contactKey = :contactKey AND direction = 'received' AND status != 'read'")
-    fun getUnreadCountForContact(contactKey: String): Flow<Int>
-
-    @Transaction
-    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND direction = 'received' AND status != 'read' ORDER BY timestamp ASC")
-    fun getUnreadMessagesSync(contactKey: String): List<MessageEntity>
+    @Query("SELECT COUNT(*) FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType AND direction = 'received' AND status != 'read'")
+    fun getUnreadCountForConversation(contactKey: String, conversationType: String = "direct"): Flow<Int>
 
     @Transaction
-    @Query("SELECT * FROM messages WHERE contactKey = :contactKey ORDER BY timestamp ASC")
-    fun getMessagesForContactSync(contactKey: String): List<MessageEntity>
+    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType AND direction = 'received' AND status != 'read' ORDER BY timestamp ASC")
+    fun getUnreadMessagesSync(contactKey: String, conversationType: String = "direct"): List<MessageEntity>
 
     @Transaction
-    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND text LIKE '%' || :query || '%' ORDER BY timestamp DESC")
-    fun searchMessages(contactKey: String, query: String): Flow<List<MessageEntity>>
+    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType ORDER BY timestamp ASC")
+    fun getMessagesForConversationSync(contactKey: String, conversationType: String = "direct"): List<MessageEntity>
+
+    @Transaction
+    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType AND text LIKE '%' || :query || '%' ORDER BY timestamp DESC")
+    fun searchMessages(contactKey: String, conversationType: String = "direct", query: String): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE messageId = :messageId LIMIT 1")
     fun getMessageById(messageId: String): MessageEntity?
@@ -165,8 +226,8 @@ interface MessageDao {
     """)
     fun updateSentMessageStatus(messageId: String, contactKey: String, status: String, transport: String? = null): Int
 
-    @Query("UPDATE messages SET status = 'read' WHERE contactKey = :contactKey AND direction = 'received' AND status != 'read'")
-    fun markMessagesAsRead(contactKey: String)
+    @Query("UPDATE messages SET status = 'read' WHERE contactKey = :contactKey AND conversationType = :conversationType AND direction = 'received' AND status != 'read'")
+    fun markMessagesAsRead(contactKey: String, conversationType: String = "direct")
 
     @Query("UPDATE messages SET reactionsJson = :reactionsJson WHERE messageId = :messageId")
     fun updateReactions(messageId: String, reactionsJson: String?)
@@ -186,8 +247,8 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE messageId = :messageId")
     fun deleteMessage(messageId: String)
 
-    @Query("DELETE FROM messages WHERE contactKey = :contactKey")
-    fun clearChat(contactKey: String)
+    @Query("DELETE FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType")
+    fun clearChat(contactKey: String, conversationType: String = "direct")
 
     @Query("DELETE FROM messages")
     fun deleteAllMessages()
@@ -280,8 +341,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class],
-    version = 13,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class],
+    version = 14,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -293,6 +354,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun profileDao(): ProfileDao
     abstract fun musicNoteDao(): MusicNoteDao
     abstract fun pendingEncryptedPayloadDao(): PendingEncryptedPayloadDao
+    abstract fun groupDao(): GroupDao
+    abstract fun conversationDao(): ConversationDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -485,6 +548,36 @@ abstract class AppDatabase : RoomDatabase() {
                         `rawJson` TEXT NOT NULL,
                         `receivedAt` INTEGER NOT NULL,
                         PRIMARY KEY(`messageId`)
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_13_14 = object : androidx.room.migration.Migration(13, 14) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN conversationType TEXT NOT NULL DEFAULT 'direct'")
+                db.execSQL("ALTER TABLE messages ADD COLUMN senderKey TEXT")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `groups` (
+                        `groupId` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `avatarUri` TEXT,
+                        `creatorKey` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `myRole` TEXT NOT NULL,
+                        PRIMARY KEY(`groupId`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `group_members` (
+                        `groupId` TEXT NOT NULL,
+                        `memberKey` TEXT NOT NULL,
+                        `role` TEXT NOT NULL,
+                        `joinedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`groupId`, `memberKey`),
+                        FOREIGN KEY(`groupId`) REFERENCES `groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
                 """.trimIndent())
             }

@@ -82,8 +82,13 @@ fun ChatListScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val conversationsState by remember(db) {
+        db.conversationDao().getUnifiedConversations().map<List<com.torxone.app.data.UnifiedConversation>, List<com.torxone.app.data.UnifiedConversation>?> { it }
+    }.collectAsStateWithLifecycle(initialValue = null)
+    val conversations = conversationsState.orEmpty()
+    
     val contactsState by remember(db) {
-        db.contactDao().getAllContacts().map<List<ContactEntity>, List<ContactEntity>?> { it }
+        db.contactDao().getAllContacts().map<List<com.torxone.app.data.ContactEntity>, List<com.torxone.app.data.ContactEntity>?> { it }
     }.collectAsStateWithLifecycle(initialValue = null)
     val contacts = contactsState.orEmpty()
     val nearbyDevices by nearbyManager.nearbyDevices.collectAsStateWithLifecycle()
@@ -267,14 +272,14 @@ fun ChatListScreen(
                 PremiumSectionHeader("Messages", Color(0xFF9AF6D0))
             }
 
-            if (contactsState == null) {
+            if (conversationsState == null) {
                 item {
                     com.torxone.app.ui.components.AstraEmptyState(
                         title = "Loading conversations",
                         message = "Restoring your secure chat list..."
                     )
                 }
-            } else if (contacts.isEmpty()) {
+            } else if (conversations.isEmpty()) {
                 item {
                     com.torxone.app.ui.components.AstraEmptyState(
                         title = "No conversations yet",
@@ -282,38 +287,51 @@ fun ChatListScreen(
                     )
                 }
             } else {
-                items(contacts) { contact ->
-                    val isNearbyOnline = connectedEndpoints.contains(contact.endpointId)
-                    val livePresence = presenceStates[contact.signingPublicKey]
+                items(conversations) { conversation ->
+                    val isNearbyOnline = connectedEndpoints.contains(conversation.endpointId)
+                    val livePresence = presenceStates[conversation.id]
                     val isContactOnline = isNearbyOnline || livePresence?.activity == "online"
                     val routeLabel = when {
+                        conversation.type == "group" -> "Secure Group"
                         isNearbyOnline -> "Nearby route ready"
                         livePresence != null -> livePresence.label
-                        contact.onionAddress.isNotBlank() && isTorReady -> "Tor route standby"
-                        contact.onionAddress.isNotBlank() -> "Tor route offline"
+                        conversation.onionAddress.isNotBlank() && isTorReady -> "Tor route standby"
+                        conversation.onionAddress.isNotBlank() -> "Tor route offline"
                         else -> "Secure route standby"
                     }
                     
-                    val lastMessage by db.messageDao().getLastMessageForContact(contact.signingPublicKey).collectAsStateWithLifecycle(initialValue = null)
-                    val unreadCount by db.messageDao().getUnreadCountForContact(contact.signingPublicKey).collectAsStateWithLifecycle(initialValue = 0)
-                    val profile by db.profileDao().getProfile(contact.signingPublicKey).collectAsStateWithLifecycle(initialValue = null)
+                    val lastMessage by db.messageDao().getLastMessageForConversation(conversation.id, conversation.type).collectAsStateWithLifecycle(initialValue = null)
+                    val unreadCount by db.messageDao().getUnreadCountForConversation(conversation.id, conversation.type).collectAsStateWithLifecycle(initialValue = 0)
+                    val profile by db.profileDao().getProfile(conversation.id).collectAsStateWithLifecycle(initialValue = null)
                     
                     val lastMessageText = lastMessage?.text ?: "Tap to chat..."
                     val lastMessageTime = lastMessage?.timestamp
 
+                    // Use ContactRow for both types for Phase 1. 
+                    // ContactRow takes ContactEntity in the signature, we might need to modify ContactRow or map it back
+                    // Actually ContactRow uses ContactEntity for name/signingPublicKey.
+                    // Wait, I need to map UnifiedConversation to a ContactEntity temporarily or change ContactRow.
+                    // Let's modify ContactRow call to use conversation properties
                     ContactRow(
-                        contact = contact, 
-                        avatarModel = profile?.avatarLocalPath,
+                        contact = ContactEntity(conversation.id, "", conversation.name, conversation.endpointId, conversation.onionAddress, false, 0L),
+                        avatarModel = conversation.avatarUri ?: profile?.avatarLocalPath,
                         isOnline = isContactOnline,
                         routeLabel = routeLabel,
                         lastMessageText = lastMessageText,
                         lastMessageTime = lastMessageTime,
                         unreadCount = unreadCount,
                         onClick = {
-                            navController.navigate("chat/${contact.signingPublicKey}")
+                            if (conversation.type == "group") {
+                                // For now, just navigate to the same chat screen, but chat screen expects contactKey
+                                navController.navigate("chat/${conversation.id}")
+                            } else {
+                                navController.navigate("chat/${conversation.id}")
+                            }
                         },
                         onLongClick = {
-                            contactToDelete = contact
+                            if (conversation.type == "direct") {
+                                contactToDelete = ContactEntity(conversation.id, "", conversation.name, conversation.endpointId, conversation.onionAddress, false, 0L)
+                            }
                         }
                     )
                 }
