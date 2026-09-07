@@ -58,9 +58,11 @@ import com.torxone.app.ui.theme.SoftWhite
 @Composable
 fun SecurityCenterScreen(
     identityManager: IdentityManager,
-    torManager: TorManager
+    torManager: TorManager,
+    settingsManager: com.torxone.app.data.SettingsManager
 ) {
     val context = LocalContext.current
+    val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
     val torReady by torManager.isTorReady.collectAsStateWithLifecycle()
     val torStatus by torManager.torStatus.collectAsStateWithLifecycle()
     val onionAddress by torManager.onionAddress.collectAsStateWithLifecycle()
@@ -89,6 +91,13 @@ fun SecurityCenterScreen(
                     title = "End-to-end encryption",
                     value = "Active - X25519 / ChaCha20-Poly1305",
                     statusColor = NeonGreen,
+                    icon = Icons.Rounded.Lock
+                )
+
+                SecurityCard(
+                    title = "App Lock",
+                    value = if (appLockEnabled) "Active - Biometrics / Password" else "Disabled",
+                    statusColor = if (appLockEnabled) NeonGreen else AstraTheme.colors.secondary,
                     icon = Icons.Rounded.Lock
                 )
 

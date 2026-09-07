@@ -52,7 +52,7 @@ fun PermissionsScreen(onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(AstraTheme.spacing.medium))
             Text(
-                "TorX One needs Bluetooth and Location to discover nearby devices over Wi-Fi Direct and Bluetooth.\n\nTor (via Orbot) is used for secure distant messaging — no central server.",
+                "TorX One needs Notifications to alert you when messages arrive, and Bluetooth/Nearby permissions to discover devices and form mesh networks without central servers.",
                 fontSize = AstraTheme.typography.bodyMedium.fontSize,
                 color = MutedGray,
                 textAlign = TextAlign.Center,

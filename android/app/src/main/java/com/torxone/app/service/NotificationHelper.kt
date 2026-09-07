@@ -162,6 +162,45 @@ object NotificationHelper {
         nm.notify(NOTIFICATION_ID_SUMMARY, summaryBuilder.build())
     }
 
+    fun showDeferredMessageNotification(context: Context, contact: ContactEntity) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val openPendingIntent = PendingIntent.getActivity(
+            context, contact.signingPublicKey.hashCode(), openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle(contact.name)
+            .setContentText("New secure message received")
+            .setColor(0xFF00A884.toInt()) // WhatsApp Green
+            .setContentIntent(openPendingIntent)
+            .setAutoCancel(true)
+            .setGroup("AstraMesh_Messages")
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+
+        nm.notify(contact.signingPublicKey.hashCode(), builder.build())
+
+        // Update Summary Notification
+        val summaryBuilder = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setStyle(NotificationCompat.InboxStyle()
+                .setSummaryText("AstraMesh Messages")
+            )
+            .setGroup("AstraMesh_Messages")
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .setColor(0xFF00A884.toInt())
+
+        nm.notify(NOTIFICATION_ID_SUMMARY, summaryBuilder.build())
+    }
+
     fun showUpdateNotification(context: Context, version: String) {
         val nm = context.getSystemService(NotificationManager::class.java)
         
@@ -182,6 +221,30 @@ object NotificationHelper {
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
 
         nm.notify("astra_update".hashCode(), builder.build())
+    }
+
+    fun showAppLockSetupNotification(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java)
+        
+        val openAppIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            putExtra("open_app_lock_setup", true)
+        }
+        val openPendingIntent = PendingIntent.getActivity(
+            context, "app_lock_security_update".hashCode(), openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_UPDATES)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle("Security Update: Protect AstraMesh")
+            .setContentText("Set up Biometric or Face Lock to secure your messages and identity.")
+            .setContentIntent(openPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+
+        nm.notify("app_lock_setup".hashCode(), builder.build())
     }
 
     fun clearContactNotifications(context: Context, contactKey: String) {

@@ -14,13 +14,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +26,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -39,12 +39,13 @@ import com.torxone.app.ui.theme.TorXOneTheme
 import com.torxone.app.ui.theme.DeepBlack
 import com.torxone.app.updater.GitHubUpdater
 import com.torxone.app.updater.UpdateInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import android.widget.Toast
 import com.torxone.app.call.CallDirection
 import com.torxone.app.call.CallUiState
 
-class MainActivity : ComponentActivity() {
+class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     private var permissionsGranted by mutableStateOf(false)
     private var serviceBound by mutableStateOf(false)
@@ -66,6 +67,9 @@ class MainActivity : ComponentActivity() {
     private val requiredPermissions: Array<String>
         get() {
             val perms = mutableListOf<String>()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                perms += Manifest.permission.POST_NOTIFICATIONS
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 perms += Manifest.permission.BLUETOOTH_SCAN
                 perms += Manifest.permission.BLUETOOTH_ADVERTISE
@@ -90,14 +94,22 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        permissionsGranted = true
-        startAndBindService()
+        val allGranted = requiredPermissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        permissionsGranted = allGranted
+        if (allGranted) {
+            startAndBindService()
+        } else {
+            requestNearbyPermissions()
+        }
 
         setContent {
             val settingsManager = remember { com.torxone.app.data.SettingsManager(this@MainActivity) }
             val darkMode by settingsManager.darkModeFlow.collectAsState(initial = true)
             val reduceMotion by settingsManager.reduceMotionFlow.collectAsState(initial = false)
             val showTransportIcons by settingsManager.showTransportIconsFlow.collectAsState(initial = true)
+            val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsState(initial = false)
 
             TorXOneTheme(
                 useAmoledTheme = darkMode,
@@ -117,13 +129,131 @@ class MainActivity : ComponentActivity() {
                         return@Surface
                     }
 
+                    // --- APP LOCK GATING ---
+                    LaunchedEffect(appLockEnabled) {
+                        service.identityManager.isAppLockEnabled = appLockEnabled
+                    }
+                    
+                    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+                    val scope = rememberCoroutineScope()
+                    var forceRecompose by remember { mutableStateOf(0) }
+                    
+                    DisposableEffect(lifecycleOwner, appLockEnabled) {
+                        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP && appLockEnabled) {
+                                service.identityManager.lockSession()
+                                forceRecompose++
+                            } else if (event == androidx.lifecycle.Lifecycle.Event.ON_START) {
+                                forceRecompose++
+                            }
+                        }
+                        lifecycleOwner.lifecycle.addObserver(observer)
+                        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                    }
+
+                    // This forces recompose when lifecycle changes
+                    forceRecompose.let { } 
+
+                    val isLocked = appLockEnabled && !service.identityManager.isSessionUnlocked
+                    
+                    if (isLocked) {
+                        val biometricAuthManager = remember { com.torxone.app.security.BiometricAuthManager(this@MainActivity) }
+                        com.torxone.app.ui.screens.LockScreen(
+                            biometricAuthManager = biometricAuthManager,
+                            onUnlock = {
+                                service.identityManager.unlockSession()
+                                forceRecompose++
+                                scope.launch(Dispatchers.IO) {
+                                    service.messageRouter.processEncryptedBacklog()
+                                }
+                            }
+                        )
+                        return@Surface
+                    }
+                    // --- END APP LOCK GATING ---
+
                     val navController = rememberNavController()
                     val hasIdentity = remember { service.identityManager.hasIdentity() }
+
+                    // Prompt existing users to setup Biometric / Face lock upon app update
+                    val appLockUpdateNotified by settingsManager.appLockUpdateNotifiedFlow.collectAsState(initial = false)
+                    var showAppLockUpdatePrompt by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(hasIdentity, appLockEnabled, appLockUpdateNotified) {
+                        if (hasIdentity && !appLockEnabled && !appLockUpdateNotified) {
+                            com.torxone.app.service.NotificationHelper.showAppLockSetupNotification(this@MainActivity)
+                            showAppLockUpdatePrompt = true
+                            settingsManager.setAppLockUpdateNotified(true)
+                        }
+                    }
+
+                    LaunchedEffect(intent) {
+                        if (intent?.getBooleanExtra("open_app_lock_setup", false) == true) {
+                            showAppLockUpdatePrompt = true
+                        }
+                    }
+
+                    if (showAppLockUpdatePrompt) {
+                        var setupPassword by remember { mutableStateOf("") }
+                        var setupError by remember { mutableStateOf<String?>(null) }
+                        val biometricAuthManager = remember { com.torxone.app.security.BiometricAuthManager(this@MainActivity) }
+
+                        AlertDialog(
+                            onDismissRequest = { showAppLockUpdatePrompt = false },
+                            title = { Text("Security Update: Protect TorX One") },
+                            text = {
+                                Column {
+                                    Text(
+                                        "Set up Biometric or Face Lock to secure your messages and private identity against unauthorized access.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = Color.White.copy(alpha = 0.8f)
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    OutlinedTextField(
+                                        value = setupPassword,
+                                        onValueChange = { setupPassword = it },
+                                        label = { Text("Create Backup Password (min 4 chars)") },
+                                        visualTransformation = PasswordVisualTransformation(),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    if (setupError != null) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(setupError ?: "", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        try {
+                                            biometricAuthManager.setupAppLockWithPassword(setupPassword)
+                                            scope.launch {
+                                                settingsManager.setAppLockEnabled(true)
+                                            }
+                                            showAppLockUpdatePrompt = false
+                                            Toast.makeText(this@MainActivity, "App Lock Enabled", Toast.LENGTH_SHORT).show()
+                                        } catch (e: Exception) {
+                                            setupError = "Failed to enable: ${e.message}"
+                                        }
+                                    },
+                                    enabled = setupPassword.length >= 4
+                                ) {
+                                    Text("Enable Lock")
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showAppLockUpdatePrompt = false }) {
+                                    Text("Maybe Later")
+                                }
+                            }
+                        )
+                    }
                     
                     val updater = remember { GitHubUpdater(this@MainActivity) }
                     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
                     var isDownloadingUpdate by remember { mutableStateOf(false) }
-                    
+
                     LaunchedEffect(Unit) {
                         val info = updater.checkForUpdates(manual = false)
                         if (info != null && info.isUpdateAvailable) {
