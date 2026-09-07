@@ -156,6 +156,25 @@ class WebRtcCallEngine(
                 cleanup()
                 stateStore.update(CallUiState.Ended("Connection lost"))
             },
+            onReconnecting = {
+                val callId = activeCallId ?: return@WebRtcClient
+                val peerKey = activePeerKey ?: return@WebRtcClient
+                Log.d(TAG, "Call reconnecting (ICE Restart): $callId")
+                stateStore.update(CallUiState.Reconnecting(callId, peerKey, "", activeMode))
+                isIceConnected = false
+                
+                // Initiate ICE restart
+                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                    try {
+                        val newOffer = client?.performIceRestart() ?: return@launch
+                        signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to perform ICE restart", e)
+                        cleanup()
+                        stateStore.update(CallUiState.Ended("Reconnection failed"))
+                    }
+                }
+            },
             onRemoteTrackReceived = {
                 isMediaReceived = true
                 val callId = activeCallId ?: return@WebRtcClient
