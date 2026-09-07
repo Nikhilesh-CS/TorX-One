@@ -8,7 +8,9 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -152,12 +154,48 @@ class GitHubUpdater(private val context: Context) {
                 return
             }
 
+            // On Android 8.0+, check if installing unknown apps is permitted
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    mainHandler.post {
+                        Toast.makeText(context, "Please enable 'Allow from this source' to install the update", Toast.LENGTH_LONG).show()
+                        val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        context.startActivity(settingsIntent)
+                    }
+                    return
+                }
+            }
+
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apkFile)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
-            mainHandler.post { context.startActivity(intent) }
+
+            // Explicitly grant read URI permission to all potential handling activities
+            val resInfoList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong()))
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            }
+            for (resolveInfo in resInfoList) {
+                context.grantUriPermission(resolveInfo.activityInfo.packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            mainHandler.post {
+                try {
+                    context.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e("GitHubUpdater", "Failed to start install activity", e)
+                    postError(onError, "Failed to launch installer: ${e.message}")
+                }
+            }
         } catch (e: Exception) {
             Log.e("GitHubUpdater", "Failed to install APK", e)
             postError(onError, "Failed to launch installer: ${e.message}")
