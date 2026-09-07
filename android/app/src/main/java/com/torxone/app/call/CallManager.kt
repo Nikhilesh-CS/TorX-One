@@ -153,6 +153,14 @@ class CallManager(
         val contact = db.contactDao().getContact(senderKey)
         val peerName = contact?.name ?: "Unknown Contact"
         val offer = AstraSessionDescription("offer", signal.sdp ?: return)
+        
+        // Differentiate between new call and ICE restart renegotiation
+        if (activeCallId == signal.callId && activeEngine != null) {
+            Log.d(TAG, "Received renegotiation offer for active call: ${signal.callId}")
+            activeEngine?.handleRenegotiationOffer(offer, senderKey, signal.callId)
+            return
+        }
+
         activeCallId = signal.callId
         activePeerKey = senderKey
         activeMode = signal.mode

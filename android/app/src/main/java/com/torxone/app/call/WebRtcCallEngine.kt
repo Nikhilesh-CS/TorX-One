@@ -6,8 +6,12 @@ import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.Transport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 
 /**
  * Production WebRTC call engine. Replaces the disabled stub.
@@ -40,6 +44,9 @@ class WebRtcCallEngine(
     private var activeCallId: String? = null
     private var activePeerKey: String? = null
     private var activeMode: CallMode = CallMode.AUDIO
+    
+    private var engineScope: CoroutineScope? = null
+    private var reconnectJob: Job? = null
     
     private var isIceConnected = false
     private var isMediaReceived = false
@@ -116,6 +123,12 @@ class WebRtcCallEngine(
         client?.setRemoteDescription(description)
     }
 
+    override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {
+        Log.d(TAG, "Handling ICE restart renegotiation offer from $peerKey")
+        val answer = client?.acceptRenegotiation(offer) ?: return
+        signaling.sendAnswer(peerKey, callId, activeMode, answer)
+    }
+
     override fun handleIceCandidate(candidate: AstraIceCandidate) {
         client?.addIceCandidate(candidate)
     }
@@ -130,6 +143,7 @@ class WebRtcCallEngine(
     }
 
     private fun createAndInitClient(): WebRtcClient {
+        engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val rtcClient = WebRtcClient(
             context = context,
             iceServerProvider = DefaultIceServerProvider(),
@@ -141,6 +155,8 @@ class WebRtcCallEngine(
                 }
             },
             onConnected = {
+                reconnectJob?.cancel()
+                reconnectJob = null
                 isIceConnected = true
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
@@ -152,9 +168,10 @@ class WebRtcCallEngine(
                 }
             },
             onDisconnected = {
-                Log.d(TAG, "Call disconnected")
-                cleanup()
-                stateStore.update(CallUiState.Ended("Connection lost"))
+                Log.d(TAG, "Call disconnected, triggering reconnect")
+                stateStore.update(CallUiState.Reconnecting(activeCallId ?: "", activePeerKey ?: "", "", activeMode))
+                isIceConnected = false
+                // WebRtcClient will fire onReconnecting next if it was truly a disconnect
             },
             onReconnecting = {
                 val callId = activeCallId ?: return@WebRtcClient
@@ -163,15 +180,30 @@ class WebRtcCallEngine(
                 stateStore.update(CallUiState.Reconnecting(callId, peerKey, "", activeMode))
                 isIceConnected = false
                 
-                // Initiate ICE restart
-                kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
-                    try {
-                        val newOffer = client?.performIceRestart() ?: return@launch
-                        signaling.sendOffer(peerKey, callId, activeMode, newOffer)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to perform ICE restart", e)
-                        cleanup()
-                        stateStore.update(CallUiState.Ended("Reconnection failed"))
+                if (reconnectJob?.isActive == true) return@WebRtcClient
+                
+                reconnectJob = engineScope?.launch {
+                    val startTime = System.currentTimeMillis()
+                    while (isActive) {
+                        try {
+                            val newOffer = client?.performIceRestart()
+                            if (newOffer != null) {
+                                signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to perform ICE restart", e)
+                        }
+                        
+                        kotlinx.coroutines.delay(4000)
+                        
+                        if (System.currentTimeMillis() - startTime > 30000) {
+                            Log.e(TAG, "Reconnection timed out")
+                            withContext(Dispatchers.Main) {
+                                cleanup()
+                                stateStore.update(CallUiState.Ended("Connection lost"))
+                            }
+                            break
+                        }
                     }
                 }
             },
@@ -206,6 +238,10 @@ class WebRtcCallEngine(
     }
 
     private fun cleanup() {
+        engineScope?.cancel()
+        engineScope = null
+        reconnectJob?.cancel()
+        reconnectJob = null
         client?.close()
         client = null
         audioRouteManager.stopCallAudio()

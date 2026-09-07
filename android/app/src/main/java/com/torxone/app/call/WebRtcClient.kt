@@ -5,6 +5,9 @@ import android.util.Log
 import org.json.JSONObject
 import org.webrtc.*
 import org.webrtc.audio.JavaAudioDeviceModule
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 
 /**
  * Production WebRTC client wrapping Google's native PeerConnection.
@@ -80,8 +83,8 @@ class WebRtcClient(
                     when (state) {
                         PeerConnection.IceConnectionState.CONNECTED,
                         PeerConnection.IceConnectionState.COMPLETED -> onConnected()
-                        PeerConnection.IceConnectionState.DISCONNECTED -> onReconnecting()
-                        PeerConnection.IceConnectionState.FAILED,
+                        PeerConnection.IceConnectionState.DISCONNECTED,
+                        PeerConnection.IceConnectionState.FAILED -> onReconnecting()
                         PeerConnection.IceConnectionState.CLOSED -> onDisconnected()
                         else -> {}
                     }
@@ -205,6 +208,36 @@ class WebRtcClient(
         Log.d(TAG, "Remote description set: ${description.type}")
     }
 
+    suspend fun acceptRenegotiation(offer: AstraSessionDescription): AstraSessionDescription {
+        return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+            val type = SessionDescription.Type.OFFER
+            val sdp = SessionDescription(type, offer.description)
+            peerConnection?.setRemoteDescription(object : SdpObserver {
+                override fun onCreateSuccess(sdp: SessionDescription?) {}
+                override fun onSetSuccess() {
+                    Log.d(TAG, "Renegotiation remote description set, creating answer...")
+                    pendingIceCandidates.forEach { peerConnection?.addIceCandidate(it) }
+                    pendingIceCandidates.clear()
+                    
+                    // Now create answer
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        try {
+                            val answer = createAnswer()
+                            continuation.resumeWith(Result.success(answer))
+                        } catch (e: Exception) {
+                            continuation.resumeWith(Result.failure(e))
+                        }
+                    }
+                }
+                override fun onCreateFailure(error: String?) {}
+                override fun onSetFailure(error: String?) {
+                    Log.e(TAG, "Failed to set remote description for renegotiation: $error")
+                    continuation.resumeWith(Result.failure(RuntimeException("Set remote description failed: $error")))
+                }
+            }, sdp)
+        }
+    }
+
     fun addIceCandidate(candidate: AstraIceCandidate) {
         val iceCandidate = IceCandidate(candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
         if (peerConnection?.remoteDescription == null) {
@@ -216,6 +249,7 @@ class WebRtcClient(
     }
 
     suspend fun performIceRestart(): AstraSessionDescription {
+        pendingIceCandidates.clear() // Clear any old candidates from the previous connection
         val sdpConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))

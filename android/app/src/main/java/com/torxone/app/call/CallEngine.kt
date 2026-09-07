@@ -50,6 +50,7 @@ interface CallEngine {
     suspend fun startOutgoing(callId: String, contact: ContactEntity, context: CallRouteContext): CallStartResult
     suspend fun acceptIncoming(callId: String, contact: ContactEntity, offer: AstraSessionDescription): CallStartResult
     fun handleRemoteDescription(description: AstraSessionDescription)
+    suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {}
     fun handleIceCandidate(candidate: AstraIceCandidate)
     fun end()
 }
