@@ -27,7 +27,7 @@ data class UpdateInfo(
 
 class GitHubUpdater(private val context: Context) {
 
-    private val REPO_URL = "https://api.github.com/repos/Nikhilesh-CS/Astra-mesh/releases/latest"
+    private val REPO_URL = "https://api.github.com/repos/Nikhilesh-CS/TorX-One/releases/latest"
     private val PREFS_NAME = "updater_prefs"
     private val LAST_CHECK_TIME = "last_check_time"
     private val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L // 24 hours
