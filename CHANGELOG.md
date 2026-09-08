@@ -6,9 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [1.0.21] - 2026-09-08
 ### Added
-- Initial GitHub project documentation.
-- Automated GitHub Releases updater architecture.
+- Complete group messaging system with creation, invites, and membership management.
+- Group end-to-end encryption (Phase 3).
+- Group notification hardening.
+- WebRTC voice calling with WhatsApp-style InCallScreen UI.
+- ICE candidate queuing, TURN fallback, and ICE restart logic.
+- Dynamic IceServerProvider for STUN/TURN configuration.
+
+### Fixed
+- Group authentication and membership validation hardening.
+- Group message routing and missing handler fixes.
+- WebRTC lifecycle races: await setLocalDescription, guard cleanup, remove GlobalScope.
+- ICE renegotiation with 30s reconnect timeout.
+- Call improvements and updater fixes.
 
 ## [1.0.10] - 2026-07-08
 ### Added
