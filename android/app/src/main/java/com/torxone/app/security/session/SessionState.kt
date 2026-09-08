@@ -69,3 +69,42 @@ interface SessionReplayDao {
     @Query("DELETE FROM session_replays WHERE sessionId = :sessionId")
     suspend fun clearSessionReplays(sessionId: String)
 }
+
+/**
+ * Skipped message key store for Double Ratchet out-of-order message delivery.
+ * When msgNum > expected, skipped message keys are stored temporarily until late
+ * packets arrive, or pruned after expiry/threshold.
+ */
+@Entity(
+    tableName = "session_skipped_keys",
+    primaryKeys = ["sessionId", "ratchetPubHex", "msgNum"],
+    indices = [Index(value = ["createdAt"])]
+)
+data class SkippedMessageKeyEntity(
+    val sessionId: String,
+    val ratchetPubHex: String,
+    val msgNum: Int,
+    val messageKeyHex: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Dao
+interface SkippedMessageKeyDao {
+    @Query("SELECT * FROM session_skipped_keys WHERE sessionId = :sessionId AND ratchetPubHex = :ratchetPubHex AND msgNum = :msgNum LIMIT 1")
+    suspend fun getSkippedKey(sessionId: String, ratchetPubHex: String, msgNum: Int): SkippedMessageKeyEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertSkippedKey(entity: SkippedMessageKeyEntity)
+
+    @Query("DELETE FROM session_skipped_keys WHERE sessionId = :sessionId AND ratchetPubHex = :ratchetPubHex AND msgNum = :msgNum")
+    suspend fun deleteSkippedKey(sessionId: String, ratchetPubHex: String, msgNum: Int)
+
+    @Query("SELECT COUNT(*) FROM session_skipped_keys WHERE sessionId = :sessionId")
+    suspend fun getSkippedKeyCount(sessionId: String): Int
+
+    @Query("DELETE FROM session_skipped_keys WHERE createdAt < :cutoffMs")
+    suspend fun pruneExpiredKeys(cutoffMs: Long)
+
+    @Query("DELETE FROM session_skipped_keys WHERE sessionId = :sessionId")
+    suspend fun clearSessionSkippedKeys(sessionId: String)
+}

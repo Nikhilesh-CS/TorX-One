@@ -136,14 +136,15 @@ class TorXOneService : Service() {
                 AppDatabase.MIGRATION_17_18,
                 AppDatabase.MIGRATION_18_19,
                 AppDatabase.MIGRATION_19_20,
-                AppDatabase.MIGRATION_20_21
+                AppDatabase.MIGRATION_20_21,
+                AppDatabase.MIGRATION_21_22
             )
             .build()
 
         nearbyManager = NearbyConnectionManager(this)
         torManager = TorManager(this)
         val replayProtection = com.torxone.app.security.session.ReplayProtection(db.sessionReplayDao())
-        sessionManager = com.torxone.app.security.session.SessionManager(db.sessionDao(), replayProtection, db.contactDao())
+        sessionManager = com.torxone.app.security.session.SessionManager(db.sessionDao(), replayProtection, db.contactDao(), db.skippedMessageKeyDao())
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager, sessionManager)
         realtimeEngineManager = com.torxone.app.realtime.RealtimeEngineManager(this, messageRouter)
         astraFastLane = com.torxone.app.realtime.AstraFastLane(realtimeEngineManager)

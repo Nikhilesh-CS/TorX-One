@@ -88,8 +88,14 @@ object SessionCipher {
         sessionId: String,
         msgNum: Int,
         senderKey: String,
-        recipientKey: String
+        recipientKey: String,
+        timestamp: Long = 0L
     ): ByteArray {
-        return "$sessionId:$msgNum:$senderKey:$recipientKey".toByteArray(Charsets.UTF_8)
+        val canonical = if (timestamp > 0L) {
+            "$sessionId:$msgNum:$senderKey:$recipientKey:$timestamp"
+        } else {
+            "$sessionId:$msgNum:$senderKey:$recipientKey"
+        }
+        return canonical.toByteArray(Charsets.UTF_8)
     }
 }

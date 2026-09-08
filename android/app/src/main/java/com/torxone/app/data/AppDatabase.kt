@@ -9,6 +9,8 @@ import com.torxone.app.security.session.SessionEntity
 import com.torxone.app.security.session.SessionDao
 import com.torxone.app.security.session.SessionReplayEntity
 import com.torxone.app.security.session.SessionReplayDao
+import com.torxone.app.security.session.SkippedMessageKeyEntity
+import com.torxone.app.security.session.SkippedMessageKeyDao
 
 import androidx.room.Dao
 import androidx.room.Database
@@ -521,8 +523,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class],
-    version = 21,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class],
+    version = 22,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -543,6 +545,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun sessionDao(): SessionDao
     abstract fun sessionReplayDao(): SessionReplayDao
+    abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -842,6 +845,13 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("""CREATE TABLE IF NOT EXISTS `sessions` (`contactKey` TEXT NOT NULL, `sessionId` TEXT NOT NULL, `rootKeyHex` TEXT NOT NULL, `sendChainKeyHex` TEXT NOT NULL, `recvChainKeyHex` TEXT NOT NULL, `localRatchetPubHex` TEXT NOT NULL, `localRatchetSecHex` TEXT NOT NULL, `remoteRatchetPubHex` TEXT NOT NULL, `sendMsgCount` INTEGER NOT NULL DEFAULT 0, `recvMsgCount` INTEGER NOT NULL DEFAULT 0, `previousSendCount` INTEGER NOT NULL DEFAULT 0, `lastActiveAt` INTEGER NOT NULL DEFAULT 0, `state` TEXT NOT NULL DEFAULT 'ACTIVE', PRIMARY KEY(`contactKey`))""")
                 db.execSQL("""CREATE TABLE IF NOT EXISTS `session_replays` (`sessionId` TEXT NOT NULL, `msgNum` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, PRIMARY KEY(`sessionId`, `msgNum`))""")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_session_replays_receivedAt` ON `session_replays` (`receivedAt`)")
+            }
+        }
+
+        val MIGRATION_21_22 = object : androidx.room.migration.Migration(21, 22) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `session_skipped_keys` (`sessionId` TEXT NOT NULL, `ratchetPubHex` TEXT NOT NULL, `msgNum` INTEGER NOT NULL, `messageKeyHex` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`sessionId`, `ratchetPubHex`, `msgNum`))""")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_session_skipped_keys_createdAt` ON `session_skipped_keys` (`createdAt`)")
             }
         }
     }

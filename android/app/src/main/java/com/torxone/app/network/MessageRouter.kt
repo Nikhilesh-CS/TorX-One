@@ -45,6 +45,7 @@ class MessageRouter(
     @Volatile
     private var retryIntervalMs: Long = RETRY_INTERVAL_MS
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
+    private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     // ──────────────────────── INCOMING HANDLERS ────────────────────────
 
@@ -210,6 +211,7 @@ class MessageRouter(
 
         // Try immediate delivery
         val result = if (sessionPayload != null) {
+            pendingSessionPayloads[messageId] = sessionPayload.wireJsonString
             attemptDeliverySession(contact, sessionPayload.wireJsonString, messageId)
         } else {
             val payload = buildEncryptedPayload(identity, contact, wireText)
@@ -218,6 +220,7 @@ class MessageRouter(
         }
 
         if (result.success) {
+            pendingSessionPayloads.remove(messageId)
             db.messageDao().updateMessageStatus(messageId, "sent", result.transport.name)
             Log.d(TAG, "[SEND] Message $messageId sent via ${result.transport}")
         } else {
@@ -580,19 +583,27 @@ class MessageRouter(
                 replyToSender = msg.replyToSender,
                 replyToType = msg.replyToType
             )
-            val sessionPayload = try {
-                sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
-            } catch (e: Exception) {
-                null
-            }
-            val result = if (sessionPayload != null) {
-                attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId)
+
+            val cachedWire = pendingSessionPayloads[msg.messageId]
+            val result = if (cachedWire != null) {
+                attemptDeliverySession(contact, cachedWire, msg.messageId)
             } else {
-                val payload = buildEncryptedPayload(identity, contact, wireText) ?: continue
-                attemptDelivery(contact, payload, msg.messageId)
+                val sessionPayload = try {
+                    sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
+                } catch (e: Exception) {
+                    null
+                }
+                if (sessionPayload != null) {
+                    pendingSessionPayloads[msg.messageId] = sessionPayload.wireJsonString
+                    attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId)
+                } else {
+                    val payload = buildEncryptedPayload(identity, contact, wireText) ?: continue
+                    attemptDelivery(contact, payload, msg.messageId)
+                }
             }
 
             if (result.success) {
+                pendingSessionPayloads.remove(msg.messageId)
                 db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
                 Log.d(TAG, "[RETRY] Message ${msg.messageId} resent successfully via ${result.transport}")
             } else {
@@ -600,6 +611,7 @@ class MessageRouter(
                 val newCount = msg.retryCount + 1
                 Log.w(TAG, "[RETRY] Message ${msg.messageId} retry #$newCount failed")
                 if (newCount >= MAX_RETRIES) {
+                    pendingSessionPayloads.remove(msg.messageId)
                     db.messageDao().updateMessageStatus(msg.messageId, "failed")
                     Log.e(TAG, "[RETRY] Message ${msg.messageId} permanently failed after $MAX_RETRIES retries")
                 }
@@ -942,6 +954,15 @@ class MessageRouter(
         if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) {
             Log.d(TAG, "[RECV] Updating sender's onion address to ${senderOnion.take(20)}...")
             db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
+        }
+
+        // Downgrade protection: reject legacy static-key TYPE_MSG if an active Double Ratchet session exists
+        if (messageType == MeshProtocol.TYPE_MSG) {
+            val existingSession = db.sessionDao().getSession(senderKey)
+            if (existingSession != null && existingSession.state == "ACTIVE") {
+                Log.w(TAG, "[DOWNGRADE_GUARD] Rejected legacy unratcheted TYPE_MSG from ${contact.name} because active Double Ratchet session exists")
+                return
+            }
         }
 
         if (contact.encryptionPublicKey.isBlank()) return
