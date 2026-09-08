@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -574,9 +575,10 @@ fun SettingsScreen(
     if (showClearChatsDialog) {
         AlertDialog(
             onDismissRequest = { showClearChatsDialog = false },
-            containerColor = CardSurface,
-            title = { Text("Clear All Chats?", color = SoftWhite) },
-            text = { Text("Are you sure you want to delete all messages? This cannot be undone.", color = MutedGray) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Clear All Chats?", color = PrimaryText, fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete all messages? This cannot be undone.", color = SecondaryText) },
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch(Dispatchers.IO) {
@@ -588,12 +590,12 @@ fun SettingsScreen(
                         }
                     }
                 }) {
-                    Text("Clear", color = AstraTheme.colors.error)
+                    Text("Clear", color = ErrorRed, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearChatsDialog = false }) {
-                    Text("Cancel", color = MutedGray)
+                    Text("Cancel", color = SecondaryText)
                 }
             }
         )
@@ -602,13 +604,14 @@ fun SettingsScreen(
     if (showOnionDialog) {
         AlertDialog(
             onDismissRequest = { showOnionDialog = false },
-            containerColor = CardSurface,
-            title = { Text("Onion Address", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Onion Address", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = { 
                 Text(
                     text = onionAddress,
-                    color = SoftWhite,
-                    fontSize = AstraTheme.typography.bodyLarge.fontSize,
+                    color = PrimaryText,
+                    fontSize = AstraTheme.typography.bodyMedium.fontSize,
                     modifier = Modifier.padding(vertical = AstraTheme.spacing.small)
                 ) 
             },
@@ -619,7 +622,7 @@ fun SettingsScreen(
                     showToast("Copied to clipboard")
                     showOnionDialog = false
                 }) {
-                    Text("Copy", color = AccentCyan)
+                    Text("Copy", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             }
         )
@@ -628,20 +631,21 @@ fun SettingsScreen(
     if (showPrivacyDialog) {
         AlertDialog(
             onDismissRequest = { showPrivacyDialog = false },
-            containerColor = CardSurface,
-            title = { Text("Privacy Policy", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Privacy Policy", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = { 
                 Text(
                     text = "TorX One is designed to keep communication under your control.\n\n" +
                         "We do not run a central chat server, and the app does not collect your messages, contacts, identity keys, onion address, or chat history.\n\n" +
                         "Your identity is created and stored on your device. Messages are sent directly through Tor hidden services or nearby transport such as Bluetooth / Wi-Fi Direct.\n\n" +
                         "Identity backups are created only when you choose to export them. Keep your backup file and password safe, because TorX One cannot recover them for you.",
-                    color = MutedGray 
+                    color = SecondaryText 
                 ) 
             },
             confirmButton = {
                 TextButton(onClick = { showPrivacyDialog = false }) {
-                    Text("Close", color = AccentCyan)
+                    Text("Close", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             }
         )
@@ -650,17 +654,18 @@ fun SettingsScreen(
     if (showLicenseDialog) {
         AlertDialog(
             onDismissRequest = { showLicenseDialog = false },
-            containerColor = CardSurface,
-            title = { Text("License", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("License", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
                     text = "TorX One is released under the MIT License.\n\nYou may use, modify, and share the software under the license terms included with this project.",
-                    color = MutedGray
+                    color = SecondaryText
                 )
             },
             confirmButton = {
                 TextButton(onClick = { showLicenseDialog = false }) {
-                    Text("Close", color = AccentCyan)
+                    Text("Close", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             }
         )
@@ -669,34 +674,38 @@ fun SettingsScreen(
     if (showExportDialog) {
         AlertDialog(
             onDismissRequest = { if (!isBackupWorking) showExportDialog = false },
-            containerColor = CardSurface,
-            title = { Text("Export Identity", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Export Identity", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Secure your backup with a strong password. You will need it to restore this identity.", color = MutedGray)
+                    Text("Secure your backup with a strong password. You will need it to restore this identity.", color = SecondaryText)
                     Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
                     OutlinedTextField(
                         value = backupPassword,
                         onValueChange = { backupPassword = it },
-                        label = { Text("Backup Password", color = MutedGray) },
+                        label = { Text("Backup Password", color = TextMuted) },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         singleLine = true,
                         enabled = !isBackupWorking,
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = AccentCyan,
-                            unfocusedBorderColor = DimGray,
-                            focusedTextColor = SoftWhite,
-                            unfocusedTextColor = SoftWhite
+                            focusedBorderColor = TorXPrimary,
+                            unfocusedBorderColor = BorderColor,
+                            focusedTextColor = PrimaryText,
+                            unfocusedTextColor = PrimaryText,
+                            focusedContainerColor = SurfaceCard,
+                            unfocusedContainerColor = SurfaceSecondary
                         )
                     )
                     if (backupError != null) {
                         Spacer(modifier = Modifier.height(AstraTheme.spacing.small))
-                        Text(backupError!!, color = AstraTheme.colors.error, fontSize = AstraTheme.typography.labelMedium.fontSize)
+                        Text(backupError!!, color = ErrorRed, fontSize = AstraTheme.typography.labelMedium.fontSize)
                     }
                     if (isBackupWorking) {
                         Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
-                        CircularProgressIndicator(color = AccentCyan, modifier = Modifier.align(Alignment.CenterHorizontally))
+                        CircularProgressIndicator(color = TorXPrimary, modifier = Modifier.align(Alignment.CenterHorizontally))
                     }
                 }
             },
@@ -705,12 +714,12 @@ fun SettingsScreen(
                     onClick = { exportLauncher.launch("TorXOne_Backup_${System.currentTimeMillis()}.torxone-backup") },
                     enabled = backupPassword.length >= 4 && !isBackupWorking
                 ) {
-                    Text("Export", color = AccentCyan)
+                    Text("Export", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showExportDialog = false }, enabled = !isBackupWorking) {
-                    Text("Cancel", color = MutedGray)
+                    Text("Cancel", color = SecondaryText)
                 }
             }
         )
@@ -719,34 +728,38 @@ fun SettingsScreen(
     if (showImportDialog) {
         AlertDialog(
             onDismissRequest = { if (!isBackupWorking) showImportDialog = false },
-            containerColor = CardSurface,
-            title = { Text("Restore Identity", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Restore Identity", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Enter the password used to encrypt the backup.", color = MutedGray)
+                    Text("Enter the password used to encrypt the backup.", color = SecondaryText)
                     Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
                     OutlinedTextField(
                         value = backupPassword,
                         onValueChange = { backupPassword = it },
-                        label = { Text("Backup Password", color = MutedGray) },
+                        label = { Text("Backup Password", color = TextMuted) },
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         singleLine = true,
                         enabled = !isBackupWorking,
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = AccentCyan,
-                            unfocusedBorderColor = DimGray,
-                            focusedTextColor = SoftWhite,
-                            unfocusedTextColor = SoftWhite
+                            focusedBorderColor = TorXPrimary,
+                            unfocusedBorderColor = BorderColor,
+                            focusedTextColor = PrimaryText,
+                            unfocusedTextColor = PrimaryText,
+                            focusedContainerColor = SurfaceCard,
+                            unfocusedContainerColor = SurfaceSecondary
                         )
                     )
                     if (backupError != null) {
                         Spacer(modifier = Modifier.height(AstraTheme.spacing.small))
-                        Text(backupError!!, color = AstraTheme.colors.error, fontSize = AstraTheme.typography.labelMedium.fontSize)
+                        Text(backupError!!, color = ErrorRed, fontSize = AstraTheme.typography.labelMedium.fontSize)
                     }
                     if (isBackupWorking) {
                         Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
-                        CircularProgressIndicator(color = AccentCyan, modifier = Modifier.align(Alignment.CenterHorizontally))
+                        CircularProgressIndicator(color = TorXPrimary, modifier = Modifier.align(Alignment.CenterHorizontally))
                     }
                 }
             },
@@ -755,12 +768,12 @@ fun SettingsScreen(
                     onClick = { importLauncher.launch(arrayOf("*/*")) },
                     enabled = backupPassword.isNotEmpty() && !isBackupWorking
                 ) {
-                    Text("Select File", color = AccentCyan)
+                    Text("Select File", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showImportDialog = false }, enabled = !isBackupWorking) {
-                    Text("Cancel", color = MutedGray)
+                    Text("Cancel", color = SecondaryText)
                 }
             }
         )
@@ -769,28 +782,32 @@ fun SettingsScreen(
     if (showAppLockSetup) {
         AlertDialog(
             onDismissRequest = { showAppLockSetup = false; appLockPassword = ""; appLockError = null },
-            containerColor = CardSurface,
-            title = { Text("Setup App Lock", color = SoftWhite) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Setup App Lock", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text("Enable biometric authentication and set a fallback password.", color = MutedGray)
+                    Text("Enable biometric authentication and set a fallback password.", color = SecondaryText)
                     Spacer(modifier = Modifier.height(16.dp))
                     OutlinedTextField(
                         value = appLockPassword,
                         onValueChange = { appLockPassword = it },
-                        label = { Text("Fallback Password", color = MutedGray) },
+                        label = { Text("Fallback Password", color = TextMuted) },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = AccentCyan,
-                            unfocusedBorderColor = DimGray,
-                            focusedTextColor = SoftWhite,
-                            unfocusedTextColor = SoftWhite
+                            focusedBorderColor = TorXPrimary,
+                            unfocusedBorderColor = BorderColor,
+                            focusedTextColor = PrimaryText,
+                            unfocusedTextColor = PrimaryText,
+                            focusedContainerColor = SurfaceCard,
+                            unfocusedContainerColor = SurfaceSecondary
                         )
                     )
                     if (appLockError != null) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(appLockError ?: "", color = AstraTheme.colors.error)
+                        Text(appLockError ?: "", color = ErrorRed)
                     }
                 }
             },
@@ -837,96 +854,92 @@ private fun BatteryPerformanceSection(
     onWifiDirectScanningChanged: (Boolean) -> Unit,
     onBackgroundSyncChanged: (String) -> Unit
 ) {
-    Column(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color(0xFF101827).copy(alpha = 0.92f),
-                        Color(0xFF051914).copy(alpha = 0.86f),
-                        Color(0xFF140F25).copy(alpha = 0.90f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.11f), RoundedCornerShape(28.dp))
-            .padding(AstraTheme.spacing.large)
+            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = BorderStroke(1.dp, BorderColor)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF00E5A8).copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(TorXPrimarySoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Rounded.Bolt, contentDescription = null, tint = TorXPrimary, modifier = Modifier.size(22.dp))
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Battery & Performance", color = PrimaryText, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("Control background networking and power usage", color = SecondaryText, fontSize = 13.sp)
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            val impact = estimatedBatteryImpact(torEnabled, bluetoothScanning, wifiDirectScanning, performanceMode)
+            BatteryMetricRow("Estimated impact", impact, impactColor(impact))
+            BatteryMetricRow("Background service", if (serviceRunning) "Running" else "Not running", if (serviceRunning) SuccessGreen else ErrorRed)
+            BatteryMetricRow(
+                "Android optimization",
+                if (batteryOptimizationIgnored) "Unrestricted" else "Optimized",
+                if (batteryOptimizationIgnored) SuccessGreen else WarningAmber
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Text("Active components", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            BatteryComponentRow("Tor auto-start", torEnabled, if (torEnabled) "High" else "Off")
+            BatteryComponentRow("Bluetooth discovery", bluetoothScanning, if (bluetoothScanning) componentImpact(performanceMode) else "Off")
+            BatteryComponentRow("Wi-Fi Direct discovery", wifiDirectScanning, if (wifiDirectScanning) componentImpact(performanceMode) else "Off")
+            BatteryComponentRow("Mesh discovery", bluetoothScanning || wifiDirectScanning, if (bluetoothScanning || wifiDirectScanning) componentImpact(performanceMode) else "Off")
+
+            Spacer(Modifier.height(18.dp))
+            Text("Performance mode", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            PerformanceModeRow("battery_saver", "Battery Saver", "Reduce discovery. Best for long battery life.", performanceMode, onPerformanceModeSelected)
+            PerformanceModeRow("balanced", "Balanced", "Recommended. Keeps chat reliable without aggressive scanning.", performanceMode, onPerformanceModeSelected)
+            PerformanceModeRow("performance", "Performance", "Fast discovery and routing. Higher battery usage.", performanceMode, onPerformanceModeSelected)
+
+            Spacer(Modifier.height(18.dp))
+            Text("Background services", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            CompactSwitchRow("Bluetooth scanning", bluetoothScanning, onBluetoothScanningChanged)
+            CompactSwitchRow("Wi-Fi Direct scanning", wifiDirectScanning, onWifiDirectScanningChanged)
+
+            Spacer(Modifier.height(18.dp))
+            Text("Background sync frequency", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                SyncChip("low", "Low", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
+                SyncChip("normal", "Normal", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
+                SyncChip("fast", "Fast", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
+            }
+
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Disabling Android battery optimization helps Tor and mesh delivery stay alive in the background, especially on Realme, Oppo, Vivo and Xiaomi devices.",
+                color = SecondaryText,
+                fontSize = 12.sp,
+                lineHeight = 18.sp
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onOpenBatterySettings,
+                modifier = Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, BorderColor),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TorXPrimary),
+                shape = RoundedCornerShape(12.dp)
             ) {
-                Icon(Icons.Rounded.Bolt, contentDescription = null, tint = Color(0xFF00E5A8), modifier = Modifier.size(24.dp))
+                Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Open Android Battery Settings")
             }
-            Spacer(Modifier.width(AstraTheme.spacing.standard))
-            Column(Modifier.weight(1f)) {
-                Text("Battery & Performance", color = SoftWhite, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                Text("Control background networking and power usage", color = MutedGray, fontSize = AstraTheme.typography.bodyMedium.fontSize)
-            }
-        }
-
-        Spacer(Modifier.height(AstraTheme.spacing.large))
-
-        val impact = estimatedBatteryImpact(torEnabled, bluetoothScanning, wifiDirectScanning, performanceMode)
-        BatteryMetricRow("Estimated impact", impact, impactColor(impact))
-        BatteryMetricRow("Background service", if (serviceRunning) "Running" else "Not running", if (serviceRunning) NeonGreen else AccentPink)
-        BatteryMetricRow(
-            "Android optimization",
-            if (batteryOptimizationIgnored) "Unrestricted" else "Optimized",
-            if (batteryOptimizationIgnored) NeonGreen else Color(0xFFFFC857)
-        )
-
-        Spacer(Modifier.height(AstraTheme.spacing.standard))
-        Text("Active components", color = SoftWhite, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(AstraTheme.spacing.small))
-        BatteryComponentRow("Tor auto-start", torEnabled, if (torEnabled) "High" else "Off")
-        BatteryComponentRow("Bluetooth discovery", bluetoothScanning, if (bluetoothScanning) componentImpact(performanceMode) else "Off")
-        BatteryComponentRow("Wi-Fi Direct discovery", wifiDirectScanning, if (wifiDirectScanning) componentImpact(performanceMode) else "Off")
-        BatteryComponentRow("Mesh discovery", bluetoothScanning || wifiDirectScanning, if (bluetoothScanning || wifiDirectScanning) componentImpact(performanceMode) else "Off")
-
-        Spacer(Modifier.height(AstraTheme.spacing.large))
-        Text("Performance mode", color = SoftWhite, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(AstraTheme.spacing.small))
-        PerformanceModeRow("battery_saver", "Battery Saver", "Reduce discovery. Best for long battery life.", performanceMode, onPerformanceModeSelected)
-        PerformanceModeRow("balanced", "Balanced", "Recommended. Keeps chat reliable without aggressive scanning.", performanceMode, onPerformanceModeSelected)
-        PerformanceModeRow("performance", "Performance", "Fast discovery and routing. Higher battery usage.", performanceMode, onPerformanceModeSelected)
-
-        Spacer(Modifier.height(AstraTheme.spacing.large))
-        Text("Background services", color = SoftWhite, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(AstraTheme.spacing.small))
-        CompactSwitchRow("Bluetooth scanning", bluetoothScanning, onBluetoothScanningChanged)
-        CompactSwitchRow("Wi-Fi Direct scanning", wifiDirectScanning, onWifiDirectScanningChanged)
-
-        Spacer(Modifier.height(AstraTheme.spacing.large))
-        Text("Background sync frequency", color = SoftWhite, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(AstraTheme.spacing.small))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            SyncChip("low", "Low", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-            SyncChip("normal", "Normal", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-            SyncChip("fast", "Fast", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-        }
-
-        Spacer(Modifier.height(AstraTheme.spacing.large))
-        Text(
-            "Disabling Android battery optimization helps Tor and mesh delivery stay alive in the background, especially on Realme, Oppo, Vivo and Xiaomi devices.",
-            color = MutedGray,
-            fontSize = AstraTheme.typography.bodySmall.fontSize
-        )
-        Spacer(Modifier.height(AstraTheme.spacing.small))
-        OutlinedButton(
-            onClick = onOpenBatterySettings,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentCyan)
-        ) {
-            Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-            Text("Open Android Battery Settings")
         }
     }
 }
@@ -934,30 +947,30 @@ private fun BatteryPerformanceSection(
 @Composable
 private fun BatteryMetricRow(label: String, value: String, valueColor: Color) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = MutedGray, fontSize = AstraTheme.typography.bodyMedium.fontSize)
-        Text(value, color = valueColor, fontSize = AstraTheme.typography.bodyMedium.fontSize, fontWeight = FontWeight.SemiBold)
+        Text(label, color = SecondaryText, fontSize = 14.sp)
+        Text(value, color = valueColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
 @Composable
 private fun BatteryComponentRow(label: String, enabled: Boolean, impact: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(9.dp)
+                .size(8.dp)
                 .clip(CircleShape)
-                .background(if (enabled) NeonGreen else DimGray)
+                .background(if (enabled) SuccessGreen else BorderColor)
         )
         Spacer(Modifier.width(10.dp))
-        Text(label, color = SoftWhite, modifier = Modifier.weight(1f), fontSize = AstraTheme.typography.bodyMedium.fontSize)
-        Text(impact, color = if (enabled) impactColor(impact) else MutedGray, fontSize = AstraTheme.typography.labelMedium.fontSize)
+        Text(label, color = PrimaryText, modifier = Modifier.weight(1f), fontSize = 14.sp)
+        Text(impact, color = if (enabled) impactColor(impact) else TextMuted, fontSize = 13.sp)
     }
 }
 
@@ -1056,10 +1069,10 @@ private fun componentImpact(performanceMode: String): String {
 
 private fun impactColor(impact: String): Color {
     return when (impact) {
-        "Low" -> NeonGreen
-        "Medium" -> Color(0xFFFFC857)
-        "High" -> AccentPink
-        else -> MutedGray
+        "Low" -> SuccessGreen
+        "Medium" -> WarningAmber
+        "High" -> ErrorRed
+        else -> TextMuted
     }
 }
 

@@ -17,8 +17,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PersonAdd
@@ -28,6 +30,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QrCode
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -133,42 +136,18 @@ fun ChatListScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF05070C),
-                        Color(0xFF10101C),
-                        Color(0xFF071512),
-                        Color(0xFF05070C)
-                    )
-                )
-            )
+            .background(AppBackground)
     ) {
         Scaffold(
-            containerColor = Color.Transparent,
+            containerColor = AppBackground,
             floatingActionButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.small)) {
-                    FloatingActionButton(
-                        onClick = { showShareContact = true },
-                        containerColor = Color(0xE61B2030),
-                        contentColor = Color(0xFF8EEBFF)
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Share contact")
-                    }
-                    FloatingActionButton(
-                        onClick = { navController.navigate("create_group") },
-                        containerColor = Color(0xE61B2030),
-                        contentColor = Color(0xFFF6D09A)
-                    ) {
-                        Icon(androidx.compose.material.icons.Icons.Default.PersonAdd, contentDescription = "Create group")
-                    }
-                    FloatingActionButton(
-                        onClick = { showAddContact = true },
-                        containerColor = Color(0xFF9AF6D0),
-                        contentColor = Color(0xFF06120F)
-                    ) {
-                        Icon(androidx.compose.material.icons.Icons.Default.PersonAdd, contentDescription = "Add contact")
-                    }
+                FloatingActionButton(
+                    onClick = { showAddContact = true },
+                    containerColor = TorXPrimary,
+                    contentColor = Color.White,
+                    shape = CircleShape
+                ) {
+                    Icon(androidx.compose.material.icons.Icons.Default.Add, contentDescription = "New chat")
                 }
             },
             topBar = {
@@ -176,45 +155,56 @@ fun ChatListScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(AppBackground)
-                        .padding(top = AstraTheme.spacing.standard, start = AstraTheme.spacing.large, end = AstraTheme.spacing.large, bottom = AstraTheme.spacing.small)
+                        .padding(top = 16.dp, start = 20.dp, end = 20.dp, bottom = 8.dp)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(SurfaceCard)
-                            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
-                            .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.medium),
-                        horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.small),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = AstraTheme.spacing.small)
-                        ) {
+                        Column {
                             Text(
                                 "TorX One",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Bold,
-                                color = PrimaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                color = PrimaryText
                             )
                             Text(
-                                "Private mesh messages",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = SecondaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                "Private mesh messenger",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SecondaryText
                             )
                         }
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            horizontalAlignment = Alignment.End
+                        IconButton(
+                            onClick = { showShareContact = true },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(SurfaceCard)
+                                .border(1.dp, BorderColor, CircleShape)
                         ) {
-                            DiscoveryStatusChip(status = connectionStatus)
+                            Icon(androidx.compose.material.icons.Icons.Rounded.QrCode, contentDescription = "My Key", tint = TorXPrimary, modifier = Modifier.size(20.dp))
                         }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    // Clean full-width status card
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(SurfaceCard)
+                            .border(1.dp, BorderColor, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        com.torxone.app.ui.components.PulsingDot(color = BluetoothAccent, size = 8.dp)
+                        Text(
+                            text = if (connectionStatus.isNotBlank()) connectionStatus else "Searching nearby...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SecondaryText,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
@@ -222,7 +212,7 @@ fun ChatListScreen(
             LazyColumn(
                 state = chatListState,
                 modifier = Modifier.padding(paddingValues).fillMaxSize(),
-                contentPadding = PaddingValues(bottom = AstraTheme.spacing.massive5, top = AstraTheme.spacing.small)
+                contentPadding = PaddingValues(bottom = AstraTheme.spacing.massive5, top = 4.dp)
             ) {
             item {
                 AstraMusicNotesRow(
@@ -236,7 +226,7 @@ fun ChatListScreen(
 
             if (pendingRequests.isNotEmpty()) {
                 item {
-                    PremiumSectionHeader("Connection Requests", Color(0xFFFF8A8A))
+                    PremiumSectionHeader("Connection Requests")
                 }
                 items(pendingRequests) { request ->
                     ConnectionRequestCard(
@@ -249,12 +239,12 @@ fun ChatListScreen(
 
             if (nearbyDevices.isNotEmpty()) {
                 item {
-                    PremiumSectionHeader("Nearby", Color(0xFF8EEBFF))
+                    PremiumSectionHeader("Nearby")
                 }
                 item {
                     LazyRow(
-                        contentPadding = PaddingValues(horizontal = AstraTheme.spacing.standard),
-                        horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.medium)
+                        contentPadding = PaddingValues(horizontal = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         items(nearbyDevices) { device ->
                             NearbyDeviceChip(
@@ -267,7 +257,21 @@ fun ChatListScreen(
             }
 
             item {
-                PremiumSectionHeader("Messages", Color(0xFF9AF6D0))
+                PremiumSectionHeader(
+                    title = "Messages",
+                    action = {
+                        IconButton(
+                            onClick = { navController.navigate("create_group") },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                androidx.compose.material.icons.Icons.Default.Add,
+                                contentDescription = "Create Group",
+                                tint = TorXPrimary
+                            )
+                        }
+                    }
+                )
             }
 
             if (conversationsState == null) {
@@ -551,27 +555,26 @@ fun ChatListScreen(
 }
 
 @Composable
-private fun PremiumSectionHeader(title: String, accent: Color) {
+private fun PremiumSectionHeader(
+    title: String,
+    accent: Color = TorXPrimary,
+    action: @Composable (() -> Unit)? = null
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = AstraTheme.spacing.large, end = AstraTheme.spacing.large, top = AstraTheme.spacing.large, bottom = AstraTheme.spacing.small),
+            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(width = 4.dp, height = 18.dp)
-                .clip(RoundedCornerShape(999.dp))
-                .background(accent)
-        )
-        Spacer(Modifier.width(10.dp))
         Text(
             title,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = PrimaryText,
             maxLines = 1
         )
+        action?.invoke()
     }
 }
 
@@ -685,78 +688,71 @@ private fun AstraMusicNotesRow(
     val localProfile by db.profileDao().getProfile("LOCAL_USER").collectAsStateWithLifecycle(initialValue = null)
     val myNote = notes.firstOrNull { it.authorPublicKey == mySigningKey }
     val contactNotes = notes.filterNot { it.authorPublicKey == mySigningKey }
-    Column(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = AstraTheme.spacing.small)
-            .clip(RoundedCornerShape(28.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color(0x33B388FF),
-                        Color(0x221DE9B6),
-                        Color(0x1A8EEBFF)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(28.dp))
-            .padding(vertical = AstraTheme.spacing.standard)
+            .padding(horizontal = 20.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = BorderStroke(1.dp, BorderColor)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AstraTheme.spacing.standard),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    "TorX One Music",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Black,
-                    color = Color(0xFFF8F7FF)
-                )
-                Text(
-                    "Music notes without sharing audio",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color(0xFFB9C3D4)
-                )
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        "TorX One Music",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryText
+                    )
+                    Text(
+                        "Music notes without sharing audio",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = SecondaryText
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(TorXPrimarySoft)
+                        .border(1.dp, Color(0xFFBFDBFE), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        "Metadata only",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = TorXPrimary
+                    )
+                }
             }
-            Text(
-                "Metadata only",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = Color(0xFF9AF6D0),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(Color(0x1A9AF6D0))
-                    .border(1.dp, Color(0x339AF6D0), RoundedCornerShape(999.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            )
-        }
-        Spacer(Modifier.height(AstraTheme.spacing.standard))
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = AstraTheme.spacing.standard),
-            horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.medium)
-        ) {
-            item {
-                MusicNoteAvatarCard(
-                    title = "Your Note",
-                    subtitle = myNote?.trackName ?: "Share music",
-                    avatarUri = localProfile?.avatarLocalPath,
-                    albumArtUri = myNote?.albumArtUri,
-                    onClick = { myNote?.let(onOpen) ?: onCreate() }
-                )
-            }
-            items(contactNotes, key = { it.noteId }) { note ->
-                val profile by db.profileDao().getProfile(note.authorPublicKey).collectAsStateWithLifecycle(initialValue = null)
-                MusicNoteAvatarCard(
-                    title = note.authorName,
-                    subtitle = note.trackName,
-                    avatarUri = profile?.avatarLocalPath,
-                    albumArtUri = note.albumArtUri,
-                    onClick = { onOpen(note) }
-                )
+            Spacer(Modifier.height(14.dp))
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item {
+                    MusicNoteAvatarCard(
+                        title = "Your Note",
+                        subtitle = myNote?.trackName ?: "Share music",
+                        avatarUri = localProfile?.avatarLocalPath,
+                        albumArtUri = myNote?.albumArtUri,
+                        onClick = { myNote?.let(onOpen) ?: onCreate() }
+                    )
+                }
+                items(contactNotes, key = { it.noteId }) { note ->
+                    val profile by db.profileDao().getProfile(note.authorPublicKey).collectAsStateWithLifecycle(initialValue = null)
+                    MusicNoteAvatarCard(
+                        title = note.authorName,
+                        subtitle = note.trackName,
+                        avatarUri = profile?.avatarLocalPath,
+                        albumArtUri = note.albumArtUri,
+                        onClick = { onOpen(note) }
+                    )
+                }
             }
         }
     }
@@ -773,67 +769,60 @@ private fun MusicNoteAvatarCard(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(102.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color.White.copy(alpha = 0.07f))
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
+            .width(96.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(SurfaceSecondary)
+            .border(1.dp, BorderColor, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 12.dp)
+            .padding(horizontal = 8.dp, vertical = 10.dp)
     ) {
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(54.dp)
                 .clip(CircleShape)
-                .background(
-                    Brush.linearGradient(
-                        listOf(Color(0xFFB388FF), Color(0xFF1DE9B6), Color(0xFF8EEBFF))
-                    )
-                )
-                .padding(3.dp),
+                .background(SurfaceCard)
+                .border(1.dp, BorderColor, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .background(Color(0xE60A0C14)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (avatarUri != null) {
-                    AsyncImage(
-                        model = avatarUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-                } else if (albumArtUri != null) {
-                    AsyncImage(
-                        model = albumArtUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-                } else {
-                    Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = Color(0xFF9AF6D0))
-                }
-            }
-            Surface(
-                modifier = Modifier.align(Alignment.BottomEnd),
-                shape = CircleShape,
-                color = Color(0xF0060910),
-                tonalElevation = 4.dp
-            ) {
-                Icon(
-                    Icons.Rounded.Headphones,
+            if (avatarUri != null) {
+                AsyncImage(
+                    model = avatarUri,
                     contentDescription = null,
-                    modifier = Modifier.padding(4.dp).size(14.dp),
-                    tint = Color(0xFF8EEBFF)
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+            } else if (albumArtUri != null) {
+                AsyncImage(
+                    model = albumArtUri,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+            } else {
+                Icon(
+                    Icons.Rounded.MusicNote,
+                    contentDescription = null,
+                    tint = TorXPrimary,
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = Color(0xFFF6F7FF), fontWeight = FontWeight.SemiBold)
-        Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = Color(0xFF9DA7B8))
+        Text(
+            title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelMedium,
+            color = PrimaryText,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            subtitle,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelSmall,
+            color = SecondaryText
+        )
     }
 }
 
@@ -951,14 +940,15 @@ private fun MusicNoteViewerDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(note.authorName) },
+        title = { Text(note.authorName, color = PrimaryText, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     modifier = Modifier
-                        .size(180.dp)
-                        .clip(RoundedCornerShape(28.dp))
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                        .size(160.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(TorXPrimarySoft)
+                        .border(1.dp, BorderColor, RoundedCornerShape(20.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (note.albumArtUri != null) {
@@ -969,24 +959,27 @@ private fun MusicNoteViewerDialog(
                             contentScale = androidx.compose.ui.layout.ContentScale.Crop
                         )
                     } else {
-                        Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(52.dp), tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(52.dp), tint = TorXPrimary)
                     }
                 }
-                if (note.text.isNotBlank()) Text(note.text, fontWeight = FontWeight.SemiBold)
-                Text(note.trackName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(note.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${providerLabel(note.provider)} - ${timeLeftLabel(note.expiresAt)} left", style = MaterialTheme.typography.labelMedium, color = Color(0xFF9AF6D0))
+                if (note.text.isNotBlank()) Text(note.text, fontWeight = FontWeight.SemiBold, color = PrimaryText)
+                Text(note.trackName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PrimaryText)
+                Text(note.artist, color = SecondaryText)
+                Text("${providerLabel(note.provider)} • ${timeLeftLabel(note.expiresAt)} left", style = MaterialTheme.typography.labelMedium, color = TorXPrimary)
                 if (isOwnNote) {
                     TextButton(onClick = onDelete) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = ErrorRed)
                         Spacer(Modifier.width(6.dp))
-                        Text("Delete Note")
+                        Text("Delete Note", color = ErrorRed)
                     }
                 }
             }
         },
         confirmButton = {
-            Button(onClick = onListen) {
+            Button(
+                onClick = onListen,
+                colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary, contentColor = Color.White)
+            ) {
                 Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Listen")
@@ -994,9 +987,11 @@ private fun MusicNoteViewerDialog(
         },
         dismissButton = {
             TextButton(onClick = onListenTogether) {
-                Text("Listen Together")
+                Text("Listen Together", color = TorXPrimary)
             }
-        }
+        },
+        containerColor = SurfaceCard,
+        shape = RoundedCornerShape(20.dp)
     )
 }
 
@@ -1031,36 +1026,52 @@ fun ConnectionRequestCard(
     onReject: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.tiny),
-        shape = RoundedCornerShape(AstraTheme.spacing.standard),
-        colors = CardDefaults.cardColors(containerColor = Color(0xD0181D2B))
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = BorderStroke(1.dp, BorderColor)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Brush.linearGradient(listOf(Color(0x22FF8A8A), Color.Transparent)))
-                .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(AstraTheme.spacing.standard))
-                .padding(AstraTheme.spacing.standard),
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            AstraAvatar(name = request.name, size = AstraTheme.spacing.massive3)
-            Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
+            AstraAvatar(name = request.name, size = 44.dp)
+            Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(request.name, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.Black, color = Color(0xFFF6F7FF))
-                Text("wants to connect securely", fontSize = AstraTheme.typography.bodySmall.fontSize, color = Color(0xFFB9C3D4))
+                Text(
+                    request.name,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = PrimaryText
+                )
+                Text(
+                    "wants to connect securely",
+                    fontSize = 13.sp,
+                    color = SecondaryText
+                )
             }
             IconButton(
                 onClick = onAccept,
-                modifier = Modifier.size(AstraTheme.spacing.massive2).clip(CircleShape).background(Color(0x229AF6D0))
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(TorXPrimarySoft)
             ) {
-                Icon(Icons.Rounded.CheckCircle, "Accept", tint = Color(0xFF9AF6D0), modifier = Modifier.size(AstraTheme.spacing.extraLarge))
+                Icon(Icons.Rounded.CheckCircle, "Accept", tint = SuccessGreen, modifier = Modifier.size(22.dp))
             }
-            Spacer(modifier = Modifier.width(AstraTheme.spacing.small))
+            Spacer(modifier = Modifier.width(6.dp))
             IconButton(
                 onClick = onReject,
-                modifier = Modifier.size(AstraTheme.spacing.massive2).clip(CircleShape).background(Color(0x22FF8A8A))
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(SurfaceSecondary)
             ) {
-                Icon(Icons.Rounded.Close, "Reject", tint = Color(0xFFFF8A8A), modifier = Modifier.size(AstraTheme.spacing.extraLarge))
+                Icon(Icons.Rounded.Close, "Reject", tint = SecondaryText, modifier = Modifier.size(20.dp))
             }
         }
     }
@@ -1071,17 +1082,30 @@ fun NearbyDeviceChip(device: NearbyDevice, onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(104.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(Color.White.copy(alpha = 0.07f))
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
+            .width(96.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp, horizontal = 8.dp)
     ) {
-        AstraAvatar(name = device.name, size = AstraTheme.spacing.massive5)
-        Spacer(modifier = Modifier.height(AstraTheme.spacing.tiny))
-        Text(device.name, fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color(0xFFEFF4FF), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text("Nearby", fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color(0xFF8EEBFF), maxLines = 1)
+        AstraAvatar(name = device.name, size = 44.dp)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            device.name,
+            fontSize = 12.sp,
+            color = PrimaryText,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            "Nearby",
+            fontSize = 11.sp,
+            color = BluetoothAccent,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
     }
 }
 

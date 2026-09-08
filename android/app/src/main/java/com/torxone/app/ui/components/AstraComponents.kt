@@ -29,11 +29,11 @@ fun AstraAvatar(
 ) {
     val initial = name.firstOrNull()?.uppercase() ?: "?"
     val colors = listOf(
-        listOf(Color(0xFF6366F1), Color(0xFF8B5CF6)),
-        listOf(Color(0xFFEC4899), Color(0xFF8B5CF6)),
-        listOf(Color(0xFF22D3EE), Color(0xFF6366F1)),
-        listOf(Color(0xFF10B981), Color(0xFF22D3EE)),
-        listOf(Color(0xFFF59E0B), Color(0xFFEC4899))
+        listOf(Color(0xFF3B82F6), Color(0xFF1D4ED8)),
+        listOf(Color(0xFF0284C7), Color(0xFF0369A1)),
+        listOf(Color(0xFF6366F1), Color(0xFF4F46E5)),
+        listOf(Color(0xFF0D9488), Color(0xFF0F766E)),
+        listOf(Color(0xFF475569), Color(0xFF334155))
     )
     val colorPair = colors[name.hashCode().mod(colors.size).let { if (it < 0) it + colors.size else it }]
 

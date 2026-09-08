@@ -46,9 +46,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.torxone.app.crypto.CryptoManager
 import com.torxone.app.identity.IdentityManager
 import com.torxone.app.network.TorManager
-import com.torxone.app.ui.components.PremiumAuroraBackground
 import com.torxone.app.ui.components.PremiumHeader
 import com.torxone.app.ui.components.PremiumPulseDot
+import com.torxone.app.ui.theme.AppBackground
 import com.torxone.app.ui.theme.AstraTheme
 import com.torxone.app.ui.theme.BluetoothAccent
 import com.torxone.app.ui.theme.BorderColor
@@ -75,78 +75,76 @@ fun SecurityCenterScreen(
     val identity = identityManager.loadIdentity()
     val identityKey = identity?.signingPublicKey?.let { CryptoManager.toHex(it) } ?: "Unknown"
 
-    PremiumAuroraBackground {
-        Scaffold(
-            containerColor = Color.Transparent,
-            topBar = {
-                PremiumHeader(
-                    title = "Security",
-                    subtitle = "Identity, encryption, Tor, and route trust"
-                )
-            }
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .verticalScroll(rememberScrollState())
-                    .padding(AstraTheme.spacing.large),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(AstraTheme.spacing.standard)
-            ) {
-                SecurityCard(
-                    title = "End-to-end encryption",
-                    value = "Active - Double Ratchet + X25519",
-                    statusColor = SuccessGreen,
-                    icon = Icons.Rounded.Lock
-                )
+    Scaffold(
+        containerColor = AppBackground,
+        topBar = {
+            PremiumHeader(
+                title = "Security",
+                subtitle = "Identity, encryption, Tor, and route trust"
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
+                .padding(AstraTheme.spacing.large),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(AstraTheme.spacing.standard)
+        ) {
+            SecurityCard(
+                title = "End-to-end encryption",
+                value = "Active - Double Ratchet + X25519",
+                statusColor = SuccessGreen,
+                icon = Icons.Rounded.Lock
+            )
 
-                SecurityCard(
-                    title = "App Lock",
-                    value = if (appLockEnabled) "Active - Biometrics / PIN" else "Disabled",
-                    statusColor = if (appLockEnabled) SuccessGreen else TextMuted,
-                    icon = Icons.Rounded.Lock
-                )
+            SecurityCard(
+                title = "App Lock",
+                value = if (appLockEnabled) "Active - Biometrics / PIN" else "Disabled",
+                statusColor = if (appLockEnabled) SuccessGreen else TextMuted,
+                icon = Icons.Rounded.Lock
+            )
 
-                SecurityCard(
-                    title = "Identity fingerprint",
-                    value = identityKey,
-                    statusColor = TorXPrimary,
-                    icon = Icons.Rounded.Key,
-                    onCopy = {
+            SecurityCard(
+                title = "Identity fingerprint",
+                value = identityKey,
+                statusColor = TorXPrimary,
+                icon = Icons.Rounded.Key,
+                onCopy = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Identity Key", identityKey))
+                    Toast.makeText(context, "Identity Key copied", Toast.LENGTH_SHORT).show()
+                }
+            )
+
+            SecurityCard(
+                title = "Tor network status",
+                value = if (torReady) "Connected & Routing" else "Connecting / Offline ($torStatus)",
+                statusColor = if (torReady) TorAccent else WarningAmber,
+                icon = Icons.Rounded.Public
+            )
+
+            SecurityCard(
+                title = "Onion address",
+                value = onionAddress.ifBlank { "Initializing..." },
+                statusColor = if (onionAddress.isNotBlank()) TorAccent else TextMuted,
+                icon = Icons.Rounded.Router,
+                onCopy = {
+                    if (onionAddress.isNotBlank()) {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Identity Key", identityKey))
-                        Toast.makeText(context, "Identity Key copied", Toast.LENGTH_SHORT).show()
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Onion Address", onionAddress))
+                        Toast.makeText(context, "Onion Address copied", Toast.LENGTH_SHORT).show()
                     }
-                )
+                }
+            )
 
-                SecurityCard(
-                    title = "Tor network status",
-                    value = if (torReady) "Connected & Routing" else "Connecting / Offline ($torStatus)",
-                    statusColor = if (torReady) TorAccent else WarningAmber,
-                    icon = Icons.Rounded.Public
-                )
-
-                SecurityCard(
-                    title = "Onion address",
-                    value = onionAddress.ifBlank { "Initializing..." },
-                    statusColor = if (onionAddress.isNotBlank()) TorAccent else TextMuted,
-                    icon = Icons.Rounded.Router,
-                    onCopy = {
-                        if (onionAddress.isNotBlank()) {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Onion Address", onionAddress))
-                            Toast.makeText(context, "Onion Address copied", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                )
-
-                SecurityCard(
-                    title = "Nearby mesh transport",
-                    value = "Bluetooth Low Energy & Wi-Fi Direct active",
-                    statusColor = BluetoothAccent,
-                    icon = Icons.Rounded.Hub
-                )
-            }
+            SecurityCard(
+                title = "Nearby mesh transport",
+                value = "Bluetooth Low Energy & Wi-Fi Direct active",
+                statusColor = BluetoothAccent,
+                icon = Icons.Rounded.Hub
+            )
         }
     }
 }

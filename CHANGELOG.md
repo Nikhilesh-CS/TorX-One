@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.25] - 2026-09-09
+### Added
+- Unified TorX Professional Light System across all app screens: Strict 90% neutral, 8% brand blue, 2% semantic/transport color rule.
+- Home Screen & TorX One Music redesign: Eliminated dark cyberpunk gradient, glowing circular avatars, and neon borders. Replaced with clean white cards, subtle metadata badges, and high-contrast slate typography.
+- Settings Battery & Performance panel: Converted from dark translucent panel to clean white SaaS card with semantic status indicators, active component metrics, and clean optimization controls.
+- Lock Screen overhaul (`LockScreen.kt`): Fixed invisible white-on-white text bug, replaced floating square with clean full-screen SaaS security card, high-contrast dark slate text, branded security badge, and refined biometric/backup password controls.
+- Mesh Dashboard & Security Center overhaul: Replaced all legacy dark aurora gradients, neon stat colors, and dark canvas backgrounds with clean cards, crisp borders, and calm icon chips.
+- Avatar typography: Refined avatar gradients to professional calm tones (Linear / SaaS style).
+
 ## [1.0.24] - 2026-09-09
 ### Added
 - TorX Professional Light UI System: Complete design overhaul featuring clean SaaS aesthetics (white/slate neutrals with restrained blue brand actions).

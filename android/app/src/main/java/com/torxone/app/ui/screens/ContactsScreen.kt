@@ -41,10 +41,9 @@ import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.NearbyConnectionManager
 import com.torxone.app.network.TorManager
 import com.torxone.app.ui.components.AstraAvatar
-import com.torxone.app.ui.components.PremiumAuroraBackground
 import com.torxone.app.ui.components.PremiumHeader
 import com.torxone.app.ui.components.PremiumPulseDot
-import com.torxone.app.ui.components.premiumGlass
+import com.torxone.app.ui.theme.AppBackground
 import com.torxone.app.ui.theme.AstraTheme
 import com.torxone.app.ui.theme.BluetoothAccent
 import com.torxone.app.ui.theme.BorderColor
@@ -72,72 +71,72 @@ fun ContactsScreen(
         ?: kotlinx.coroutines.flow.MutableStateFlow<Map<String, com.torxone.app.presence.PresenceState>>(emptyMap()))
         .collectAsStateWithLifecycle()
 
-    PremiumAuroraBackground {
-        Scaffold(
-            containerColor = Color.Transparent,
-            topBar = {
-                PremiumHeader(
-                    title = "Contacts",
-                    subtitle = "Verified identities and active routes"
-                )
-            }
-        ) { paddingValues ->
-            if (contacts.isEmpty()) {
-                Box(
+    Scaffold(
+        containerColor = AppBackground,
+        topBar = {
+            PremiumHeader(
+                title = "Contacts",
+                subtitle = "Verified identities and active routes"
+            )
+        }
+    ) { paddingValues ->
+        if (contacts.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(AstraTheme.spacing.massive2),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(AstraTheme.spacing.massive2),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(SurfaceCard)
+                        .border(1.dp, BorderColor, RoundedCornerShape(20.dp))
+                        .padding(AstraTheme.spacing.extraLarge)
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .premiumGlass()
-                            .padding(AstraTheme.spacing.extraLarge)
-                    ) {
-                        Icon(
-                            Icons.Rounded.Bluetooth,
-                            contentDescription = null,
-                            modifier = Modifier.size(AstraTheme.spacing.massive5),
-                            tint = TorXPrimary
-                        )
-                        Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
-                        Text("No contacts yet", fontSize = 20.sp, color = PrimaryText, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Discover nearby users or share your onion address.",
-                            fontSize = AstraTheme.typography.bodyMedium.fontSize,
-                            color = SecondaryText,
-                            modifier = Modifier.padding(top = AstraTheme.spacing.small),
-                            textAlign = TextAlign.Center
-                        )
-                    }
+                    Icon(
+                        Icons.Rounded.Bluetooth,
+                        contentDescription = null,
+                        modifier = Modifier.size(AstraTheme.spacing.massive5),
+                        tint = TorXPrimary
+                    )
+                    Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
+                    Text("No contacts yet", fontSize = 20.sp, color = PrimaryText, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Discover nearby users or share your onion address.",
+                        fontSize = AstraTheme.typography.bodyMedium.fontSize,
+                        color = SecondaryText,
+                        modifier = Modifier.padding(top = AstraTheme.spacing.small),
+                        textAlign = TextAlign.Center
+                    )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    contentPadding = PaddingValues(bottom = 100.dp)
-                ) {
-                    items(contacts) { contact ->
-                        val isNearby = connectedEndpoints.contains(contact.endpointId)
-                        val isLivePresence = presenceStates[contact.signingPublicKey]?.activity == "online"
-                        val isTorRouteAvailable = contact.onionAddress.isNotBlank() && isTorReady
-                        val profile by db.profileDao().getProfile(contact.signingPublicKey).collectAsStateWithLifecycle(initialValue = null)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentPadding = PaddingValues(bottom = 100.dp)
+            ) {
+                items(contacts) { contact ->
+                    val isNearby = connectedEndpoints.contains(contact.endpointId)
+                    val isLivePresence = presenceStates[contact.signingPublicKey]?.activity == "online"
+                    val isTorRouteAvailable = contact.onionAddress.isNotBlank() && isTorReady
+                    val profile by db.profileDao().getProfile(contact.signingPublicKey).collectAsStateWithLifecycle(initialValue = null)
 
-                        ContactItemRow(
-                            contact = contact,
-                            avatarModel = profile?.avatarLocalPath,
-                            isNearby = isNearby,
-                            isOnline = isNearby || isLivePresence,
-                            isTorRouteAvailable = isTorRouteAvailable,
-                            onClick = {
-                                navController.navigate("chat/direct/${contact.signingPublicKey}")
-                            }
-                        )
-                    }
+                    ContactItemRow(
+                        contact = contact,
+                        avatarModel = profile?.avatarLocalPath,
+                        isNearby = isNearby,
+                        isOnline = isNearby || isLivePresence,
+                        isTorRouteAvailable = isTorRouteAvailable,
+                        onClick = {
+                            navController.navigate("chat/direct/${contact.signingPublicKey}")
+                        }
+                    )
                 }
             }
         }
