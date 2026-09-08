@@ -85,6 +85,8 @@ class TorXOneService : Service() {
         private set
     lateinit var groupManager: com.torxone.app.group.GroupManager
         private set
+    lateinit var sessionManager: com.torxone.app.security.session.SessionManager
+        private set
     lateinit var settingsManager: com.torxone.app.data.SettingsManager
         private set
 
@@ -131,15 +133,18 @@ class TorXOneService : Service() {
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
                 AppDatabase.MIGRATION_16_17,
-                AppDatabase.MIGRATION_17_18
-                ,AppDatabase.MIGRATION_18_19
-                ,AppDatabase.MIGRATION_19_20
+                AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
+                AppDatabase.MIGRATION_19_20,
+                AppDatabase.MIGRATION_20_21
             )
             .build()
 
         nearbyManager = NearbyConnectionManager(this)
         torManager = TorManager(this)
-        messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager)
+        val replayProtection = com.torxone.app.security.session.ReplayProtection(db.sessionReplayDao())
+        sessionManager = com.torxone.app.security.session.SessionManager(db.sessionDao(), replayProtection, db.contactDao())
+        messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager, sessionManager)
         realtimeEngineManager = com.torxone.app.realtime.RealtimeEngineManager(this, messageRouter)
         astraFastLane = com.torxone.app.realtime.AstraFastLane(realtimeEngineManager)
         mediaTransferManager = com.torxone.app.transfer.MediaTransferManager(this, db, messageRouter, astraFastLane)
@@ -182,6 +187,7 @@ class TorXOneService : Service() {
         messageRouter.identity = identity
         messageRouter.mySigningKeyHex = CryptoManager.toHex(identity.signingPublicKey)
         messageRouter.myOnionAddress = identityManager.loadOnionAddress() ?: ""
+        sessionManager.identity = identity
 
         isConfigured.value = true
 

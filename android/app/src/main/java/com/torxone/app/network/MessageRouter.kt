@@ -26,7 +26,8 @@ class MessageRouter(
     private val scope: CoroutineScope,
     private val db: AppDatabase,
     private val nearbyManager: NearbyConnectionManager,
-    private val torManager: TorManager
+    private val torManager: TorManager,
+    val sessionManager: com.torxone.app.security.session.SessionManager? = null
 ) {
     companion object {
         private const val TAG = "MessageRouter"
@@ -52,6 +53,7 @@ class MessageRouter(
 
         when (json.optString("type")) {
             MeshProtocol.TYPE_HELLO -> handleHello(endpointId, json.optString("contact"))
+            MeshProtocol.TYPE_SESSION_MSG -> scope.launch(Dispatchers.IO) { handleSessionMessage(endpointId, json) }
             MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, MeshProtocol.TYPE_MSG) }
             MeshProtocol.TYPE_MEDIA_OFFER,
             MeshProtocol.TYPE_MEDIA_CHUNK,
@@ -92,6 +94,7 @@ class MessageRouter(
         val json = MeshProtocol.parse(raw) ?: return
         Log.d(TAG, "[TOR] Received payload type=${json.optString("type")}")
         when (json.optString("type")) {
+            MeshProtocol.TYPE_SESSION_MSG -> scope.launch(Dispatchers.IO) { handleSessionMessage(null, json) }
             MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, MeshProtocol.TYPE_MSG) }
             MeshProtocol.TYPE_MEDIA_OFFER,
             MeshProtocol.TYPE_MEDIA_CHUNK,
@@ -178,10 +181,15 @@ class MessageRouter(
             replyToType = replyToType
         )
 
-        val payload = buildEncryptedPayload(identity, contact, wireText)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
+        // Try ratcheted session encryption (Double Ratchet + Forward Secrecy)
+        val sessionPayload = try {
+            sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
+        } catch (e: Exception) {
+            Log.w(TAG, "[SEND] Session encryption error, falling back to legacy: ${e.message}")
+            null
+        }
 
-        val messageId = UUID.randomUUID().toString()
+        val messageId = sessionPayload?.messageId ?: UUID.randomUUID().toString()
 
         // Save the message as PENDING first
         db.messageDao().insertMessage(
@@ -201,7 +209,13 @@ class MessageRouter(
         Log.d(TAG, "[SEND] Message $messageId queued for $contactKey")
 
         // Try immediate delivery
-        val result = attemptDelivery(contact, payload, messageId)
+        val result = if (sessionPayload != null) {
+            attemptDeliverySession(contact, sessionPayload.wireJsonString, messageId)
+        } else {
+            val payload = buildEncryptedPayload(identity, contact, wireText)
+                ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
+            attemptDelivery(contact, payload, messageId)
+        }
 
         if (result.success) {
             db.messageDao().updateMessageStatus(messageId, "sent", result.transport.name)
@@ -212,6 +226,44 @@ class MessageRouter(
         }
 
         result
+    }
+
+    private fun attemptDeliverySession(
+        contact: ContactEntity,
+        wireJson: String,
+        messageId: String
+    ): SendResult {
+        val connected = nearbyManager.connectedEndpoints.value
+
+        // 1. Try direct Nearby
+        if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
+            Log.d(TAG, "[NEARBY-SESSION] Sending direct to ${contact.endpointId}")
+            nearbyManager.sendRaw(contact.endpointId, wireJson)
+            return SendResult(true, Transport.NEARBY_DIRECT)
+        }
+
+        // 2. Try Nearby relay (flood to all connected peers)
+        if (connected.isNotEmpty()) {
+            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers")
+            connected.forEach { nearbyManager.sendRaw(it, wireJson) }
+            return SendResult(true, Transport.NEARBY_RELAY)
+        }
+
+        // 3. Try Tor
+        val onion = contact.onionAddress
+        if (onion.isNotBlank() && torManager.isTorReady.value) {
+            Log.d(TAG, "[TOR-SESSION] Sending session message to $onion")
+            val ok = torManager.sendToOnion(onion, wireJson)
+            if (ok) {
+                Log.d(TAG, "[TOR-SESSION] Message $messageId delivered to $onion")
+                return SendResult(true, Transport.TOR)
+            }
+            Log.w(TAG, "[TOR-SESSION] Delivery failed")
+            return SendResult(false, Transport.TOR, "Tor delivery failed")
+        }
+
+        Log.w(TAG, "[SEND-SESSION] No transport available for ${contact.name}")
+        return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
     }
 
     private fun attemptDelivery(
@@ -528,8 +580,17 @@ class MessageRouter(
                 replyToSender = msg.replyToSender,
                 replyToType = msg.replyToType
             )
-            val payload = buildEncryptedPayload(identity, contact, wireText) ?: continue
-            val result = attemptDelivery(contact, payload, msg.messageId)
+            val sessionPayload = try {
+                sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
+            } catch (e: Exception) {
+                null
+            }
+            val result = if (sessionPayload != null) {
+                attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId)
+            } else {
+                val payload = buildEncryptedPayload(identity, contact, wireText) ?: continue
+                attemptDelivery(contact, payload, msg.messageId)
+            }
 
             if (result.success) {
                 db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
@@ -797,6 +858,64 @@ class MessageRouter(
 
     // ──────────────────────── DECRYPTION ────────────────────────
 
+    private suspend fun handleSessionMessage(viaEndpoint: String?, json: JSONObject) {
+        val to = json.optString("to", "").trim().lowercase()
+        val ttl = json.optInt("ttl", 3)
+        val fromKey = json.optString("from", "").trim().lowercase()
+        val messageId = json.optString("msgId", "")
+        val senderOnion = json.optString("senderOnion", "")
+
+        // 1. If addressed to us, decrypt and dispatch
+        if (to == mySigningKeyHex) {
+            val sm = sessionManager ?: run {
+                Log.w(TAG, "[SESSION] Received session message but SessionManager is not initialized")
+                return
+            }
+
+            val contact = db.contactDao().getContact(fromKey)
+            if (contact == null) {
+                Log.w(TAG, "[SESSION] Received message from unknown contact: ${fromKey.take(16)}")
+                return
+            }
+
+            // Update sender's onion address if received
+            if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) {
+                db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
+            }
+
+            val decrypted = try {
+                sm.decrypt(fromKey, json)
+            } catch (e: Exception) {
+                Log.w(TAG, "[SESSION] Decryption failed from ${contact.name}: ${e.message}")
+                return
+            }
+
+            dispatchDecryptedMessage(
+                contact = contact,
+                senderKey = fromKey,
+                plaintext = decrypted.plaintext,
+                messageType = decrypted.messageType,
+                messageId = messageId,
+                viaEndpoint = viaEndpoint,
+                senderOnion = senderOnion
+            )
+            return
+        }
+
+        // 2. Mesh relay if not addressed to us and TTL > 1
+        if (viaEndpoint != null && ttl > 1) {
+            val sessionId = json.optString("sessionId")
+            val msgNum = json.optInt("msgNum", 0)
+            val fingerprint = "session:$sessionId:$msgNum"
+            if (!rememberRelayFingerprint(fingerprint)) return
+
+            json.put("ttl", ttl - 1)
+            val wire = json.toString()
+            val connected = nearbyManager.connectedEndpoints.value
+            connected.filter { it != viaEndpoint }.forEach { nearbyManager.sendRaw(it, wire) }
+        }
+    }
+
     private suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?, messageType: String) {
         val payload = MeshProtocol.parseEncrypted(json) ?: return
         val identity = identity ?: return
@@ -866,6 +985,26 @@ class MessageRouter(
             return
         }
 
+        dispatchDecryptedMessage(
+            contact = contact,
+            senderKey = senderKey,
+            plaintext = plaintext,
+            messageType = messageType,
+            messageId = messageId,
+            viaEndpoint = viaEndpoint,
+            senderOnion = senderOnion
+        )
+    }
+
+    private suspend fun dispatchDecryptedMessage(
+        contact: ContactEntity,
+        senderKey: String,
+        plaintext: String,
+        messageType: String,
+        messageId: String,
+        viaEndpoint: String?,
+        senderOnion: String?
+    ) {
         val service = com.torxone.app.service.TorXOneService.getInstance()
         if (messageType != MeshProtocol.TYPE_PROFILE_UPDATE &&
             messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO &&

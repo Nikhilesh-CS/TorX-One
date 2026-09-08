@@ -51,6 +51,9 @@ object MeshProtocol {
     const val TYPE_GROUP_KEY_REQUEST = "group_key_request"
     const val TYPE_GROUP_JOIN_REQUEST = "group_join_request"
     const val TYPE_GROUP_INVITE_LINK = "group_invite_link"
+
+    // Secure Session Protocol Types (Phase 2 Forward Secrecy)
+    const val TYPE_SESSION_MSG = "session_msg"
     
     const val DEFAULT_TTL = 5
     // Single encrypted frames are for chat/control metadata, not large media.
