@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.26] - 2026-09-09
+### Added
+- **Universal QR Scanner Screen (`ScanQrScreen.kt`)**: Immediate full-screen entry point launched from the home screen top-right QR button. Real-time dual detection automatically handles:
+  - **TorX Contact QR**: Parses identity strings via `CryptoManager.parseContactString` with contact preview card and 1-tap "Add Contact".
+  - **TorX Group QR**: Validates group invite tokens via `GroupManager.validateInviteToken` with group preview card and 1-tap "Join Group".
+- **Unified Dialog System**: Standardized all modal dialogs (`AddContactDialog`, `ShareContactKeyDialog`, Listen Together, delete confirmation) into the single TorX Professional Light system with `#FFFFFF` surface cards, `#0F172A` headings, `#475569` text, `#94A3B8` placeholders, `#2563EB` actions, and `#E2E8F0` borders. Zero purple, zero dark translucent backgrounds.
+- **Group Info Screen Redesign**: Restructured into identity-first hierarchy:
+  - Header: Group avatar with interactive edit badge (`✎`) opening photo options modal (Choose from gallery, Take photo, Remove photo) with integrated `AvatarCropperScreen`.
+  - Group Settings: Approval toggle for new members.
+  - Notifications: Mute notifications toggle.
+  - Group Invitation: Dedicated shortcut to Universal QR scanner and invite QR generator.
+  - Group Details: Group name, description, and save button.
+  - Members: Clean member cards with avatar, name, role badge, and role management actions.
+- **Streamlined Navigation & Settings**:
+  - Bottom navigation simplified from 5 tabs to 4 clean tabs (`Messages | Contacts | Security | Settings`), removing developer-style network universe from standard navigation.
+  - Removed "Test Tor Connection" diagnostic button and "Mesh Dashboard" developer link from Settings, keeping all Tor and mesh networking operating seamlessly in the background.
+
 ## [1.0.25] - 2026-09-09
 ### Added
 - Unified TorX Professional Light System across all app screens: Strict 90% neutral, 8% brand blue, 2% semantic/transport color rule.

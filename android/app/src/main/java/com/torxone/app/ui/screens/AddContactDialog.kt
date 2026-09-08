@@ -20,12 +20,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.torxone.app.ui.theme.AccentViolet
-import com.torxone.app.ui.theme.AstraTheme
-import com.torxone.app.ui.theme.MutedGray
-import com.torxone.app.ui.theme.SoftWhite
+import androidx.compose.ui.unit.sp
+import com.torxone.app.ui.theme.AppBackground
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.TextMuted
+import com.torxone.app.ui.theme.TorXPrimary
 
 @Composable
 fun AddContactDialog(
@@ -37,57 +41,69 @@ fun AddContactDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Contact", color = SoftWhite) },
+        containerColor = SurfaceCard,
+        shape = RoundedCornerShape(20.dp),
+        tonalElevation = 2.dp,
+        title = {
+            Text(
+                "Add Contact",
+                color = PrimaryText,
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp
+            )
+        },
         text = {
             Column {
                 Text(
                     "Paste a TorX One contact key or scan an identity QR code.",
-                    fontSize = AstraTheme.typography.bodySmall.fontSize,
-                    color = MutedGray
+                    fontSize = 14.sp,
+                    color = SecondaryText
                 )
-                Spacer(modifier = Modifier.height(AstraTheme.spacing.medium))
+                Spacer(modifier = Modifier.height(16.dp))
                 OutlinedTextField(
                     value = contactString,
                     onValueChange = { contactString = it },
-                    label = { Text("Contact Key") },
+                    label = { Text("Contact Key", color = SecondaryText) },
+                    placeholder = { Text("Paste contact key or scan...", color = TextMuted) },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(12.dp),
                     trailingIcon = {
                         IconButton(onClick = { showQrScanner = true }) {
                             Icon(
                                 Icons.Rounded.QrCodeScanner,
                                 contentDescription = "Scan contact QR",
-                                tint = AccentViolet
+                                tint = TorXPrimary
                             )
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = SoftWhite,
-                        unfocusedTextColor = SoftWhite,
-                        focusedContainerColor = Color.White.copy(alpha = 0.10f),
-                        unfocusedContainerColor = Color.White.copy(alpha = 0.07f),
-                        focusedBorderColor = Color(0xFF8B5CF6),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.14f)
-                    )
+                        focusedTextColor = PrimaryText,
+                        unfocusedTextColor = PrimaryText,
+                        focusedContainerColor = AppBackground,
+                        unfocusedContainerColor = AppBackground,
+                        focusedBorderColor = TorXPrimary,
+                        unfocusedBorderColor = BorderColor,
+                        cursorColor = TorXPrimary
+                    ),
+                    singleLine = true
                 )
             }
         },
-        containerColor = Color(0xE6111827),
-        shape = RoundedCornerShape(30.dp),
-        titleContentColor = Color(0xFFF6F7FF),
-        textContentColor = Color(0xFFB9C3D4),
-        tonalElevation = 0.dp,
         confirmButton = {
             TextButton(
                 onClick = { onContactAdded(contactString) },
                 enabled = contactString.isNotBlank()
             ) {
-                Text("Add", color = AccentViolet)
+                Text(
+                    "Add",
+                    color = if (contactString.isNotBlank()) TorXPrimary else TextMuted,
+                    fontWeight = FontWeight.Bold
+                )
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = MutedGray)
+                Text("Cancel", color = SecondaryText)
             }
         }
     )

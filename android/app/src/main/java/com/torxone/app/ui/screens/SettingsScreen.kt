@@ -79,11 +79,8 @@ fun SettingsScreen(
     val hideOnlineStatus by settingsManager.hideOnlineStatusFlow.collectAsStateWithLifecycle(initialValue = false)
     val reduceMotion by settingsManager.reduceMotionFlow.collectAsStateWithLifecycle(initialValue = false)
     val showTransportIcons by settingsManager.showTransportIconsFlow.collectAsStateWithLifecycle(initialValue = true)
-    val darkMode by settingsManager.darkModeFlow.collectAsStateWithLifecycle(initialValue = true)
+    val darkMode by settingsManager.darkModeFlow.collectAsStateWithLifecycle(initialValue = false)
     val performanceMode by settingsManager.performanceModeFlow.collectAsStateWithLifecycle(initialValue = "balanced")
-    val bluetoothScanning by settingsManager.bluetoothScanningFlow.collectAsStateWithLifecycle(initialValue = true)
-    val wifiDirectScanning by settingsManager.wifiDirectScanningFlow.collectAsStateWithLifecycle(initialValue = true)
-    val backgroundSyncFrequency by settingsManager.backgroundSyncFrequencyFlow.collectAsStateWithLifecycle(initialValue = "normal")
     val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
     val localProfile by db.profileDao().getProfile("LOCAL_USER").collectAsStateWithLifecycle(initialValue = null)
     var isBatteryOptimizationIgnored by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
@@ -231,18 +228,18 @@ fun SettingsScreen(
     }
 
     Scaffold(
-        containerColor = AppBackground,
+        containerColor = AstraTheme.surfaceApp,
         topBar = {
             TopAppBar(
-                title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = PrimaryText) },
+                title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = AstraTheme.textPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = PrimaryText)
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = AstraTheme.textPrimary)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = AppBackground,
-                    titleContentColor = PrimaryText
+                    containerColor = AstraTheme.surfaceApp,
+                    titleContentColor = AstraTheme.textPrimary
                 )
             )
         }
@@ -315,17 +312,9 @@ fun SettingsScreen(
                 )
             }
 
-            item { HorizontalDivider(color = CardSurface, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
+            item { HorizontalDivider(color = AstraTheme.border, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
 
             // Group: Network & Privacy
-            item {
-                SettingsItem(
-                    icon = Icons.Rounded.Dashboard,
-                    title = "Mesh Dashboard",
-                    subtitle = "Network health and topology",
-                    onClick = { navController.navigate("mesh_dashboard") }
-                )
-            }
             item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.WifiTethering,
@@ -365,31 +354,6 @@ fun SettingsScreen(
                 )
             }
             item {
-                SettingsItem(
-                    icon = Icons.Rounded.NetworkCheck,
-                    title = "Test Tor Connection",
-                    onClick = {
-                        showToast("Testing connection via Tor...")
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                val url = URL("https://check.torproject.org")
-                                val connection = url.openConnection() as HttpsURLConnection
-                                connection.requestMethod = "GET"
-                                connection.connectTimeout = 10000
-                                connection.readTimeout = 10000
-                                val responseCode = connection.responseCode
-                                withContext(Dispatchers.Main) {
-                                    if (responseCode == 200) showToast("Connection Successful!")
-                                    else showToast("Connection failed ($responseCode)")
-                                }
-                            } catch (e: Exception) {
-                                withContext(Dispatchers.Main) { showToast("Connection failed: ${e.message}") }
-                            }
-                        }
-                    }
-                )
-            }
-            item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Hide Online Status",
@@ -400,33 +364,23 @@ fun SettingsScreen(
                 )
             }
 
-            item { HorizontalDivider(color = CardSurface, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
+            item { HorizontalDivider(color = AstraTheme.border, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
 
             item {
-                BatteryPerformanceSection(
-                    torEnabled = torModeEnabled,
-                    bluetoothScanning = bluetoothScanning,
-                    wifiDirectScanning = wifiDirectScanning,
-                    performanceMode = performanceMode,
-                    backgroundSyncFrequency = backgroundSyncFrequency,
-                    batteryOptimizationIgnored = isBatteryOptimizationIgnored,
-                    serviceRunning = com.torxone.app.service.TorXOneService.getInstance() != null,
-                    onOpenBatterySettings = {
-                        openBatteryOptimizationSettings(context)
-                        isBatteryOptimizationIgnored = isIgnoringBatteryOptimizations(context)
-                    },
-                    onPerformanceModeSelected = { mode ->
-                        scope.launch { settingsManager.setPerformanceMode(mode) }
-                    },
-                    onBluetoothScanningChanged = { enabled ->
-                        scope.launch { settingsManager.setBluetoothScanning(enabled) }
-                    },
-                    onWifiDirectScanningChanged = { enabled ->
-                        scope.launch { settingsManager.setWifiDirectScanning(enabled) }
-                    },
-                    onBackgroundSyncChanged = { frequency ->
-                        scope.launch { settingsManager.setBackgroundSyncFrequency(frequency) }
-                    }
+                val modeLabel = when (performanceMode) {
+                    "battery_saver" -> "Battery Saver"
+                    "performance" -> "Performance"
+                    else -> "Balanced"
+                }
+                val serviceState = if (com.torxone.app.service.TorXOneService.getInstance() != null) "Background service running" else "Service idle"
+                val summary = "$modeLabel · $serviceState"
+
+                SettingsItem(
+                    icon = Icons.Rounded.Bolt,
+                    title = "Battery & Performance",
+                    subtitle = summary,
+                    showChevron = true,
+                    onClick = { navController.navigate("battery_performance") }
                 )
             }
             item {
@@ -452,7 +406,8 @@ fun SettingsScreen(
             item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.Brightness4,
-                    title = "AMOLED Pure Black",
+                    title = "Dark Mode",
+                    subtitle = if (darkMode) "Dark theme enabled" else "Switch between light and dark theme",
                     checked = darkMode,
                     onCheckedChange = { 
                         scope.launch { settingsManager.setDarkMode(it) }
@@ -460,7 +415,7 @@ fun SettingsScreen(
                 )
             }
 
-            item { HorizontalDivider(color = CardSurface, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
+            item { HorizontalDivider(color = AstraTheme.border, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
 
             // Group: Identity Management
             item {
@@ -480,7 +435,7 @@ fun SettingsScreen(
                 )
             }
 
-            item { HorizontalDivider(color = CardSurface, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
+            item { HorizontalDivider(color = AstraTheme.border, modifier = Modifier.padding(vertical = AstraTheme.spacing.small)) }
 
             // Group: Data
             item {
@@ -839,242 +794,7 @@ fun SettingsScreen(
     }
 }
 
-@Composable
-private fun BatteryPerformanceSection(
-    torEnabled: Boolean,
-    bluetoothScanning: Boolean,
-    wifiDirectScanning: Boolean,
-    performanceMode: String,
-    backgroundSyncFrequency: String,
-    batteryOptimizationIgnored: Boolean,
-    serviceRunning: Boolean,
-    onOpenBatterySettings: () -> Unit,
-    onPerformanceModeSelected: (String) -> Unit,
-    onBluetoothScanningChanged: (Boolean) -> Unit,
-    onWifiDirectScanningChanged: (Boolean) -> Unit,
-    onBackgroundSyncChanged: (String) -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        border = BorderStroke(1.dp, BorderColor)
-    ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(TorXPrimarySoft),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Rounded.Bolt, contentDescription = null, tint = TorXPrimary, modifier = Modifier.size(22.dp))
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Battery & Performance", color = PrimaryText, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text("Control background networking and power usage", color = SecondaryText, fontSize = 13.sp)
-                }
-            }
 
-            Spacer(Modifier.height(18.dp))
-
-            val impact = estimatedBatteryImpact(torEnabled, bluetoothScanning, wifiDirectScanning, performanceMode)
-            BatteryMetricRow("Estimated impact", impact, impactColor(impact))
-            BatteryMetricRow("Background service", if (serviceRunning) "Running" else "Not running", if (serviceRunning) SuccessGreen else ErrorRed)
-            BatteryMetricRow(
-                "Android optimization",
-                if (batteryOptimizationIgnored) "Unrestricted" else "Optimized",
-                if (batteryOptimizationIgnored) SuccessGreen else WarningAmber
-            )
-
-            Spacer(Modifier.height(16.dp))
-            Text("Active components", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Spacer(Modifier.height(8.dp))
-            BatteryComponentRow("Tor auto-start", torEnabled, if (torEnabled) "High" else "Off")
-            BatteryComponentRow("Bluetooth discovery", bluetoothScanning, if (bluetoothScanning) componentImpact(performanceMode) else "Off")
-            BatteryComponentRow("Wi-Fi Direct discovery", wifiDirectScanning, if (wifiDirectScanning) componentImpact(performanceMode) else "Off")
-            BatteryComponentRow("Mesh discovery", bluetoothScanning || wifiDirectScanning, if (bluetoothScanning || wifiDirectScanning) componentImpact(performanceMode) else "Off")
-
-            Spacer(Modifier.height(18.dp))
-            Text("Performance mode", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Spacer(Modifier.height(8.dp))
-            PerformanceModeRow("battery_saver", "Battery Saver", "Reduce discovery. Best for long battery life.", performanceMode, onPerformanceModeSelected)
-            PerformanceModeRow("balanced", "Balanced", "Recommended. Keeps chat reliable without aggressive scanning.", performanceMode, onPerformanceModeSelected)
-            PerformanceModeRow("performance", "Performance", "Fast discovery and routing. Higher battery usage.", performanceMode, onPerformanceModeSelected)
-
-            Spacer(Modifier.height(18.dp))
-            Text("Background services", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Spacer(Modifier.height(8.dp))
-            CompactSwitchRow("Bluetooth scanning", bluetoothScanning, onBluetoothScanningChanged)
-            CompactSwitchRow("Wi-Fi Direct scanning", wifiDirectScanning, onWifiDirectScanningChanged)
-
-            Spacer(Modifier.height(18.dp))
-            Text("Background sync frequency", color = PrimaryText, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                SyncChip("low", "Low", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-                SyncChip("normal", "Normal", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-                SyncChip("fast", "Fast", backgroundSyncFrequency, onBackgroundSyncChanged, Modifier.weight(1f))
-            }
-
-            Spacer(Modifier.height(18.dp))
-            Text(
-                "Disabling Android battery optimization helps Tor and mesh delivery stay alive in the background, especially on Realme, Oppo, Vivo and Xiaomi devices.",
-                color = SecondaryText,
-                fontSize = 12.sp,
-                lineHeight = 18.sp
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onOpenBatterySettings,
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, BorderColor),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TorXPrimary),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Open Android Battery Settings")
-            }
-        }
-    }
-}
-
-@Composable
-private fun BatteryMetricRow(label: String, value: String, valueColor: Color) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, color = SecondaryText, fontSize = 14.sp)
-        Text(value, color = valueColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun BatteryComponentRow(label: String, enabled: Boolean, impact: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(if (enabled) SuccessGreen else BorderColor)
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(label, color = PrimaryText, modifier = Modifier.weight(1f), fontSize = 14.sp)
-        Text(impact, color = if (enabled) impactColor(impact) else TextMuted, fontSize = 13.sp)
-    }
-}
-
-@Composable
-private fun PerformanceModeRow(
-    mode: String,
-    title: String,
-    subtitle: String,
-    selectedMode: String,
-    onSelected: (String) -> Unit
-) {
-    val selected = selectedMode == mode
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) TorXPrimarySoft else SurfaceCard)
-            .border(1.dp, if (selected) TorXPrimary else BorderColor, RoundedCornerShape(12.dp))
-            .clickable { onSelected(mode) }
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        RadioButton(
-            selected = selected,
-            onClick = { onSelected(mode) },
-            colors = RadioButtonDefaults.colors(selectedColor = TorXPrimary, unselectedColor = TextMuted)
-        )
-        Column(Modifier.weight(1f)) {
-            Text(title, color = PrimaryText, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = SecondaryText, fontSize = AstraTheme.typography.bodySmall.fontSize)
-        }
-    }
-}
-
-@Composable
-private fun CompactSwitchRow(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(label, color = PrimaryText, modifier = Modifier.weight(1f), fontSize = AstraTheme.typography.bodyMedium.fontSize)
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = TorXPrimary,
-                uncheckedThumbColor = TextMuted,
-                uncheckedTrackColor = SurfaceSecondary,
-                uncheckedBorderColor = BorderColor
-            )
-        )
-    }
-}
-
-@Composable
-private fun SyncChip(
-    value: String,
-    label: String,
-    selectedValue: String,
-    onSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    FilterChip(
-        selected = selectedValue == value,
-        onClick = { onSelected(value) },
-        label = { Text(label, maxLines = 1) },
-        modifier = modifier
-    )
-}
-
-private fun estimatedBatteryImpact(
-    torEnabled: Boolean,
-    bluetoothScanning: Boolean,
-    wifiDirectScanning: Boolean,
-    performanceMode: String
-): String {
-    if (!torEnabled && !bluetoothScanning && !wifiDirectScanning) return "Low"
-    if (performanceMode == "performance" && (torEnabled || bluetoothScanning || wifiDirectScanning)) return "High"
-    if (torEnabled && (bluetoothScanning || wifiDirectScanning)) return "Medium"
-    return if (performanceMode == "battery_saver") "Low" else "Medium"
-}
-
-private fun componentImpact(performanceMode: String): String {
-    return when (performanceMode) {
-        "battery_saver" -> "Low"
-        "performance" -> "High"
-        else -> "Medium"
-    }
-}
-
-private fun impactColor(impact: String): Color {
-    return when (impact) {
-        "Low" -> SuccessGreen
-        "Medium" -> WarningAmber
-        "High" -> ErrorRed
-        else -> TextMuted
-    }
-}
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
@@ -1096,7 +816,8 @@ fun SettingsItem(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    subtitleColor: Color = SecondaryText,
+    subtitleColor: Color = AstraTheme.textSecondary,
+    showChevron: Boolean = false,
     onClick: () -> Unit
 ) {
     Row(
@@ -1104,8 +825,8 @@ fun SettingsItem(
             .fillMaxWidth()
             .padding(horizontal = AstraTheme.spacing.large, vertical = 5.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(SurfaceCard)
-            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
+            .background(AstraTheme.surfaceCard)
+            .border(1.dp, AstraTheme.border, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1121,11 +842,19 @@ fun SettingsItem(
         }
         Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = PrimaryText, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
+            Text(title, color = AstraTheme.textPrimary, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
             if (subtitle != null) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(subtitle, color = subtitleColor, fontSize = AstraTheme.typography.bodyMedium.fontSize)
             }
+        }
+        if (showChevron) {
+            Icon(
+                Icons.Rounded.ChevronRight,
+                contentDescription = null,
+                tint = TextMuted,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -1143,8 +872,8 @@ fun SettingsSwitchItem(
             .fillMaxWidth()
             .padding(horizontal = AstraTheme.spacing.large, vertical = 5.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(SurfaceCard)
-            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
+            .background(AstraTheme.surfaceCard)
+            .border(1.dp, AstraTheme.border, RoundedCornerShape(16.dp))
             .clickable { onCheckedChange(!checked) }
             .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1160,10 +889,10 @@ fun SettingsSwitchItem(
         }
         Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = PrimaryText, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
+            Text(title, color = AstraTheme.textPrimary, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
             if (subtitle != null) {
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(subtitle, color = SecondaryText, fontSize = AstraTheme.typography.bodyMedium.fontSize)
+                Text(subtitle, color = AstraTheme.textSecondary, fontSize = AstraTheme.typography.bodyMedium.fontSize)
             }
         }
         Switch(
@@ -1173,8 +902,8 @@ fun SettingsSwitchItem(
                 checkedThumbColor = Color.White,
                 checkedTrackColor = TorXPrimary,
                 uncheckedThumbColor = TextMuted,
-                uncheckedTrackColor = SurfaceSecondary,
-                uncheckedBorderColor = BorderColor
+                uncheckedTrackColor = if (AstraTheme.isDarkMode) Color(0xFF334155) else SurfaceSecondary,
+                uncheckedBorderColor = AstraTheme.border
             )
         )
     }

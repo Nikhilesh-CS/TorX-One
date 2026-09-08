@@ -25,12 +25,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -54,10 +54,11 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.torxone.app.crypto.CryptoManager
-import com.torxone.app.ui.theme.AccentCyan
-import com.torxone.app.ui.theme.CardSurface
-import com.torxone.app.ui.theme.MutedGray
-import com.torxone.app.ui.theme.SoftWhite
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.TorXPrimary
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -82,28 +83,30 @@ fun QrContactScannerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = CardSurface,
+        containerColor = SurfaceCard,
+        shape = RoundedCornerShape(20.dp),
+        tonalElevation = 2.dp,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.QrCodeScanner, contentDescription = null, tint = AccentCyan)
+                Icon(Icons.Rounded.QrCodeScanner, contentDescription = null, tint = TorXPrimary)
                 Spacer(Modifier.size(10.dp))
-                Text("Scan Contact QR", color = SoftWhite)
+                Text("Scan QR Code", color = PrimaryText, fontWeight = FontWeight.Bold)
             }
         },
         text = {
             if (hasCameraPermission) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        "Point the camera at a TorX One identity QR code. The contact key will fill automatically.",
-                        color = MutedGray
+                        "Point the camera at a TorX One QR code.",
+                        color = SecondaryText
                     )
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(320.dp)
-                            .clip(RoundedCornerShape(24.dp))
+                            .height(300.dp)
+                            .clip(RoundedCornerShape(16.dp))
                             .background(Color.Black)
-                            .border(1.dp, AccentCyan.copy(alpha = 0.35f), RoundedCornerShape(24.dp))
+                            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
                     ) {
                         ContactQrCameraPreview(
                             modifier = Modifier.fillMaxSize(),
@@ -116,18 +119,22 @@ fun QrContactScannerDialog(
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        "Camera permission is required to scan identity QR codes.",
-                        color = MutedGray
+                        "Camera permission is required to scan QR codes.",
+                        color = SecondaryText
                     )
-                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                        Text("Allow Camera")
+                    Button(
+                        onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                        colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Allow Camera", color = Color.White)
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel", color = MutedGray)
+                Text("Cancel", color = SecondaryText)
             }
         }
     )
@@ -189,7 +196,10 @@ private fun ContactQrCameraPreview(
                                     val value = barcodes
                                         .asSequence()
                                         .mapNotNull { it.rawValue?.trim() }
-                                        .firstOrNull { CryptoManager.parseContactString(it) != null }
+                                        .firstOrNull { raw ->
+                                            CryptoManager.parseContactString(raw) != null ||
+                                                    (raw.startsWith("{") && raw.contains("inviteId") && raw.contains("groupId"))
+                                        }
                                     if (value != null && hasScanned.compareAndSet(false, true)) {
                                         onQrDetected(value)
                                     }

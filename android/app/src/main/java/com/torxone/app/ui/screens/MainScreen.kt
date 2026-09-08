@@ -79,7 +79,7 @@ fun MainScreen(
 
     Scaffold(
         bottomBar = {
-            if (currentRoute in listOf("chats", "contacts", "universe", "security", "settings")) {
+            if (currentRoute in listOf("chats", "contacts", "security", "settings")) {
                 AstraBottomNavigation(
                     currentRoute = currentRoute ?: "chats",
                     onNavigate = { route ->
@@ -161,15 +161,14 @@ fun AstraBottomNavigation(
         modifier = Modifier
             .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.small)
             .clip(RoundedCornerShape(20.dp))
-            .background(SurfaceCard)
-            .border(1.dp, BorderColor, RoundedCornerShape(20.dp)),
+            .background(AstraTheme.surfaceCard)
+            .border(1.dp, AstraTheme.border, RoundedCornerShape(20.dp)),
         containerColor = Color.Transparent,
         tonalElevation = 2.dp
     ) {
         val items = listOf(
             NavRoute("chats", Icons.Rounded.ChatBubble, "Messages"),
             NavRoute("contacts", Icons.Rounded.Groups, "Contacts"),
-            NavRoute("universe", Icons.Rounded.Hub, "Network"),
             NavRoute("security", Icons.Rounded.Security, "Security"),
             NavRoute("settings", Icons.Rounded.Settings, "Settings")
         )
@@ -191,6 +190,7 @@ private fun RowScope.PremiumNavItem(
         targetValue = if (selected) 1.08f else 1f,
         label = "dockItemScale"
     )
+    val textMuted = AstraTheme.textSecondary
     NavigationBarItem(
         selected = selected,
         onClick = { onNavigate(item.route) },
@@ -214,21 +214,21 @@ private fun RowScope.PremiumNavItem(
                         item.icon,
                         contentDescription = item.label,
                         modifier = Modifier.size(20.dp),
-                        tint = if (selected) TorXPrimary else SecondaryText
+                        tint = if (selected) TorXPrimary else textMuted
                     )
                 }
                 Text(
                     item.label,
                     fontSize = 10.sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    color = if (selected) TorXPrimary else SecondaryText,
+                    color = if (selected) TorXPrimary else textMuted,
                     maxLines = 1
                 )
             }
         },
         colors = NavigationBarItemDefaults.colors(
             selectedIconColor = TorXPrimary,
-            unselectedIconColor = SecondaryText,
+            unselectedIconColor = textMuted,
             indicatorColor = Color.Transparent
         )
     )

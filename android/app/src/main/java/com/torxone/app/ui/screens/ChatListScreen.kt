@@ -27,10 +27,12 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.QrCode
+import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -140,16 +142,6 @@ fun ChatListScreen(
     ) {
         Scaffold(
             containerColor = AppBackground,
-            floatingActionButton = {
-                FloatingActionButton(
-                    onClick = { showAddContact = true },
-                    containerColor = TorXPrimary,
-                    contentColor = Color.White,
-                    shape = CircleShape
-                ) {
-                    Icon(androidx.compose.material.icons.Icons.Default.Add, contentDescription = "New chat")
-                }
-            },
             topBar = {
                 Column(
                     modifier = Modifier
@@ -176,14 +168,14 @@ fun ChatListScreen(
                             )
                         }
                         IconButton(
-                            onClick = { showShareContact = true },
+                            onClick = { navController.navigate("scan_qr") },
                             modifier = Modifier
                                 .size(40.dp)
                                 .clip(CircleShape)
                                 .background(SurfaceCard)
                                 .border(1.dp, BorderColor, CircleShape)
                         ) {
-                            Icon(androidx.compose.material.icons.Icons.Rounded.QrCode, contentDescription = "My Key", tint = TorXPrimary, modifier = Modifier.size(20.dp))
+                            Icon(androidx.compose.material.icons.Icons.Rounded.QrCodeScanner, contentDescription = "Scan QR", tint = TorXPrimary, modifier = Modifier.size(20.dp))
                         }
                     }
                     Spacer(Modifier.height(12.dp))
@@ -265,7 +257,7 @@ fun ChatListScreen(
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
-                                androidx.compose.material.icons.Icons.Default.Add,
+                                Icons.Rounded.Groups,
                                 contentDescription = "Create Group",
                                 tint = TorXPrimary
                             )
@@ -372,32 +364,47 @@ fun ChatListScreen(
     if (showShareContact && myContactString.isNotBlank()) {
         AlertDialog(
             onDismissRequest = { showShareContact = false },
-            title = { Text("Your Contact Key", color = MaterialTheme.colorScheme.onSurface) },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 2.dp,
+            title = { Text("Your Contact Key", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     Text(
-                        "Share this with distant contacts. Includes your Tor .onion address when connected.",
+                        "Share this with distant contacts.",
                         fontSize = AstraTheme.typography.bodySmall.fontSize,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = SecondaryText
                     )
                     Spacer(modifier = Modifier.height(AstraTheme.spacing.medium))
-                    Text(myContactString, fontSize = AstraTheme.typography.labelSmall.fontSize, color = MaterialTheme.colorScheme.primary)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AppBackground)
+                            .border(1.dp, BorderColor, RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Text(
+                            myContactString,
+                            fontSize = AstraTheme.typography.labelSmall.fontSize,
+                            color = TorXPrimary
+                        )
+                    }
                 }
             },
-            containerColor = MaterialTheme.colorScheme.surface,
             confirmButton = {
                 TextButton(onClick = {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Astra Contact", myContactString))
+                    clipboard.setPrimaryClip(ClipData.newPlainText("TorX Contact", myContactString))
                     Toast.makeText(context, "Copied!", Toast.LENGTH_SHORT).show()
                     showShareContact = false
                 }) {
-                    Text("Copy", color = MaterialTheme.colorScheme.secondary)
+                    Text("Copy", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showShareContact = false }) {
-                    Text("Close", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Close", color = SecondaryText)
                 }
             }
         )
@@ -465,30 +472,37 @@ fun ChatListScreen(
         val inviterName = contacts.firstOrNull { it.signingPublicKey == listenTogetherState.peerKey }?.name ?: "Unknown Contact"
         AlertDialog(
             onDismissRequest = { listenTogetherManager?.rejectIncomingInvite() },
-            title = { Text("Listen Together?") },
-            text = { Text("$inviterName wants to sync playback with you. TorX One only shares playback metadata, not music audio.") },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 2.dp,
+            title = { Text("Listen Together?", color = PrimaryText, fontWeight = FontWeight.Bold) },
+            text = { Text("$inviterName wants to sync playback with you. TorX One only shares playback metadata, not music audio.", color = SecondaryText) },
             confirmButton = {
-                Button(onClick = {
-                    val state = listenTogetherState
-                    scope.launch {
-                        val note = withContext(Dispatchers.IO) { db.musicNoteDao().getNote(state.noteId) }
-                        val track = note?.toDetectedTrack() ?: state.lastEvent?.track
-                        if (track != null) {
-                            musicResolver.openTrack(track)
-                            listenTogetherManager?.acceptIncomingInvite()
-                            Toast.makeText(context, "Listen Together accepted", Toast.LENGTH_SHORT).show()
-                        } else {
-                            listenTogetherManager?.rejectIncomingInvite()
-                            Toast.makeText(context, "Music note is no longer available", Toast.LENGTH_SHORT).show()
+                Button(
+                    onClick = {
+                        val state = listenTogetherState
+                        scope.launch {
+                            val note = withContext(Dispatchers.IO) { db.musicNoteDao().getNote(state.noteId) }
+                            val track = note?.toDetectedTrack() ?: state.lastEvent?.track
+                            if (track != null) {
+                                musicResolver.openTrack(track)
+                                listenTogetherManager?.acceptIncomingInvite()
+                                Toast.makeText(context, "Listen Together accepted", Toast.LENGTH_SHORT).show()
+                            } else {
+                                listenTogetherManager?.rejectIncomingInvite()
+                                Toast.makeText(context, "Music note is no longer available", Toast.LENGTH_SHORT).show()
+                            }
                         }
-                    }
-                }) {
-                    Text("Accept")
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Accept", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { listenTogetherManager?.rejectIncomingInvite() }) {
-                    Text("Reject")
+                    Text("Reject", color = SecondaryText)
                 }
             }
         )
@@ -520,9 +534,12 @@ fun ChatListScreen(
     contactToDelete?.let { contact ->
         AlertDialog(
             onDismissRequest = { contactToDelete = null },
-            title = { Text("Delete ${contact.name}?") },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 2.dp,
+            title = { Text("Delete ${contact.name}?", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
-                Text("This removes the person, chat history, profile cache, and transfer records from this phone.")
+                Text("This removes the person, chat history, profile cache, and transfer records from this phone.", color = SecondaryText)
             },
             confirmButton = {
                 Button(
@@ -538,7 +555,8 @@ fun ChatListScreen(
                             }
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = null)
                     Spacer(modifier = Modifier.width(AstraTheme.spacing.tiny))
@@ -547,7 +565,7 @@ fun ChatListScreen(
             },
             dismissButton = {
                 TextButton(onClick = { contactToDelete = null }) {
-                    Text("Cancel")
+                    Text("Cancel", color = SecondaryText)
                 }
             }
         )

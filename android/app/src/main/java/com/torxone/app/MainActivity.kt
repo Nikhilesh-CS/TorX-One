@@ -106,7 +106,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
         setContent {
             val settingsManager = remember { com.torxone.app.data.SettingsManager(this@MainActivity) }
-            val darkMode by settingsManager.darkModeFlow.collectAsState(initial = true)
+            val darkMode by settingsManager.darkModeFlow.collectAsState(initial = false)
             val reduceMotion by settingsManager.reduceMotionFlow.collectAsState(initial = false)
             val showTransportIcons by settingsManager.showTransportIconsFlow.collectAsState(initial = true)
             val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsState(initial = false)
@@ -427,6 +427,12 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 }
                             )
                         }
+                        composable("battery_performance") {
+                            com.torxone.app.ui.screens.BatteryPerformanceScreen(
+                                settingsManager = service.settingsManager,
+                                onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
                         composable("debug") {
                             DebugScreen(
                                 navController = navController,
@@ -436,6 +442,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         composable("mesh_dashboard") {
                             com.torxone.app.ui.screens.MeshDashboardScreen(
                                 onNavigateBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable("scan_qr") {
+                            com.torxone.app.ui.screens.ScanQrScreen(
+                                navController = navController,
+                                db = service.db,
+                                groupManager = service.groupManager,
+                                identityManager = service.identityManager
                             )
                         }
                     }

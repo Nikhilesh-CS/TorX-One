@@ -79,6 +79,35 @@ private val ProfessionalLightColorScheme = lightColorScheme(
     onErrorContainer = ErrorRed
 )
 
+private val ProfessionalDarkColorScheme = androidx.compose.material3.darkColorScheme(
+    primary = Color(0xFF3B82F6),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF1E3A8A).copy(alpha = 0.5f),
+    onPrimaryContainer = Color(0xFF93C5FD),
+    secondary = Color(0xFF94A3B8),
+    onSecondary = Color(0xFF0F172A),
+    secondaryContainer = Color(0xFF1E293B),
+    onSecondaryContainer = Color(0xFFF1F5F9),
+    tertiary = Color(0xFF3B82F6),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFF1E3A8A).copy(alpha = 0.5f),
+    onTertiaryContainer = Color(0xFF93C5FD),
+    background = Color(0xFF0B0F19),
+    onBackground = Color(0xFFF8FAFC),
+    surface = Color(0xFF151D2A),
+    onSurface = Color(0xFFF8FAFC),
+    surfaceVariant = Color(0xFF1E293B),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    outline = Color(0xFF263346),
+    outlineVariant = Color(0xFF1E293B),
+    error = ErrorRed,
+    onError = Color.White,
+    errorContainer = Color(0xFF7F1D1D),
+    onErrorContainer = Color(0xFFFCA5A5)
+)
+
+val LocalDarkMode = staticCompositionLocalOf { false }
+
 @Composable
 fun TorXOneTheme(
     activeTransport: NetworkTransport = NetworkTransport.DISCONNECTED,
@@ -101,9 +130,9 @@ fun TorXOneTheme(
                 window.statusBarColor = Color.Transparent.toArgb()
                 window.navigationBarColor = Color.Transparent.toArgb()
                 WindowCompat.setDecorFitsSystemWindows(window, false)
-                // Dark icons on light status & navigation bars
-                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = true
-                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = true
+                // Dark icons on light status & navigation bars, light icons on dark
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !useAmoledTheme
+                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !useAmoledTheme
             }
         }
     }
@@ -130,6 +159,7 @@ fun TorXOneTheme(
     CompositionLocalProvider(
         LocalActiveTransport provides activeTransport,
         LocalTransportColor provides animatedTransportColor,
+        LocalDarkMode provides useAmoledTheme,
         LocalSpacing provides dynamicSpacing,
         LocalRadii provides dynamicRadii,
         LocalElevations provides defaultAstraElevations,
@@ -140,7 +170,7 @@ fun TorXOneTheme(
         LocalShowTransportIcons provides showTransportIcons
     ) {
         MaterialTheme(
-            colorScheme = ProfessionalLightColorScheme,
+            colorScheme = if (useAmoledTheme) ProfessionalDarkColorScheme else ProfessionalLightColorScheme,
             typography = AstraTypography,
             content = content
         )
@@ -169,6 +199,18 @@ object AstraTheme {
         @Composable get() = LocalReduceMotion.current
     val showTransportIcons: Boolean
         @Composable get() = LocalShowTransportIcons.current
+    val isDarkMode: Boolean
+        @Composable get() = LocalDarkMode.current
+    val surfaceCard: Color
+        @Composable get() = if (LocalDarkMode.current) Color(0xFF151D2A) else SurfaceCard
+    val surfaceApp: Color
+        @Composable get() = if (LocalDarkMode.current) Color(0xFF0B0F19) else AppBackground
+    val textPrimary: Color
+        @Composable get() = if (LocalDarkMode.current) Color(0xFFF8FAFC) else PrimaryText
+    val textSecondary: Color
+        @Composable get() = if (LocalDarkMode.current) Color(0xFF94A3B8) else SecondaryText
+    val border: Color
+        @Composable get() = if (LocalDarkMode.current) Color(0xFF263346) else BorderColor
     val transportColor: Color
         @Composable get() = LocalTransportColor.current
 }
