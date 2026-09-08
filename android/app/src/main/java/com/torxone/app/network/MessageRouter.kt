@@ -274,13 +274,28 @@ class MessageRouter(
 
         val messageId = java.util.UUID.randomUUID().toString()
         val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
-        val innerPayload = JSONObject(encodeChatMessagePayload(
-            text.trim(), replyTarget?.messageId, replyTarget?.text?.take(500), replyTarget?.senderKey, replyTarget?.messageType
-        )).apply {
+        // Group payloads always use an object.  The direct-message encoder returns raw
+        // text when there is no reply, which made JSONObject("hello") crash the sender.
+        val innerPayload = JSONObject().apply {
+            // Keep the established chat envelope so the receiver's shared decoder
+            // extracts text and reply metadata rather than rendering this JSON verbatim.
+            put("astraType", "chat_message")
+            put("version", 1)
             put("type", "TEXT")
             put("messageId", messageId)
             put("senderKey", myKey)
             put("timestamp", System.currentTimeMillis())
+            put("text", text.trim())
+            replyTarget?.let { target ->
+                put(
+                    "reply",
+                    JSONObject()
+                        .put("originalMessageId", target.messageId)
+                        .put("originalSender", target.senderKey ?: "")
+                        .put("originalType", target.messageType ?: "TEXT")
+                        .put("originalPreview", target.text.take(500))
+                )
+            }
             put("mentions", JSONArray().apply {
                 Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) }
             })
@@ -313,7 +328,12 @@ class MessageRouter(
         var failedRecipients = 0
         members.filter { it.role != "invited" }.forEach { member ->
             if (member.memberKey != myKey) {
-                val result = sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+                val result = runCatching {
+                    sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+                }.getOrElse { error ->
+                    Log.e(TAG, "[GROUP] Delivery to ${member.memberKey.take(12)} failed", error)
+                    SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed")
+                }
                 if (result.success) sentToAnyMember = true else {
                     failedRecipients++
                     db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(
