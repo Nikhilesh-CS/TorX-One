@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun NetworkUniverseScreen(
     nearbyManager: NearbyConnectionManager,
@@ -78,7 +79,6 @@ fun NetworkUniverseScreen(
                 )
             }
         } else {
-            val canvasOnSurface = AstraTheme.colors.onSurface
             val canvasLargeSize = AstraTheme.spacing.large
             val canvasSmallSize = AstraTheme.spacing.small
             Canvas(modifier = Modifier.fillMaxSize()) {
@@ -87,27 +87,27 @@ fun NetworkUniverseScreen(
 
             // Draw Orbits
             drawCircle(
-                color = canvasOnSurface.copy(alpha = 0.1f),
+                color = com.torxone.app.ui.theme.BorderColor,
                 radius = baseRadius * 0.8f,
                 center = center,
-                style = Stroke(width = 2f)
+                style = Stroke(width = 1.5f)
             )
             drawCircle(
-                color = canvasOnSurface.copy(alpha = 0.1f),
+                color = com.torxone.app.ui.theme.BorderColor,
                 radius = baseRadius * 1.5f,
                 center = center,
-                style = Stroke(width = 2f)
+                style = Stroke(width = 1.5f)
             )
             drawCircle(
-                color = canvasOnSurface.copy(alpha = 0.1f),
+                color = com.torxone.app.ui.theme.BorderColor,
                 radius = baseRadius * 2.5f,
                 center = center,
-                style = Stroke(width = 2f)
+                style = Stroke(width = 1.5f)
             )
 
             // Center Device
             drawCircle(
-                color = Color(0xFF9FA8DA),
+                color = com.torxone.app.ui.theme.TorXPrimary,
                 radius = canvasLargeSize.toPx() * breathing,
                 center = center
             )
@@ -120,7 +120,7 @@ fun NetworkUniverseScreen(
                     val x = center.x + (r * cos(angle)).toFloat()
                     val y = center.y + (r * sin(angle)).toFloat()
                     drawCircle(
-                        color = Color(0xFF64B5F6),
+                        color = com.torxone.app.ui.theme.BluetoothAccent,
                         radius = canvasSmallSize.toPx(),
                         center = Offset(x, y)
                     )
@@ -135,7 +135,7 @@ fun NetworkUniverseScreen(
                     val x = center.x + (r * cos(angle)).toFloat()
                     val y = center.y + (r * sin(angle)).toFloat()
                     drawCircle(
-                        color = Color(0xFF81C784),
+                        color = com.torxone.app.ui.theme.WiFiAccent,
                         radius = 10.dp.toPx(),
                         center = Offset(x, y)
                     )
@@ -151,7 +151,7 @@ fun NetworkUniverseScreen(
                         val x = center.x + (r * cos(angle)).toFloat()
                         val y = center.y + (r * sin(angle)).toFloat()
                         drawCircle(
-                            color = Color(0xFFBA68C8),
+                            color = com.torxone.app.ui.theme.TorAccent,
                             radius = 6.dp.toPx(),
                             center = Offset(x, y)
                         )
@@ -171,12 +171,13 @@ fun NetworkUniverseScreen(
             Text(
                 text = "Network Universe",
                 style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onBackground
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                color = com.torxone.app.ui.theme.PrimaryText
             )
             Text(
                 text = "${nearbyPeers.size} Nearby • ${visualOnionNodes} Tor Connected",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                color = com.torxone.app.ui.theme.SecondaryText
             )
         }
     }

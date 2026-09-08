@@ -48,8 +48,11 @@ import com.torxone.app.network.MessageRouter
 import com.torxone.app.network.NearbyConnectionManager
 import com.torxone.app.network.TorManager
 import com.torxone.app.ui.theme.AstraTheme
-import com.torxone.app.ui.theme.SurfaceDark
-import com.torxone.app.ui.theme.TextMuted
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.TorXPrimary
+import com.torxone.app.ui.theme.TorXPrimarySoft
 
 @Composable
 fun MainScreen(
@@ -157,18 +160,11 @@ fun AstraBottomNavigation(
     NavigationBar(
         modifier = Modifier
             .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.small)
-            .clip(RoundedCornerShape(32.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.16f),
-                        SurfaceDark.copy(alpha = 0.90f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(32.dp)),
+            .clip(RoundedCornerShape(20.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(20.dp)),
         containerColor = Color.Transparent,
-        tonalElevation = 0.dp
+        tonalElevation = 2.dp
     ) {
         val items = listOf(
             NavRoute("chats", Icons.Rounded.ChatBubble, "Messages"),
@@ -192,7 +188,7 @@ private fun RowScope.PremiumNavItem(
     onNavigate: (String) -> Unit
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.10f else 1f,
+        targetValue = if (selected) 1.08f else 1f,
         label = "dockItemScale"
     )
     NavigationBarItem(
@@ -202,14 +198,14 @@ private fun RowScope.PremiumNavItem(
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
+                        .size(38.dp)
                         .graphicsLayer {
                             scaleX = scale
                             scaleY = scale
                         }
-                        .clip(CircleShape)
+                        .clip(RoundedCornerShape(12.dp))
                         .background(
-                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                            if (selected) TorXPrimarySoft
                             else Color.Transparent
                         ),
                     contentAlignment = Alignment.Center
@@ -217,22 +213,22 @@ private fun RowScope.PremiumNavItem(
                     Icon(
                         item.icon,
                         contentDescription = item.label,
-                        modifier = Modifier.size(22.dp),
-                        tint = if (selected) MaterialTheme.colorScheme.primary else TextMuted
+                        modifier = Modifier.size(20.dp),
+                        tint = if (selected) TorXPrimary else SecondaryText
                     )
                 }
                 Text(
                     item.label,
-                    fontSize = 9.sp,
+                    fontSize = 10.sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                    color = if (selected) MaterialTheme.colorScheme.primary else TextMuted,
+                    color = if (selected) TorXPrimary else SecondaryText,
                     maxLines = 1
                 )
             }
         },
         colors = NavigationBarItemDefaults.colors(
-            selectedIconColor = MaterialTheme.colorScheme.primary,
-            unselectedIconColor = TextMuted,
+            selectedIconColor = TorXPrimary,
+            unselectedIconColor = SecondaryText,
             indicatorColor = Color.Transparent
         )
     )

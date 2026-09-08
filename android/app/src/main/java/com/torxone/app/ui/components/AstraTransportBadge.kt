@@ -21,10 +21,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.torxone.app.ui.theme.AstraTheme
 import com.torxone.app.ui.theme.AstraMotion
-import com.torxone.app.ui.theme.DeepBlack
-import com.torxone.app.ui.theme.NeonGreen
-import com.torxone.app.ui.theme.AccentCyan
-import com.torxone.app.ui.theme.AccentViolet
+import com.torxone.app.ui.theme.BluetoothAccent
+import com.torxone.app.ui.theme.WiFiAccent
+import com.torxone.app.ui.theme.TorAccent
+import com.torxone.app.ui.theme.DisconnectedAccent
+import com.torxone.app.ui.theme.WarningAmber
 
 enum class TransportType {
     BLUETOOTH,
@@ -42,11 +43,11 @@ fun ConnectionStatusPill(
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = when (transportType) {
-            TransportType.BLUETOOTH -> NeonGreen.copy(alpha = 0.15f)
-            TransportType.WIFI_DIRECT -> AccentCyan.copy(alpha = 0.15f)
-            TransportType.TOR -> AccentViolet.copy(alpha = 0.15f)
-            TransportType.SWITCHING -> Color(0xFFF59E0B).copy(alpha = 0.15f)
-            TransportType.OFFLINE -> Color(0xFFEF4444).copy(alpha = 0.15f)
+            TransportType.BLUETOOTH -> BluetoothAccent.copy(alpha = 0.12f)
+            TransportType.WIFI_DIRECT -> WiFiAccent.copy(alpha = 0.12f)
+            TransportType.TOR -> TorAccent.copy(alpha = 0.12f)
+            TransportType.SWITCHING -> WarningAmber.copy(alpha = 0.12f)
+            TransportType.OFFLINE -> DisconnectedAccent.copy(alpha = 0.12f)
         },
         animationSpec = tween(AstraMotion.Durations.Medium),
         label = "pillBgColor"
@@ -54,11 +55,11 @@ fun ConnectionStatusPill(
 
     val contentColor by animateColorAsState(
         targetValue = when (transportType) {
-            TransportType.BLUETOOTH -> NeonGreen
-            TransportType.WIFI_DIRECT -> AccentCyan
-            TransportType.TOR -> AccentViolet
-            TransportType.SWITCHING -> Color(0xFFF59E0B)
-            TransportType.OFFLINE -> Color(0xFFEF4444)
+            TransportType.BLUETOOTH -> BluetoothAccent
+            TransportType.WIFI_DIRECT -> WiFiAccent
+            TransportType.TOR -> TorAccent
+            TransportType.SWITCHING -> WarningAmber
+            TransportType.OFFLINE -> DisconnectedAccent
         },
         animationSpec = tween(AstraMotion.Durations.Medium),
         label = "pillContentColor"

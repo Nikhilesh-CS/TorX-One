@@ -33,63 +33,36 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.torxone.app.ui.theme.AppBackground
 import com.torxone.app.ui.theme.AstraTheme
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
 
 @Composable
 fun PremiumAuroraBackground(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val transition = rememberInfiniteTransition(label = "premiumAurora")
-    val glow by transition.animateFloat(
-        initialValue = 0.035f,
-        targetValue = 0.085f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "auroraGlow"
-    )
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        Color(0xFF05070C),
-                        Color(0xFF0B1020),
-                        Color(0xFF071512),
-                        Color(0xFF05070C)
-                    )
-                )
-            )
+            .background(AppBackground)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            Color(0xFF00E5A8).copy(alpha = glow),
-                            Color.Transparent,
-                            Color(0xFF8B5CF6).copy(alpha = glow * 0.85f),
-                            Color(0xFF38BDF8).copy(alpha = glow * 0.65f)
-                        )
-                    )
-                )
-        )
         content()
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 fun Modifier.premiumGlass(
-    radius: Dp = 28.dp,
-    alpha: Float = 0.16f,
-    borderAlpha: Float = 0.11f
+    radius: Dp = 16.dp,
+    alpha: Float = 1f,
+    borderAlpha: Float = 1f
 ): Modifier = this
     .clip(RoundedCornerShape(radius))
-    .background(Color.White.copy(alpha = alpha))
-    .border(1.dp, Color.White.copy(alpha = borderAlpha), RoundedCornerShape(radius))
+    .background(SurfaceCard)
+    .border(1.dp, BorderColor, RoundedCornerShape(radius))
 
 @Composable
 fun PremiumHeader(
@@ -102,16 +75,18 @@ fun PremiumHeader(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = AstraTheme.spacing.large, vertical = AstraTheme.spacing.small)
-            .premiumGlass(radius = 28.dp, alpha = 0.095f)
+            .clip(RoundedCornerShape(16.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
             .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.standard),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 title,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Black,
-                color = Color(0xFFF6F7FF),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = PrimaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -119,7 +94,7 @@ fun PremiumHeader(
             Text(
                 subtitle,
                 style = MaterialTheme.typography.labelMedium,
-                color = Color(0xFFB9C3D4),
+                color = SecondaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

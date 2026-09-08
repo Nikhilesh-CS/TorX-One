@@ -69,10 +69,10 @@ fun AstraAvatar(
                     .size(size * 0.28f)
                     .align(Alignment.BottomEnd)
                     .clip(CircleShape)
-                    .background(DeepSpace)
+                    .background(SurfaceCard)
                     .padding(2.dp)
                     .clip(CircleShape)
-                    .background(NeonGreen)
+                    .background(SuccessGreen)
             )
         }
     }
@@ -97,7 +97,7 @@ fun ShimmerBox(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(cornerRadius))
-            .background(Color.White.copy(alpha = alpha))
+            .background(SurfaceSecondary.copy(alpha = alpha + 0.6f))
     )
 }
 
@@ -123,7 +123,8 @@ fun ShimmerContactCard() {
 
 @Composable
 fun PulsingDot(
-    color: Color = AccentCyan,
+    modifier: Modifier = Modifier,
+    color: Color = BluetoothAccent,
     size: Dp = 8.dp
 ) {
     val transition = rememberInfiniteTransition(label = "pulse")
@@ -138,7 +139,7 @@ fun PulsingDot(
     )
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(size * scale)
             .clip(CircleShape)
             .background(color)
@@ -152,14 +153,14 @@ fun DiscoveryStatusChip(
 ) {
     val (color, label) = when {
         status.contains("search", ignoreCase = true) || status.contains("discover", ignoreCase = true) ->
-            AccentCyan to "Searching Nearby..."
+            BluetoothAccent to "Searching Nearby..."
         status.contains("connect", ignoreCase = true) ->
-            Color(0xFFF59E0B) to "Connecting..."
+            WarningAmber to "Connecting..."
         status.contains("ready", ignoreCase = true) || status.contains("advertis", ignoreCase = true) ->
-            NeonGreen to "Ready"
+            WiFiAccent to "Ready"
         status.contains("fail", ignoreCase = true) || status.contains("error", ignoreCase = true) ->
-            Color(0xFFEF4444) to "Offline"
-        else -> MutedGray to status
+            ErrorRed to "Offline"
+        else -> SecondaryText to status
     }
 
     Row(
@@ -187,7 +188,7 @@ fun UnreadBadge(count: Int) {
         modifier = Modifier
             .size(22.dp)
             .clip(CircleShape)
-            .background(AccentViolet),
+            .background(TorXPrimary),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -213,10 +214,10 @@ fun AstraPrimaryButton(
         enabled = enabled,
         shape = RoundedCornerShape(AstraTheme.radii.button),
         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-            containerColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-            contentColor = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary,
-            disabledContainerColor = androidx.compose.material3.MaterialTheme.colorScheme.primary.copy(alpha = AstraTheme.opacities.disabled),
-            disabledContentColor = androidx.compose.material3.MaterialTheme.colorScheme.onPrimary.copy(alpha = AstraTheme.opacities.disabled)
+            containerColor = TorXPrimary,
+            contentColor = Color.White,
+            disabledContainerColor = TorXPrimary.copy(alpha = 0.4f),
+            disabledContentColor = Color.White.copy(alpha = 0.6f)
         ),
         contentPadding = PaddingValues(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.medium)
     ) {
@@ -237,12 +238,12 @@ fun AstraSecondaryButton(
         enabled = enabled,
         shape = RoundedCornerShape(AstraTheme.radii.button),
         colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
-            contentColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
-            disabledContentColor = androidx.compose.material3.MaterialTheme.colorScheme.primary.copy(alpha = AstraTheme.opacities.disabled)
+            contentColor = TorXPrimary,
+            disabledContentColor = TorXPrimary.copy(alpha = 0.4f)
         ),
         border = androidx.compose.foundation.BorderStroke(
             1.dp, 
-            if (enabled) androidx.compose.material3.MaterialTheme.colorScheme.primary else androidx.compose.material3.MaterialTheme.colorScheme.primary.copy(alpha = AstraTheme.opacities.disabled)
+            if (enabled) BorderColor else BorderColor.copy(alpha = 0.5f)
         ),
         contentPadding = PaddingValues(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.medium)
     ) {
@@ -256,28 +257,32 @@ fun AstraCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val shape = RoundedCornerShape(16.dp)
+    val border = androidx.compose.foundation.BorderStroke(1.dp, BorderColor)
     if (onClick != null) {
         androidx.compose.material3.Card(
             onClick = onClick,
             modifier = modifier,
-            shape = RoundedCornerShape(AstraTheme.radii.card),
+            shape = shape,
+            border = border,
             colors = androidx.compose.material3.CardDefaults.cardColors(
-                containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant,
+                containerColor = SurfaceCard,
             ),
             elevation = androidx.compose.material3.CardDefaults.cardElevation(
-                defaultElevation = AstraTheme.elevations.cardResting
+                defaultElevation = 0.dp
             ),
             content = content
         )
     } else {
         androidx.compose.material3.Card(
             modifier = modifier,
-            shape = RoundedCornerShape(AstraTheme.radii.card),
+            shape = shape,
+            border = border,
             colors = androidx.compose.material3.CardDefaults.cardColors(
-                containerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant,
+                containerColor = SurfaceCard,
             ),
             elevation = androidx.compose.material3.CardDefaults.cardElevation(
-                defaultElevation = AstraTheme.elevations.cardResting
+                defaultElevation = 0.dp
             ),
             content = content
         )
@@ -308,10 +313,12 @@ fun AstraTextField(
         singleLine = singleLine,
         enabled = enabled,
         isError = isError,
-        shape = RoundedCornerShape(AstraTheme.radii.card),
+        shape = RoundedCornerShape(12.dp),
         colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-            unfocusedBorderColor = androidx.compose.material3.MaterialTheme.colorScheme.outline,
-            focusedBorderColor = androidx.compose.material3.MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = BorderColor,
+            focusedBorderColor = TorXPrimary,
+            unfocusedContainerColor = SurfaceCard,
+            focusedContainerColor = SurfaceCard
         )
     )
 }
@@ -344,10 +351,10 @@ fun AstraDialog(
                 )
             }
         },
-        shape = RoundedCornerShape(30.dp),
-        containerColor = Color(0xE6111827),
-        titleContentColor = Color(0xFFF6F7FF),
-        textContentColor = Color(0xFFB9C3D4),
-        tonalElevation = 0.dp
+        shape = RoundedCornerShape(16.dp),
+        containerColor = SurfaceCard,
+        titleContentColor = PrimaryText,
+        textContentColor = SecondaryText,
+        tonalElevation = 2.dp
     )
 }

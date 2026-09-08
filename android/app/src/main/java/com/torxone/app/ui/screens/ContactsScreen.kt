@@ -21,7 +21,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,7 +28,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -47,12 +45,16 @@ import com.torxone.app.ui.components.PremiumAuroraBackground
 import com.torxone.app.ui.components.PremiumHeader
 import com.torxone.app.ui.components.PremiumPulseDot
 import com.torxone.app.ui.components.premiumGlass
-import com.torxone.app.ui.theme.AccentCyan
 import com.torxone.app.ui.theme.AstraTheme
-import com.torxone.app.ui.theme.DimGray
-import com.torxone.app.ui.theme.MutedGray
-import com.torxone.app.ui.theme.NeonGreen
-import com.torxone.app.ui.theme.SoftWhite
+import com.torxone.app.ui.theme.BluetoothAccent
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.DisconnectedAccent
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.TextMuted
+import com.torxone.app.ui.theme.TorAccent
+import com.torxone.app.ui.theme.TorXPrimary
 
 @Composable
 fun ContactsScreen(
@@ -99,14 +101,14 @@ fun ContactsScreen(
                             Icons.Rounded.Bluetooth,
                             contentDescription = null,
                             modifier = Modifier.size(AstraTheme.spacing.massive5),
-                            tint = Color(0xFF38BDF8)
+                            tint = TorXPrimary
                         )
                         Spacer(modifier = Modifier.height(AstraTheme.spacing.standard))
-                        Text("No contacts yet", fontSize = 20.sp, color = SoftWhite, fontWeight = FontWeight.Black)
+                        Text("No contacts yet", fontSize = 20.sp, color = PrimaryText, fontWeight = FontWeight.Bold)
                         Text(
                             "Discover nearby users or share your onion address.",
                             fontSize = AstraTheme.typography.bodyMedium.fontSize,
-                            color = MutedGray,
+                            color = SecondaryText,
                             modifier = Modifier.padding(top = AstraTheme.spacing.small),
                             textAlign = TextAlign.Center
                         )
@@ -154,19 +156,12 @@ fun ContactItemRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 7.dp)
-            .clip(RoundedCornerShape(26.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.12f),
-                        Color(0xFF0B1020).copy(alpha = 0.78f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(26.dp))
+            .padding(horizontal = AstraTheme.spacing.large, vertical = 5.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = 14.dp),
+            .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AstraAvatar(name = contact.name, model = avatarModel, size = AstraTheme.spacing.massive4, isOnline = isOnline)
@@ -176,8 +171,8 @@ fun ContactItemRow(
             Text(
                 text = contact.name,
                 fontSize = AstraTheme.typography.bodyLarge.fontSize,
-                fontWeight = FontWeight.Black,
-                color = Color(0xFFF6F7FF),
+                fontWeight = FontWeight.SemiBold,
+                color = PrimaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -190,7 +185,7 @@ fun ContactItemRow(
             Text(
                 text = routeLabel,
                 fontSize = AstraTheme.typography.labelMedium.fontSize,
-                color = MutedGray,
+                color = SecondaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -199,24 +194,24 @@ fun ContactItemRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 when {
                     isNearby -> {
-                        PremiumPulseDot(color = AccentCyan)
+                        PremiumPulseDot(color = BluetoothAccent)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Bluetooth / Wi-Fi Direct", fontSize = AstraTheme.typography.labelSmall.fontSize, color = AccentCyan)
+                        Text("Bluetooth / Wi-Fi Direct", fontSize = AstraTheme.typography.labelSmall.fontSize, color = BluetoothAccent)
                     }
                     isTorRouteAvailable -> {
-                        PremiumPulseDot(color = NeonGreen)
+                        PremiumPulseDot(color = TorAccent)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Tor route available", fontSize = AstraTheme.typography.labelSmall.fontSize, color = NeonGreen)
+                        Text("Tor route available", fontSize = AstraTheme.typography.labelSmall.fontSize, color = TorAccent)
                     }
                     else -> {
-                        Box(modifier = Modifier.size(AstraTheme.spacing.small).clip(CircleShape).background(DimGray))
+                        Box(modifier = Modifier.size(AstraTheme.spacing.small).clip(CircleShape).background(DisconnectedAccent))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Offline", fontSize = AstraTheme.typography.labelSmall.fontSize, color = MutedGray)
+                        Text("Offline", fontSize = AstraTheme.typography.labelSmall.fontSize, color = TextMuted)
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text("Encrypted identity", fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color(0xFFB9C3D4))
+            Spacer(modifier = Modifier.height(3.dp))
+            Text("Encrypted identity", fontSize = AstraTheme.typography.labelSmall.fontSize, color = TextMuted)
         }
     }
 }

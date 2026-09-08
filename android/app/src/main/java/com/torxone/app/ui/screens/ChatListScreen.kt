@@ -175,24 +175,16 @@ fun ChatListScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(
-                                    Color(0xE605070C),
-                                    Color(0xCC0B0D16),
-                                    Color.Transparent
-                                )
-                            )
-                        )
+                        .background(AppBackground)
                         .padding(top = AstraTheme.spacing.standard, start = AstraTheme.spacing.large, end = AstraTheme.spacing.large, bottom = AstraTheme.spacing.small)
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(26.dp))
-                            .background(Color.White.copy(alpha = 0.075f))
-                            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(26.dp))
-                            .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.small),
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(SurfaceCard)
+                            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
+                            .padding(horizontal = AstraTheme.spacing.standard, vertical = AstraTheme.spacing.medium),
                         horizontalArrangement = Arrangement.spacedBy(AstraTheme.spacing.small),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -203,17 +195,16 @@ fun ChatListScreen(
                         ) {
                             Text(
                                 "TorX One",
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontSize = 32.sp,
-                                fontWeight = FontWeight.Black,
-                                color = Color(0xFFF6F7FF),
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = PrimaryText,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 "Private mesh messages",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = Color(0xFF9DA7B8),
+                                color = SecondaryText,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -577,8 +568,8 @@ private fun PremiumSectionHeader(title: String, accent: Color) {
         Text(
             title,
             style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Black,
-            color = Color(0xFFEFF4FF),
+            fontWeight = FontWeight.Bold,
+            color = PrimaryText,
             maxLines = 1
         )
     }
@@ -1110,52 +1101,45 @@ fun ContactRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = if (unreadCount > 0) 0.12f else 0.075f),
-                        Color(0xFF0E1421).copy(alpha = 0.70f)
-                    )
-                )
-            )
+            .padding(horizontal = AstraTheme.spacing.large, vertical = 4.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (unreadCount > 0) TorXPrimarySoft else SurfaceCard)
             .border(
                 1.dp,
-                if (unreadCount > 0) Color(0x559AF6D0) else Color.White.copy(alpha = 0.09f),
-                RoundedCornerShape(24.dp)
+                if (unreadCount > 0) TorXPrimary.copy(alpha = 0.25f) else BorderColor,
+                RoundedCornerShape(16.dp)
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = 14.dp),
+            .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AstraAvatar(name = contact.name, model = avatarModel, size = AstraTheme.spacing.massive4, isOnline = isOnline)
         Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
         Column(modifier = Modifier.weight(1f)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(contact.name, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.Black, color = Color(0xFFF6F7FF), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(contact.name, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold, color = PrimaryText, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (lastMessageTime != null) {
                     val timeString = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastMessageTime))
-                    Text(timeString, fontSize = AstraTheme.typography.labelSmall.fontSize, color = if (unreadCount > 0) Color(0xFF9AF6D0) else Color(0xFF8E98AA))
+                    Text(timeString, fontSize = AstraTheme.typography.labelSmall.fontSize, color = if (unreadCount > 0) TorXPrimary else TextMuted)
                 }
             }
             Spacer(modifier = Modifier.height(AstraTheme.spacing.tiny))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(lastMessageText, fontSize = AstraTheme.typography.bodyMedium.fontSize, color = if (unreadCount > 0) Color(0xFFE7ECF7) else Color(0xFF9DA7B8), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(lastMessageText, fontSize = AstraTheme.typography.bodyMedium.fontSize, color = if (unreadCount > 0) PrimaryText else SecondaryText, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 if (unreadCount > 0) {
                     Box(
-                        modifier = Modifier.padding(start = AstraTheme.spacing.small).size(24.dp).clip(CircleShape).background(Color(0xFF9AF6D0)),
+                        modifier = Modifier.padding(start = AstraTheme.spacing.small).size(22.dp).clip(CircleShape).background(TorXPrimary),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(unreadCount.toString(), fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color(0xFF06120F), fontWeight = FontWeight.Black)
+                        Text(unreadCount.toString(), fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(7.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 routeLabel,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (isOnline) Color(0xFF9AF6D0) else Color(0xFF7B8496),
+                color = if (isOnline) SuccessGreen else TextMuted,
                 maxLines = 1
             )
         }

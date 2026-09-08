@@ -49,11 +49,17 @@ import com.torxone.app.network.TorManager
 import com.torxone.app.ui.components.PremiumAuroraBackground
 import com.torxone.app.ui.components.PremiumHeader
 import com.torxone.app.ui.components.PremiumPulseDot
-import com.torxone.app.ui.theme.AccentCyan
 import com.torxone.app.ui.theme.AstraTheme
-import com.torxone.app.ui.theme.MutedGray
-import com.torxone.app.ui.theme.NeonGreen
-import com.torxone.app.ui.theme.SoftWhite
+import com.torxone.app.ui.theme.BluetoothAccent
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SuccessGreen
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.TextMuted
+import com.torxone.app.ui.theme.TorAccent
+import com.torxone.app.ui.theme.TorXPrimary
+import com.torxone.app.ui.theme.WarningAmber
 
 @Composable
 fun SecurityCenterScreen(
@@ -89,22 +95,22 @@ fun SecurityCenterScreen(
             ) {
                 SecurityCard(
                     title = "End-to-end encryption",
-                    value = "Active - X25519 / ChaCha20-Poly1305",
-                    statusColor = NeonGreen,
+                    value = "Active - Double Ratchet + X25519",
+                    statusColor = SuccessGreen,
                     icon = Icons.Rounded.Lock
                 )
 
                 SecurityCard(
                     title = "App Lock",
-                    value = if (appLockEnabled) "Active - Biometrics / Password" else "Disabled",
-                    statusColor = if (appLockEnabled) NeonGreen else AstraTheme.colors.secondary,
+                    value = if (appLockEnabled) "Active - Biometrics / PIN" else "Disabled",
+                    statusColor = if (appLockEnabled) SuccessGreen else TextMuted,
                     icon = Icons.Rounded.Lock
                 )
 
                 SecurityCard(
                     title = "Identity fingerprint",
                     value = identityKey,
-                    statusColor = SoftWhite,
+                    statusColor = TorXPrimary,
                     icon = Icons.Rounded.Key,
                     onCopy = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -115,15 +121,15 @@ fun SecurityCenterScreen(
 
                 SecurityCard(
                     title = "Tor network status",
-                    value = if (torReady) "Connected" else "Connecting / Offline ($torStatus)",
-                    statusColor = if (torReady) NeonGreen else AstraTheme.colors.secondary,
+                    value = if (torReady) "Connected & Routing" else "Connecting / Offline ($torStatus)",
+                    statusColor = if (torReady) TorAccent else WarningAmber,
                     icon = Icons.Rounded.Public
                 )
 
                 SecurityCard(
                     title = "Onion address",
-                    value = onionAddress.ifBlank { "Not available yet" },
-                    statusColor = if (onionAddress.isNotBlank()) AccentCyan else MutedGray,
+                    value = onionAddress.ifBlank { "Initializing..." },
+                    statusColor = if (onionAddress.isNotBlank()) TorAccent else TextMuted,
                     icon = Icons.Rounded.Router,
                     onCopy = {
                         if (onionAddress.isNotBlank()) {
@@ -135,9 +141,9 @@ fun SecurityCenterScreen(
                 )
 
                 SecurityCard(
-                    title = "Nearby transport",
-                    value = "Bluetooth / Wi-Fi Direct active",
-                    statusColor = NeonGreen,
+                    title = "Nearby mesh transport",
+                    value = "Bluetooth Low Energy & Wi-Fi Direct active",
+                    statusColor = BluetoothAccent,
                     icon = Icons.Rounded.Hub
                 )
             }
@@ -155,16 +161,9 @@ fun SecurityCard(
 ) {
     val modifier = Modifier
         .fillMaxWidth()
-        .clip(RoundedCornerShape(28.dp))
-        .background(
-            Brush.linearGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.12f),
-                    Color(0xFF0B1020).copy(alpha = 0.80f)
-                )
-            )
-        )
-        .border(1.dp, Color.White.copy(alpha = 0.11f), RoundedCornerShape(28.dp))
+        .clip(RoundedCornerShape(16.dp))
+        .background(SurfaceCard)
+        .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
         .then(if (onCopy != null) Modifier.clickable { onCopy() } else Modifier)
 
     Row(
@@ -173,12 +172,12 @@ fun SecurityCard(
     ) {
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(44.dp)
                 .clip(CircleShape)
-                .background(statusColor.copy(alpha = 0.16f)),
+                .background(statusColor.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = null, tint = statusColor, modifier = Modifier.size(24.dp))
+            Icon(icon, contentDescription = null, tint = statusColor, modifier = Modifier.size(22.dp))
         }
         Spacer(modifier = Modifier.width(AstraTheme.spacing.standard))
         Column(modifier = Modifier.weight(1f)) {
@@ -188,15 +187,15 @@ fun SecurityCard(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color(0xFFB9C3D4),
+                    color = SecondaryText,
                     fontWeight = FontWeight.Bold
                 )
             }
-            Spacer(modifier = Modifier.height(5.dp))
+            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodyLarge,
-                color = statusColor,
+                color = PrimaryText,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis

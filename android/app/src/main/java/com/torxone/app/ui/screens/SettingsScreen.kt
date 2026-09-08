@@ -230,18 +230,18 @@ fun SettingsScreen(
     }
 
     Scaffold(
-        containerColor = DeepBlack,
+        containerColor = AppBackground,
         topBar = {
             TopAppBar(
-                title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.onBackground) },
+                title = { Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = PrimaryText) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = PrimaryText)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                    containerColor = AppBackground,
+                    titleContentColor = PrimaryText
                 )
             )
         }
@@ -268,15 +268,15 @@ fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(AstraTheme.spacing.large))
-                            .background(AstraTheme.colors.primaryContainer) // Darker green for background
+                            .background(TorXPrimarySoft)
                             .clickable { navController.navigate("profile") }
                             .padding(horizontal = AstraTheme.spacing.extraLarge, vertical = AstraTheme.spacing.small)
                     ) {
                         Text(
                             text = "Edit",
-                            color = AccentCyan, // Uses the green accent
+                            color = TorXPrimary,
                             fontSize = AstraTheme.typography.bodyMedium.fontSize,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
@@ -974,16 +974,21 @@ private fun PerformanceModeRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (selected) AccentCyan.copy(alpha = 0.13f) else Color.White.copy(alpha = 0.045f))
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) TorXPrimarySoft else SurfaceCard)
+            .border(1.dp, if (selected) TorXPrimary else BorderColor, RoundedCornerShape(12.dp))
             .clickable { onSelected(mode) }
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = { onSelected(mode) })
+        RadioButton(
+            selected = selected,
+            onClick = { onSelected(mode) },
+            colors = RadioButtonDefaults.colors(selectedColor = TorXPrimary, unselectedColor = TextMuted)
+        )
         Column(Modifier.weight(1f)) {
-            Text(title, color = SoftWhite, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = MutedGray, fontSize = AstraTheme.typography.bodySmall.fontSize)
+            Text(title, color = PrimaryText, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, color = SecondaryText, fontSize = AstraTheme.typography.bodySmall.fontSize)
         }
     }
 }
@@ -998,8 +1003,18 @@ private fun CompactSwitchRow(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = SoftWhite, modifier = Modifier.weight(1f), fontSize = AstraTheme.typography.bodyMedium.fontSize)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Text(label, color = PrimaryText, modifier = Modifier.weight(1f), fontSize = AstraTheme.typography.bodyMedium.fontSize)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = TorXPrimary,
+                uncheckedThumbColor = TextMuted,
+                uncheckedTrackColor = SurfaceSecondary,
+                uncheckedBorderColor = BorderColor
+            )
+        )
     }
 }
 
@@ -1068,39 +1083,32 @@ fun SettingsItem(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    subtitleColor: Color = MutedGray,
+    subtitleColor: Color = SecondaryText,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.105f),
-                        Color(0xFF0B1020).copy(alpha = 0.78f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
+            .padding(horizontal = AstraTheme.spacing.large, vertical = 5.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = 14.dp),
+            .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(40.dp)
                 .clip(CircleShape)
-                .background(AccentCyan.copy(alpha = 0.13f)),
+                .background(TorXPrimarySoft),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = title, tint = AccentCyan, modifier = Modifier.size(23.dp))
+            Icon(icon, contentDescription = title, tint = TorXPrimary, modifier = Modifier.size(20.dp))
         }
-        Spacer(modifier = Modifier.width(AstraTheme.spacing.large))
-        Column {
-            Text(title, color = SoftWhite, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = PrimaryText, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
             if (subtitle != null) {
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(subtitle, color = subtitleColor, fontSize = AstraTheme.typography.bodyMedium.fontSize)
@@ -1120,47 +1128,40 @@ fun SettingsSwitchItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 6.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.105f),
-                        Color(0xFF0B1020).copy(alpha = 0.78f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(24.dp))
+            .padding(horizontal = AstraTheme.spacing.large, vertical = 5.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(SurfaceCard)
+            .border(1.dp, BorderColor, RoundedCornerShape(16.dp))
             .clickable { onCheckedChange(!checked) }
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = 14.dp),
+            .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(40.dp)
                 .clip(CircleShape)
-                .background(AccentCyan.copy(alpha = 0.13f)),
+                .background(TorXPrimarySoft),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = title, tint = AccentCyan, modifier = Modifier.size(23.dp))
+            Icon(icon, contentDescription = title, tint = TorXPrimary, modifier = Modifier.size(20.dp))
         }
-        Spacer(modifier = Modifier.width(AstraTheme.spacing.large))
+        Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = SoftWhite, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
+            Text(title, color = PrimaryText, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold)
             if (subtitle != null) {
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(subtitle, color = MutedGray, fontSize = AstraTheme.typography.bodyMedium.fontSize)
+                Text(subtitle, color = SecondaryText, fontSize = AstraTheme.typography.bodyMedium.fontSize)
             }
         }
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = DeepBlack,
-                checkedTrackColor = AccentCyan, // Green
-                uncheckedThumbColor = MutedGray,
-                uncheckedTrackColor = DeepBlack,
-                uncheckedBorderColor = MutedGray
+                checkedThumbColor = Color.White,
+                checkedTrackColor = TorXPrimary,
+                uncheckedThumbColor = TextMuted,
+                uncheckedTrackColor = SurfaceSecondary,
+                uncheckedBorderColor = BorderColor
             )
         )
     }

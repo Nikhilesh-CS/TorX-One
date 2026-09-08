@@ -54,13 +54,21 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.torxone.app.identity.profile.FounderProfile
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SuccessGreen
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.SurfaceSecondary
+import com.torxone.app.ui.theme.TorXPrimary
+import com.torxone.app.ui.theme.WarningAmber
 
-private val FounderGold = Color(0xFFFFC857)
-private val FounderAmber = Color(0xFFFFA41B)
-private val VerifiedBlue = Color(0xFF38BDF8)
-private val SecureGreen = Color(0xFF20E3B2)
-private val FounderSurface = Color(0xE60A0F1F)
-private val GlassHighlight = Color(0x26FFFFFF)
+private val FounderGold = WarningAmber
+private val FounderAmber = Color(0xFFB45309)
+private val VerifiedBlue = TorXPrimary
+private val SecureGreen = SuccessGreen
+private val FounderSurface = SurfaceCard
+private val GlassHighlight = SurfaceSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -112,79 +120,20 @@ fun FounderProfileCard(
     torConnected: Boolean,
     decentralizedEnabled: Boolean = true
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "founderGlow")
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.20f,
-        targetValue = 0.44f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2800),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "founderGlowAlpha"
-    )
     val cardShape = RoundedCornerShape(28.dp)
 
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = cardShape,
-        colors = CardDefaults.cardColors(containerColor = FounderSurface),
-        border = BorderStroke(
-            1.dp,
-            Brush.linearGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.22f),
-                    VerifiedBlue.copy(alpha = glowAlpha),
-                    FounderGold.copy(alpha = glowAlpha),
-                    SecureGreen.copy(alpha = 0.26f)
-                )
-            )
-        )
+        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
+        border = BorderStroke(1.dp, BorderColor)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(cardShape)
-                .background(Color(0xE60A0F1F))
+                .background(SurfaceCard)
         ) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.radialGradient(
-                            colors = listOf(VerifiedBlue.copy(alpha = 0.24f), Color.Transparent),
-                            radius = 520f
-                        )
-                    )
-            )
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                GlassHighlight,
-                                Color.Transparent,
-                                FounderAmber.copy(alpha = 0.11f)
-                            )
-                        )
-                    )
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(1.dp)
-                    .clip(RoundedCornerShape(27.dp))
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.08f),
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.14f)
-                            )
-                        )
-                    )
-            )
-
             Column(modifier = Modifier.padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     BoxedFounderIcon()

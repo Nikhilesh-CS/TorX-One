@@ -33,6 +33,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -156,6 +157,15 @@ import com.torxone.app.ui.components.TransportType
 import com.torxone.app.ui.screens.chat.ChatViewModel
 import com.torxone.app.ui.screens.chat.SmartScrollEngine
 import com.torxone.app.ui.theme.AstraTheme
+import com.torxone.app.ui.theme.BorderColor
+import com.torxone.app.ui.theme.PrimaryText
+import com.torxone.app.ui.theme.SecondaryText
+import com.torxone.app.ui.theme.SurfaceCard
+import com.torxone.app.ui.theme.SurfaceSecondary
+import com.torxone.app.ui.theme.TextMuted
+import com.torxone.app.ui.theme.TorXPrimary
+import com.torxone.app.ui.theme.TorXPrimaryDark
+import com.torxone.app.ui.theme.TorXPrimarySoft
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1254,14 +1264,19 @@ private fun MessageBubble(
     val maxBubbleWidth = (config.screenWidthDp * 0.72f).dp
     val bubbleColor by animateColorAsState(
         targetValue = when {
-            isHighlighted -> MaterialTheme.colorScheme.tertiaryContainer
-            isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
-            isMine -> MaterialTheme.colorScheme.primaryContainer
-            else -> MaterialTheme.colorScheme.surfaceVariant
+            isHighlighted -> TorXPrimarySoft
+            isSelected -> TorXPrimarySoft
+            isMine -> TorXPrimarySoft
+            else -> SurfaceCard
         },
         label = "bubbleColor"
     )
-    val textColor = if (isMine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+    val textColor = PrimaryText
+    val bubbleBorder = when {
+        isSelected -> TorXPrimary
+        isMine -> TorXPrimary.copy(alpha = 0.25f)
+        else -> BorderColor
+    }
     val shape = bubbleShape(isMine, compactWithPrevious, compactWithNext)
     val reactions = remember(message.reactions) {
         message.reactions.values
@@ -1281,7 +1296,7 @@ private fun MessageBubble(
                 Text(
                     text = senderName,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = TorXPrimary,
                     modifier = Modifier.padding(start = 12.dp, bottom = 4.dp)
                 )
             }
@@ -1289,6 +1304,7 @@ private fun MessageBubble(
                 modifier = Modifier
                     .widthIn(max = maxBubbleWidth)
                     .scale(pressScale)
+                    .border(1.dp, bubbleBorder, shape)
                     .combinedClickable(
                         onClick = onClick,
                         onLongClick = onLongPress,
@@ -1296,8 +1312,8 @@ private fun MessageBubble(
                     ),
                 color = bubbleColor,
                 shape = shape,
-                tonalElevation = if (isMine) 4.dp else 2.dp,
-                shadowElevation = 1.dp
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp)) {
                     if (message.replyToId != null) {
@@ -1334,7 +1350,7 @@ private fun MessageBubble(
                         Text(
                             text = com.torxone.app.ui.utils.TextUtils.parseMarkdown(
                                 message.text,
-                                codeColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                                codeColor = SurfaceSecondary
                             ),
                             color = textColor,
                             style = MaterialTheme.typography.bodyLarge,
@@ -1348,14 +1364,14 @@ private fun MessageBubble(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         if (message.isEncrypted) {
-                            Icon(Icons.Rounded.Security, contentDescription = "Encrypted", modifier = Modifier.size(12.dp), tint = textColor.copy(alpha = 0.52f))
+                            Icon(Icons.Rounded.Security, contentDescription = "Encrypted", modifier = Modifier.size(12.dp), tint = TextMuted)
                         }
                         Text(
                             text = timeFormat.format(Date(message.timestamp)),
                             style = MaterialTheme.typography.labelSmall,
-                            color = textColor.copy(alpha = 0.62f)
+                            color = TextMuted
                         )
-                        if (isMine) MessageStatusIcon(message.lifecycleState, textColor.copy(alpha = 0.7f))
+                        if (isMine) MessageStatusIcon(message.lifecycleState, TorXPrimary)
                     }
                 }
             }
@@ -1375,11 +1391,12 @@ private fun InlineReplyPreview(
     preview: String,
     onClick: () -> Unit
 ) {
-    val accent = if (isMine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+    val accent = if (isMine) TorXPrimary else SecondaryText
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.38f))
+            .background(SurfaceSecondary)
+            .border(1.dp, BorderColor, RoundedCornerShape(12.dp))
             .combinedClickable(onClick = onClick)
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1401,7 +1418,7 @@ private fun InlineReplyPreview(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(preview, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(preview, style = MaterialTheme.typography.bodySmall, color = SecondaryText, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1429,9 +1446,10 @@ private fun TypingIndicatorBubble(label: String) {
     ) {
         Surface(
             shape = RoundedCornerShape(22.dp, 22.dp, 22.dp, 7.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            tonalElevation = 2.dp,
-            shadowElevation = 1.dp
+            color = SurfaceCard,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            modifier = Modifier.border(1.dp, BorderColor, RoundedCornerShape(22.dp, 22.dp, 22.dp, 7.dp))
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -1444,7 +1462,7 @@ private fun TypingIndicatorBubble(label: String) {
                             .size(7.dp)
                             .alpha(dotAlphas[index].value)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary)
+                            .background(TorXPrimary)
                     )
                 }
                 Text(

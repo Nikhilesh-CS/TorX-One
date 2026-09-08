@@ -79,8 +79,8 @@ fun AstraAvatar(
                     .align(Alignment.BottomEnd)
                     .offset(x = (-2).dp, y = (-2).dp)
                     .clip(CircleShape)
-                    .background(Color.Green)
-                    .border(2.dp, AstraTheme.colors.background, CircleShape)
+                    .background(com.torxone.app.ui.theme.SuccessGreen)
+                    .border(2.dp, com.torxone.app.ui.theme.SurfaceCard, CircleShape)
             )
         }
         

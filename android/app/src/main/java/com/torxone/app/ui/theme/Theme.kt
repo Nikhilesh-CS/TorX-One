@@ -6,8 +6,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
@@ -43,26 +44,39 @@ val LocalReduceMotion = staticCompositionLocalOf { false }
 val LocalShowTransportIcons = staticCompositionLocalOf { true }
 
 fun Modifier.glassmorphism(
-    cornerRadius: Dp = 28.dp,
-    backgroundColor: Color = Color(0x26FFFFFF),
-    borderColor: Color = Color(0x1FFFFFFF)
+    cornerRadius: Dp = 16.dp,
+    backgroundColor: Color = SurfaceCard,
+    borderColor: Color = BorderColor
 ): Modifier = this
     .clip(RoundedCornerShape(cornerRadius))
     .background(backgroundColor)
     .border(1.dp, borderColor, RoundedCornerShape(cornerRadius))
 
-private val DarkColorScheme = darkColorScheme(
-    primary = TorAccent, // Default fallback
-    secondary = TorAccent,
-    background = DeepSpace,
-    surface = SurfaceDark,
-    surfaceVariant = SurfaceDarker,
-    onBackground = TextPrimary,
-    onSurface = TextPrimary,
-    onPrimary = DeepSpace,
-    onSecondary = DeepSpace,
-    outline = OutlineColor,
-    onSurfaceVariant = TextSecondary
+private val ProfessionalLightColorScheme = lightColorScheme(
+    primary = TorXPrimary, // #2563EB Professional blue
+    onPrimary = Color.White,
+    primaryContainer = TorXPrimarySoft, // #EFF6FF Pale blue soft background
+    onPrimaryContainer = TorXPrimaryDark, // #1D4ED8
+    secondary = SecondaryText, // #475569 Slate
+    onSecondary = Color.White,
+    secondaryContainer = SurfaceSecondary, // #F1F5F9 Soft slate
+    onSecondaryContainer = PrimaryText, // #0F172A Dark slate
+    tertiary = TorXPrimary,
+    onTertiary = Color.White,
+    tertiaryContainer = TorXPrimarySoft,
+    onTertiaryContainer = TorXPrimaryDark,
+    background = AppBackground, // #F8FAFC Very light gray
+    onBackground = PrimaryText, // #0F172A Dark slate
+    surface = SurfaceCard, // #FFFFFF White
+    onSurface = PrimaryText, // #0F172A Dark slate
+    surfaceVariant = SurfaceSecondary, // #F1F5F9 Soft slate
+    onSurfaceVariant = SecondaryText, // #475569 Slate
+    outline = BorderColor, // #E2E8F0 Light slate border
+    outlineVariant = BorderColor.copy(alpha = 0.6f),
+    error = ErrorRed, // #DC2626
+    onError = Color.White,
+    errorContainer = Color(0xFFFEF2F2),
+    onErrorContainer = ErrorRed
 )
 
 @Composable
@@ -75,43 +89,37 @@ fun TorXOneTheme(
 ) {
     val view = LocalView.current
     if (!view.isInEditMode) {
-tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is android.content.ContextWrapper -> baseContext.findActivity()
-    else -> null
-}
+        tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
+            is Activity -> this
+            is android.content.ContextWrapper -> baseContext.findActivity()
+            else -> null
+        }
 
         SideEffect {
             val window = view.context.findActivity()?.window
             if (window != null) {
-                // Let the framework handle edge-to-edge styling, just ensure status bar is transparent
                 window.statusBarColor = Color.Transparent.toArgb()
                 window.navigationBarColor = Color.Transparent.toArgb()
                 WindowCompat.setDecorFitsSystemWindows(window, false)
-                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
-                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = false
+                // Dark icons on light status & navigation bars
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = true
+                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = true
             }
         }
     }
 
-    val targetColor = when (activeTransport) {
+    // Transport status accent color (animated smoothly, isolated from Material primary)
+    val targetTransportColor = when (activeTransport) {
         NetworkTransport.BLUETOOTH -> BluetoothAccent
         NetworkTransport.WIFI_DIRECT -> WiFiAccent
         NetworkTransport.TOR -> TorAccent
         NetworkTransport.DISCONNECTED -> DisconnectedAccent
     }
 
-    val animatedColor by animateColorAsState(
-        targetValue = targetColor,
-        animationSpec = tween(durationMillis = 1500),
+    val animatedTransportColor by animateColorAsState(
+        targetValue = targetTransportColor,
+        animationSpec = tween(durationMillis = 800),
         label = "transportColorAnimation"
-    )
-
-    // Override primary color dynamically based on transport
-    val dynamicColorScheme = DarkColorScheme.copy(
-        background = if (useAmoledTheme) AmoledBlack else DeepSpace,
-        primary = animatedColor,
-        secondary = animatedColor
     )
 
     val windowSizeClass = rememberWindowSizeClass()
@@ -121,7 +129,7 @@ tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
 
     CompositionLocalProvider(
         LocalActiveTransport provides activeTransport,
-        LocalTransportColor provides animatedColor,
+        LocalTransportColor provides animatedTransportColor,
         LocalSpacing provides dynamicSpacing,
         LocalRadii provides dynamicRadii,
         LocalElevations provides defaultAstraElevations,
@@ -132,14 +140,14 @@ tailrec fun android.content.Context.findActivity(): Activity? = when (this) {
         LocalShowTransportIcons provides showTransportIcons
     ) {
         MaterialTheme(
-            colorScheme = dynamicColorScheme,
+            colorScheme = ProfessionalLightColorScheme,
             typography = AstraTypography,
             content = content
         )
     }
 }
 
-// Convenient accessor object
+// Convenient design token accessor object
 object AstraTheme {
     val spacing: AstraSpacing
         @Composable get() = LocalSpacing.current
@@ -153,7 +161,7 @@ object AstraTheme {
         @Composable get() = LocalAvatarSizes.current
     val opacities: AstraOpacities
         @Composable get() = LocalOpacities.current
-    val colors: androidx.compose.material3.ColorScheme
+    val colors: ColorScheme
         @Composable get() = MaterialTheme.colorScheme
     val typography: androidx.compose.material3.Typography
         @Composable get() = MaterialTheme.typography
@@ -161,4 +169,34 @@ object AstraTheme {
         @Composable get() = LocalReduceMotion.current
     val showTransportIcons: Boolean
         @Composable get() = LocalShowTransportIcons.current
+    val transportColor: Color
+        @Composable get() = LocalTransportColor.current
 }
+
+// Semantic extensions for ColorScheme
+val ColorScheme.transport: Color
+    @Composable get() = LocalTransportColor.current
+
+val ColorScheme.textPrimary: Color
+    @Composable get() = onBackground
+
+val ColorScheme.textSecondary: Color
+    @Composable get() = onSurfaceVariant
+
+val ColorScheme.textMuted: Color
+    @Composable get() = TextMuted
+
+val ColorScheme.border: Color
+    @Composable get() = outline
+
+val ColorScheme.primarySoft: Color
+    @Composable get() = primaryContainer
+
+val ColorScheme.surfaceSecondary: Color
+    @Composable get() = surfaceVariant
+
+val ColorScheme.success: Color
+    @Composable get() = SuccessGreen
+
+val ColorScheme.warning: Color
+    @Composable get() = WarningAmber
