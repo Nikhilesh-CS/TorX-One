@@ -66,7 +66,8 @@ data class GroupEntity(
     val avatarUri: String? = null,
     val creatorKey: String,
     val createdAt: Long,
-    val myRole: String
+    val myRole: String,
+    val muteUntil: Long = 0L
 )
 
 @Entity(
@@ -348,7 +349,7 @@ interface MusicNoteDao {
 
 @Database(
     entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -586,6 +587,12 @@ abstract class AppDatabase : RoomDatabase() {
                         FOREIGN KEY(`groupId`) REFERENCES `groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
                 """.trimIndent())
+            }
+        }
+
+        val MIGRATION_14_15 = object : androidx.room.migration.Migration(14, 15) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE groups ADD COLUMN muteUntil INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

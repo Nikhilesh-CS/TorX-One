@@ -289,9 +289,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
                     LaunchedEffect(intent) {
                         val openChatKey = intent.getStringExtra("open_chat")
+                        val conversationType = intent.getStringExtra("conversation_type") ?: "direct"
                         if (openChatKey != null) {
                             com.torxone.app.service.NotificationHelper.clearContactNotifications(this@MainActivity, openChatKey)
-                            navController.navigate("chat/$openChatKey")
+                            navController.navigate("chat/$conversationType/$openChatKey")
                         }
                     }
 

@@ -81,7 +81,7 @@ object NotificationHelper {
             .build()
     }
 
-    fun showMessageNotification(context: Context, contact: ContactEntity, unreadMessages: List<MessageEntity>) {
+    fun showMessageNotification(context: Context, contact: ContactEntity, unreadMessages: List<MessageEntity>, conversationType: String = "direct") {
         if (unreadMessages.isEmpty()) return
 
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -90,6 +90,7 @@ object NotificationHelper {
         val openAppIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
             putExtra("open_chat", contact.signingPublicKey)
+            putExtra("conversation_type", conversationType)
         }
         val openPendingIntent = PendingIntent.getActivity(
             context, contact.signingPublicKey.hashCode(), openAppIntent,
@@ -100,6 +101,7 @@ object NotificationHelper {
         val markReadIntent = Intent(context, NotificationActionReceiver::class.java).apply {
             action = NotificationActionReceiver.ACTION_MARK_READ
             putExtra("contactKey", contact.signingPublicKey)
+            putExtra("conversationType", conversationType)
         }
         val markReadPendingIntent = PendingIntent.getBroadcast(
             context, contact.signingPublicKey.hashCode(), markReadIntent,
@@ -113,6 +115,7 @@ object NotificationHelper {
         val replyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
             action = NotificationActionReceiver.ACTION_REPLY
             putExtra("contactKey", contact.signingPublicKey)
+            putExtra("conversationType", conversationType)
         }
         val replyPendingIntent = PendingIntent.getBroadcast(
             context, contact.signingPublicKey.hashCode(), replyIntent,
@@ -180,7 +183,7 @@ object NotificationHelper {
             .setColor(0xFF00A884.toInt()) // WhatsApp Green
             .setContentIntent(openPendingIntent)
             .setAutoCancel(true)
-            .setGroup("AstraMesh_Messages")
+            .setGroup("TorXOne_Messages")
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
@@ -191,9 +194,9 @@ object NotificationHelper {
         val summaryBuilder = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setStyle(NotificationCompat.InboxStyle()
-                .setSummaryText("AstraMesh Messages")
+                .setSummaryText("TorX One Messages")
             )
-            .setGroup("AstraMesh_Messages")
+            .setGroup("TorXOne_Messages")
             .setGroupSummary(true)
             .setAutoCancel(true)
             .setColor(0xFF00A884.toInt())

@@ -241,6 +241,49 @@ class MessageRouter(
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
     }
 
+
+    suspend fun sendGroupMessage(groupId: String, text: String): SendResult = withContext(Dispatchers.IO) {
+        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
+        val myKey = CryptoManager.toHex(identity.signingPublicKey)
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
+
+        val messageId = java.util.UUID.randomUUID().toString()
+
+        val jsonPayload = JSONObject().apply {
+            put("type", "TEXT")
+            put("text", text.trim())
+            put("messageId", messageId)
+        }
+
+        val finalPayload = JSONObject().apply {
+            put("type", MeshProtocol.TYPE_GROUP_MESSAGE)
+            put("groupId", groupId)
+            put("senderKey", myKey)
+            put("payload", jsonPayload)
+        }
+
+        val entity = MessageEntity(
+            messageId = messageId,
+            contactKey = groupId,
+            conversationType = "group",
+            senderKey = myKey,
+            direction = "sent",
+            status = "pending",
+            text = text.trim(),
+            timestamp = System.currentTimeMillis()
+        )
+        db.messageDao().insertMessage(entity)
+
+        val members = db.groupDao().getGroupMembersSync(groupId)
+        members.forEach { member ->
+            if (member.memberKey != myKey) {
+                sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+            }
+        }
+
+        db.messageDao().updateMessageStatus(messageId, "sent")
+        SendResult(true, Transport.NEARBY_RELAY)
+    }
     fun getBestTransport(contact: ContactEntity): Transport {
         val connected = nearbyManager.connectedEndpoints.value
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
@@ -861,7 +904,7 @@ class MessageRouter(
                 val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group")
                 val group = db.groupDao().getGroup(groupId)
                 if (group != null) {
-                    com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = group.name), unreadMsgs)
+                    com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = group.name), unreadMsgs, "group")
                 }
             }
         }
