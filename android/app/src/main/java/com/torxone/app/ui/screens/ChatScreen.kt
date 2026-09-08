@@ -470,7 +470,7 @@ fun ChatScreen(
                     selectedIds = emptySet()
                 },
                 onOpenProfile = {
-                    navController.navigate("contact_profile/$contactKey")
+                    navController.navigate(if (conversationType == "group") "group_info/$contactKey" else "contact_profile/$contactKey")
                 },
                 onVoiceCall = {
                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -573,6 +573,8 @@ fun ChatScreen(
                         messages = reversedMessages,
                         senderName = contactName,
                         listState = listState,
+                        isGroup = conversationType == "group",
+                        groupId = contactKey,
                         selectedIds = selectedIds,
                         highlightedId = highlightedId,
                         typingLabel = typingLabel,
@@ -973,6 +975,8 @@ private fun MessageTimeline(
     messages: List<MessagePayload>,
     senderName: String,
     listState: androidx.compose.foundation.lazy.LazyListState,
+    isGroup: Boolean,
+    groupId: String,
     selectedIds: Set<String>,
     highlightedId: String?,
     typingLabel: String?,
@@ -1018,6 +1022,8 @@ private fun MessageTimeline(
                     compactWithNext = sameSenderAsNewer,
                     isSelected = selectedIds.contains(message.id),
                     isHighlighted = highlightedId == message.id,
+                    isGroup = isGroup,
+                    groupId = groupId,
                     topPadding = topGap,
                     onSelectToggle = { onSelectToggle(message) },
                     onReply = { onReply(message) },
@@ -1042,6 +1048,8 @@ private fun SwipeReplyMessage(
     compactWithNext: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
+    isGroup: Boolean,
+    groupId: String,
     topPadding: androidx.compose.ui.unit.Dp,
     onSelectToggle: () -> Unit,
     onReply: () -> Unit,
@@ -1111,6 +1119,8 @@ private fun SwipeReplyMessage(
             compactWithNext = compactWithNext,
             isSelected = isSelected,
             isHighlighted = isHighlighted,
+            isGroup = isGroup,
+            groupId = groupId,
             onClick = {
                 if (message.lifecycleState == MessageLifecycleState.FAILED) onFailedTap() else onSelectToggle()
             },
@@ -1134,6 +1144,8 @@ private fun MessageBubble(
     compactWithNext: Boolean,
     isSelected: Boolean,
     isHighlighted: Boolean,
+    isGroup: Boolean = false,
+    groupId: String = "",
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     onReactionDetails: () -> Unit,
@@ -1218,7 +1230,9 @@ private fun MessageBubble(
                         PollCard(
                             message = message,
                             isMine = isMine,
-                            textColor = textColor
+                            textColor = textColor,
+                            isGroup = isGroup,
+                            groupId = groupId
                         )
                     } else if (message.text.isNotBlank() && !message.text.startsWith("Media Message") && !message.text.startsWith("Receiving ")) {
                         Text(
@@ -1462,7 +1476,9 @@ private fun DatePill(date: String) {
 private fun PollCard(
     message: MessagePayload,
     isMine: Boolean,
-    textColor: Color
+    textColor: Color,
+    isGroup: Boolean = false,
+    groupId: String = ""
 ) {
     val pollData = remember(message.text) {
         runCatching {
@@ -1528,12 +1544,10 @@ private fun PollCard(
                     .clickable {
                         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             val service = com.torxone.app.service.TorXOneService.getInstance()
-                            service?.messageRouter?.sendPollVote(
-                                message.senderId.takeIf { it != "me" }
-                                    ?: message.id.substringBefore("_"),
-                                message.id,
-                                index
-                            )
+                            if (isGroup) {
+                                service?.messageRouter?.sendGroupPollVote(groupId, message.id, index)
+                            } else service?.messageRouter?.sendPollVote(
+                                message.senderId.takeIf { it != "me" } ?: message.id.substringBefore("_"), message.id, index)
                         }
                     },
                 shape = RoundedCornerShape(10.dp),

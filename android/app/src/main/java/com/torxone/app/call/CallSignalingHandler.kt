@@ -13,7 +13,8 @@ data class CallSignal(
     val sdpType: String? = null,
     val candidate: String? = null,
     val sdpMid: String? = null,
-    val sdpMLineIndex: Int? = null
+    val sdpMLineIndex: Int? = null,
+    val reason: String? = null
 )
 
 class CallSignalingHandler(
@@ -40,6 +41,17 @@ class CallSignalingHandler(
         }
     }
 
+    suspend fun sendEnd(peerKey: String, callId: String, mode: CallMode, reason: String) {
+        val payload = JSONObject()
+            .put("callId", callId)
+            .put("mode", mode.name)
+            .put("reason", reason.take(160))
+            .toString()
+        withContext(Dispatchers.IO) {
+            messageRouter.sendRawPayload(peerKey, payload, MeshProtocol.TYPE_CALL_END)
+        }
+    }
+
     fun parse(raw: String): CallSignal {
         val json = JSONObject(raw)
         return CallSignal(
@@ -49,7 +61,8 @@ class CallSignalingHandler(
             sdpType = json.optString("sdpType").takeIf { it.isNotBlank() },
             candidate = json.optString("candidate").takeIf { it.isNotBlank() },
             sdpMid = json.optString("sdpMid").takeIf { it.isNotBlank() },
-            sdpMLineIndex = if (json.has("sdpMLineIndex")) json.optInt("sdpMLineIndex") else null
+            sdpMLineIndex = if (json.has("sdpMLineIndex")) json.optInt("sdpMLineIndex") else null,
+            reason = json.optString("reason").takeIf { it.isNotBlank() }
         )
     }
 

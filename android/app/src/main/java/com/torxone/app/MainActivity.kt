@@ -408,6 +408,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 db = service.db
                             )
                         }
+                        composable("group_info/{groupId}") { backStackEntry ->
+                            val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+                            com.torxone.app.ui.screens.GroupInfoScreen(groupId, navController, service.db)
+                        }
                         composable("settings") {
                             val onionAddress by service.torManager.onionAddress.collectAsState()
                             SettingsScreen(

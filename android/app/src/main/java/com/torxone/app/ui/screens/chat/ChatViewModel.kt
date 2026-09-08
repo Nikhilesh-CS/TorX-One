@@ -194,11 +194,26 @@ class ChatViewModel(
         }
     }
 
+    fun editGroupMessage(messageId: String, text: String) {
+        if (conversationType != "group" || text.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) { messageRouter.editGroupMessage(contactKey, messageId, text) }
+    }
+
+    fun deleteGroupMessage(messageId: String) {
+        if (conversationType != "group") return
+        viewModelScope.launch(Dispatchers.IO) { messageRouter.deleteGroupMessage(contactKey, messageId) }
+    }
+
+    fun sendGroupPoll(question: String, options: List<String>, multipleChoice: Boolean = false) {
+        if (conversationType != "group" || question.isBlank() || options.size < 2) return
+        viewModelScope.launch(Dispatchers.IO) { messageRouter.sendGroupPoll(contactKey, question, options, multipleChoice) }
+    }
+
     fun markVisibleMessagesRead() {
         viewModelScope.launch(Dispatchers.IO) {
             val unread = db.messageDao().getUnreadMessagesSync(contactKey, conversationType)
             if (unread.isEmpty()) return@launch
-            unread.forEach { messageRouter.sendReadReceipt(it.messageId, contactKey) } // TODO Group read receipts
+            unread.forEach { if (conversationType == "group") messageRouter.sendGroupReadReceipt(contactKey, it.messageId) else messageRouter.sendReadReceipt(it.messageId, contactKey) }
             db.messageDao().markMessagesAsRead(contactKey, conversationType)
         }
     }

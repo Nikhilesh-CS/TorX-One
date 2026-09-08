@@ -9,8 +9,10 @@ import com.torxone.app.data.MessageEntity
 import com.torxone.app.data.ReactionOutboxEntity
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import org.json.JSONArray
 import java.util.UUID
 import com.torxone.app.group.GroupCryptoManager
+import com.torxone.app.group.GroupPermission
 
 enum class Transport { NEARBY_DIRECT, NEARBY_RELAY, TOR, FAILED }
 
@@ -58,6 +60,7 @@ class MessageRouter(
             MeshProtocol.TYPE_CALL_OFFER,
             MeshProtocol.TYPE_CALL_ANSWER,
             MeshProtocol.TYPE_ICE_CANDIDATE,
+            MeshProtocol.TYPE_CALL_END,
             MeshProtocol.TYPE_REACTION,
             MeshProtocol.TYPE_POLL_VOTE,
             MeshProtocol.TYPE_PRESENCE,
@@ -69,6 +72,13 @@ class MessageRouter(
             MeshProtocol.TYPE_GROUP_JOIN,
             MeshProtocol.TYPE_GROUP_UPDATE,
             MeshProtocol.TYPE_GROUP_LEAVE,
+            MeshProtocol.TYPE_GROUP_KEY,
+            MeshProtocol.TYPE_GROUP_SYNC_REQUEST,
+            MeshProtocol.TYPE_GROUP_SYNC_RESPONSE,
+            MeshProtocol.TYPE_GROUP_KEY_REQUEST,
+            MeshProtocol.TYPE_GROUP_JOIN_REQUEST,
+            MeshProtocol.TYPE_GROUP_INVITE_LINK,
+            MeshProtocol.TYPE_GROUP_MESSAGE,
             MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(endpointId, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, endpointId) }
@@ -90,6 +100,7 @@ class MessageRouter(
             MeshProtocol.TYPE_CALL_OFFER,
             MeshProtocol.TYPE_CALL_ANSWER,
             MeshProtocol.TYPE_ICE_CANDIDATE,
+            MeshProtocol.TYPE_CALL_END,
             MeshProtocol.TYPE_REACTION,
             MeshProtocol.TYPE_POLL_VOTE,
             MeshProtocol.TYPE_PRESENCE,
@@ -101,6 +112,13 @@ class MessageRouter(
             MeshProtocol.TYPE_GROUP_JOIN,
             MeshProtocol.TYPE_GROUP_UPDATE,
             MeshProtocol.TYPE_GROUP_LEAVE,
+            MeshProtocol.TYPE_GROUP_KEY,
+            MeshProtocol.TYPE_GROUP_SYNC_REQUEST,
+            MeshProtocol.TYPE_GROUP_SYNC_RESPONSE,
+            MeshProtocol.TYPE_GROUP_KEY_REQUEST,
+            MeshProtocol.TYPE_GROUP_JOIN_REQUEST,
+            MeshProtocol.TYPE_GROUP_INVITE_LINK,
+            MeshProtocol.TYPE_GROUP_MESSAGE,
             MeshProtocol.TYPE_MUSIC_SYNC -> scope.launch(Dispatchers.IO) { handleEncrypted(json, null, json.optString("type")) }
             MeshProtocol.TYPE_RELAY -> scope.launch(Dispatchers.IO) { handleRelay(null, json) }
             MeshProtocol.TYPE_ACK -> scope.launch(Dispatchers.IO) { handleAck(json, null) }
@@ -248,20 +266,24 @@ class MessageRouter(
         val myKey = CryptoManager.toHex(identity.signingPublicKey)
         val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
         val localMembership = db.groupDao().getGroupMember(groupId, myKey)
-        if (localMembership == null || localMembership.role == "invited") {
-            return@withContext SendResult(false, Transport.FAILED, "Accept the group invitation before sending")
+        if (!GroupPermission.canSendMessages(group, localMembership)) {
+            return@withContext SendResult(false, Transport.FAILED, "You do not have permission to send in this group")
         }
         val groupKey = db.groupKeyDao().getLatestKey(groupId)
             ?: return@withContext SendResult(false, Transport.FAILED, "Waiting for the creator to distribute the group key")
 
         val messageId = java.util.UUID.randomUUID().toString()
-        val innerPayload = JSONObject().apply {
+        val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
+        val innerPayload = JSONObject(encodeChatMessagePayload(
+            text.trim(), replyTarget?.messageId, replyTarget?.text?.take(500), replyTarget?.senderKey, replyTarget?.messageType
+        )).apply {
             put("type", "TEXT")
-            put("text", text.trim())
             put("messageId", messageId)
             put("senderKey", myKey)
             put("timestamp", System.currentTimeMillis())
-            if (replyToId != null) put("replyToId", replyToId)
+            put("mentions", JSONArray().apply {
+                Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) }
+            })
         }
         val encrypted = GroupCryptoManager.encrypt(groupKey, innerPayload.toString())
         val finalPayload = JSONObject().apply {
@@ -288,15 +310,29 @@ class MessageRouter(
 
         val members = db.groupDao().getGroupMembersSync(groupId)
         var sentToAnyMember = false
+        var failedRecipients = 0
         members.filter { it.role != "invited" }.forEach { member ->
             if (member.memberKey != myKey) {
-                sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
-                sentToAnyMember = true
+                val result = sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+                if (result.success) sentToAnyMember = true else {
+                    failedRecipients++
+                    db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(
+                        eventId = messageId,
+                        groupId = groupId,
+                        recipientKey = member.memberKey,
+                        payload = finalPayload.toString(),
+                        eventType = MeshProtocol.TYPE_GROUP_MESSAGE,
+                        createdAt = System.currentTimeMillis(),
+                        nextRetryAt = System.currentTimeMillis() + 30_000L,
+                        expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L
+                    ))
+                }
             }
         }
 
-        db.messageDao().updateMessageStatus(messageId, "sent")
-        SendResult(true, if (sentToAnyMember) Transport.NEARBY_RELAY else Transport.FAILED)
+        db.messageDao().updateMessageStatus(messageId, if (sentToAnyMember || members.count { it.role != "invited" } <= 1) "sent" else "failed")
+        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(false, Transport.FAILED, "No group members are currently reachable")
+        else SendResult(true, if (failedRecipients > 0) Transport.NEARBY_RELAY else Transport.NEARBY_DIRECT)
     }
     fun getBestTransport(contact: ContactEntity): Transport {
         val connected = nearbyManager.connectedEndpoints.value
@@ -330,6 +366,14 @@ class MessageRouter(
     }
 
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
+        if (db.messageDao().getMessageById(targetMessageId)?.conversationType == "group") {
+            val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+            val target = db.messageDao().getMessageById(targetMessageId) ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
+            val current = parseReactionMap(target.reactionsJson)
+            val action = if (current[actor]?.contains(emoji) == true) "remove" else "set"
+            applyReactionToMessage(targetMessageId, actor, emoji, action)
+            return@withContext sendGroupAction(contactKey, "REACTION", JSONObject().put("targetMessageId", targetMessageId).put("emoji", emoji).put("reactionAction", action))
+        }
         val actorKey = mySigningKeyHex.ifBlank {
             identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty()
         }
@@ -359,6 +403,54 @@ class MessageRouter(
             ensureRetryLoopRunning()
         }
         result
+    }
+
+    suspend fun editGroupMessage(groupId: String, messageId: String, text: String): SendResult = withContext(Dispatchers.IO) {
+        val target = db.messageDao().getMessageById(messageId) ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
+        val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+        if (target.conversationType != "group" || target.senderKey != actor) return@withContext SendResult(false, Transport.FAILED, "Only your own message can be edited")
+        db.messageDao().updateMessageText(messageId, text.trim())
+        sendGroupAction(groupId, "EDIT", JSONObject().put("targetMessageId", messageId).put("text", text.trim()))
+    }
+
+    suspend fun deleteGroupMessage(groupId: String, messageId: String): SendResult = withContext(Dispatchers.IO) {
+        val target = db.messageDao().getMessageById(messageId) ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
+        val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
+        if (target.senderKey != actor && group.creatorKey != actor) return@withContext SendResult(false, Transport.FAILED, "No permission")
+        db.messageDao().deleteMessage(messageId)
+        sendGroupAction(groupId, "DELETE", JSONObject().put("targetMessageId", messageId))
+    }
+
+    suspend fun sendGroupPoll(groupId: String, question: String, options: List<String>, multipleChoice: Boolean = false): SendResult =
+        sendGroupAction(groupId, "POLL", JSONObject().put("question", question.trim()).put("options", JSONArray().apply { options.forEach { put(it.trim()) } }).put("multipleChoice", multipleChoice))
+
+    suspend fun sendGroupPollVote(groupId: String, targetMessageId: String, optionIndex: Int): SendResult {
+        val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+        applyPollVote(targetMessageId, actor, optionIndex)
+        return sendGroupAction(groupId, "POLL_VOTE", JSONObject().put("targetMessageId", targetMessageId).put("optionIndex", optionIndex))
+    }
+
+    suspend fun sendGroupReadReceipt(groupId: String, messageId: String): SendResult =
+        sendGroupAction(groupId, "READ", JSONObject().put("targetMessageId", messageId))
+
+    private suspend fun sendGroupAction(groupId: String, action: String, body: JSONObject): SendResult = withContext(Dispatchers.IO) {
+        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
+        val actor = CryptoManager.toHex(identity.signingPublicKey)
+        if (!GroupPermission.canSendMessages(group, db.groupDao().getGroupMember(groupId, actor))) return@withContext SendResult(false, Transport.FAILED, "No permission")
+        val key = db.groupKeyDao().getLatestKey(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group key unavailable")
+        val id = UUID.randomUUID().toString()
+        val inner = body.put("action", action).put("messageId", id).put("senderKey", actor).put("timestamp", System.currentTimeMillis())
+        if (action == "POLL") {
+            val poll = JSONObject().put("type", "poll").put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice"))
+            db.messageDao().insertMessage(MessageEntity(messageId = id, contactKey = groupId, conversationType = "group", senderKey = actor, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "sent", status = "pending"))
+        }
+        val encrypted = GroupCryptoManager.encrypt(key, inner.toString())
+        val wire = JSONObject().put("type", MeshProtocol.TYPE_GROUP_MESSAGE).put("schemaVersion", 2).put("groupId", groupId).put("keyVersion", key.keyVersion).put("ciphertext", encrypted.ciphertextBase64).put("iv", encrypted.ivBase64).toString()
+        var delivered = false
+        db.groupDao().getGroupMembersSync(groupId).filter { it.role != "invited" && it.memberKey != actor }.forEach { if (sendRawPayload(it.memberKey, wire, MeshProtocol.TYPE_GROUP_MESSAGE).success) delivered = true }
+        SendResult(delivered, if (delivered) Transport.NEARBY_RELAY else Transport.FAILED, if (delivered) null else "No group members are reachable")
     }
 
     // ──────────────────────── RETRY LOOP ────────────────────────
@@ -756,7 +848,8 @@ class MessageRouter(
 
         if (messageType == MeshProtocol.TYPE_CALL_OFFER ||
             messageType == MeshProtocol.TYPE_CALL_ANSWER ||
-            messageType == MeshProtocol.TYPE_ICE_CANDIDATE) {
+            messageType == MeshProtocol.TYPE_ICE_CANDIDATE ||
+            messageType == MeshProtocol.TYPE_CALL_END) {
             service?.callManager?.handleSignal(messageType, plaintext, senderKey)
             return
         }
@@ -797,7 +890,10 @@ class MessageRouter(
             messageType == MeshProtocol.TYPE_GROUP_JOIN ||
             messageType == MeshProtocol.TYPE_GROUP_UPDATE ||
             messageType == MeshProtocol.TYPE_GROUP_LEAVE ||
-            messageType == MeshProtocol.TYPE_GROUP_KEY) {
+            messageType == MeshProtocol.TYPE_GROUP_KEY ||
+            messageType == MeshProtocol.TYPE_GROUP_SYNC_REQUEST ||
+            messageType == MeshProtocol.TYPE_GROUP_SYNC_RESPONSE ||
+            messageType == MeshProtocol.TYPE_GROUP_KEY_REQUEST) {
             service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey)
             return
         }
@@ -887,6 +983,7 @@ class MessageRouter(
         val key = db.groupKeyDao().getKey(groupId, keyVersion)
         if (key == null) {
             Log.w(TAG, "[GROUP] Missing key version $keyVersion for $groupId; dropping ciphertext")
+            com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, keyVersion)
             return
         }
         if (db.groupKeyDao().getLatestKey(groupId)?.keyVersion != keyVersion) {
@@ -904,6 +1001,46 @@ class MessageRouter(
         if (innerSenderKey != senderKey || innerMessageId.isBlank()) {
             Log.w(TAG, "[GROUP] Rejected sender-mismatched or replay-unsafe payload")
             return
+        }
+
+        when (inner.optString("action")) {
+            "REACTION" -> {
+                val target = inner.optString("targetMessageId")
+                val emoji = inner.optString("emoji")
+                if (target.isNotBlank() && emoji.isNotBlank()) applyReactionToMessage(target, innerSenderKey, emoji, inner.optString("reactionAction", "set"))
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
+            "EDIT" -> {
+                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
+                if (target != null && target.conversationType == "group" && target.senderKey == innerSenderKey) db.messageDao().updateMessageText(target.messageId, inner.optString("text"))
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
+            "DELETE" -> {
+                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
+                if (target != null && target.conversationType == "group" && (target.senderKey == innerSenderKey || group.creatorKey == innerSenderKey)) db.messageDao().deleteMessage(target.messageId)
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
+            "POLL" -> {
+                val poll = JSONObject().put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice"))
+                db.messageDao().insertMessage(MessageEntity(messageId = innerMessageId, contactKey = groupId, conversationType = "group", senderKey = innerSenderKey, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "received", status = "delivered"))
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
+            "POLL_VOTE" -> {
+                val target = inner.optString("targetMessageId")
+                if (target.isNotBlank()) applyPollVote(target, innerSenderKey, inner.optInt("optionIndex", -1))
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
+            "READ" -> {
+                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
+                if (target != null && target.conversationType == "group") db.messageDao().markMessageRead(target.messageId)
+                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+                return
+            }
         }
 
         val chatPayload = decodeChatMessagePayload(inner.toString())
@@ -937,10 +1074,10 @@ class MessageRouter(
             if (isActive) {
                 com.torxone.app.service.NotificationHelper.clearContactNotifications(service, groupId)
             } else {
-                // Muting logic for groups can go here later
                 val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group")
                 val group = db.groupDao().getGroup(groupId)
-                if (group != null) {
+                val isMuted = group?.muteUntil == -1L || (group?.muteUntil ?: 0L) > System.currentTimeMillis()
+                if (group != null && !isMuted) {
                     com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = group.name), unreadMsgs, "group")
                 }
             }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioDeviceInfo
 import android.os.Build
 import android.util.Log
 
@@ -27,7 +28,7 @@ class AudioRouteManager(private val context: Context) {
     fun startCallAudio() {
         Log.d(TAG, "Starting call audio mode")
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioManager.isSpeakerphoneOn = false
+        selectCommunicationDevice(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
         isSpeaker = false
         requestAudioFocus()
     }
@@ -35,6 +36,7 @@ class AudioRouteManager(private val context: Context) {
     fun stopCallAudio() {
         Log.d(TAG, "Stopping call audio mode")
         audioManager.mode = AudioManager.MODE_NORMAL
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) audioManager.clearCommunicationDevice()
         audioManager.isSpeakerphoneOn = false
         audioManager.isMicrophoneMute = false
         isMuted = false
@@ -50,20 +52,40 @@ class AudioRouteManager(private val context: Context) {
     }
 
     fun toggleSpeaker(): Boolean {
-        isSpeaker = !isSpeaker
-        audioManager.isSpeakerphoneOn = isSpeaker
+        isSpeaker = if (isSpeaker) {
+            setEarpieceInternal()
+            false
+        } else setSpeakerInternal()
         Log.d(TAG, "Speaker toggled: $isSpeaker")
         return isSpeaker
     }
 
     fun setEarpiece() {
+        setEarpieceInternal()
         isSpeaker = false
-        audioManager.isSpeakerphoneOn = false
     }
 
     fun setSpeaker() {
-        isSpeaker = true
-        audioManager.isSpeakerphoneOn = true
+        isSpeaker = setSpeakerInternal()
+    }
+
+    private fun setSpeakerInternal(): Boolean {
+        val selected = selectCommunicationDevice(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+        if (!selected) audioManager.isSpeakerphoneOn = true
+        return selected || audioManager.isSpeakerphoneOn
+    }
+
+    private fun setEarpieceInternal(): Boolean {
+        val selected = selectCommunicationDevice(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+        if (!selected) audioManager.isSpeakerphoneOn = false
+        return !(selected || audioManager.isSpeakerphoneOn)
+    }
+
+    /** API 31+ route selection used by Android's communication stack and WebRTC. */
+    private fun selectCommunicationDevice(type: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        val device = audioManager.availableCommunicationDevices.firstOrNull { it.type == type } ?: return false
+        return audioManager.setCommunicationDevice(device)
     }
 
     private fun requestAudioFocus() {

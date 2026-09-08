@@ -37,6 +37,7 @@ object MeshProtocol {
     const val TYPE_CALL_OFFER = "call_offer"
     const val TYPE_CALL_ANSWER = "call_answer"
     const val TYPE_ICE_CANDIDATE = "ice_candidate"
+    const val TYPE_CALL_END = "call_end"
     
     // Group signaling
     const val TYPE_GROUP_INVITE = "group_invite"
@@ -45,6 +46,11 @@ object MeshProtocol {
     const val TYPE_GROUP_LEAVE = "group_leave"
     const val TYPE_GROUP_MESSAGE = "group_msg"
     const val TYPE_GROUP_KEY = "group_key"
+    const val TYPE_GROUP_SYNC_REQUEST = "group_sync_request"
+    const val TYPE_GROUP_SYNC_RESPONSE = "group_sync_response"
+    const val TYPE_GROUP_KEY_REQUEST = "group_key_request"
+    const val TYPE_GROUP_JOIN_REQUEST = "group_join_request"
+    const val TYPE_GROUP_INVITE_LINK = "group_invite_link"
     
     const val DEFAULT_TTL = 5
     // Single encrypted frames are for chat/control metadata, not large media.

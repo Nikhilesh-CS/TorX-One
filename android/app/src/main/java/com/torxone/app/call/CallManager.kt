@@ -11,6 +11,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class CallManager(
     private val context: Context,
@@ -20,6 +21,7 @@ class CallManager(
     companion object {
         private const val TAG = "CallManager"
         private const val RING_TIMEOUT_MS = 30_000L
+        private const val TERMINATED_CALL_TTL_MS = 2 * 60 * 1000L
     }
 
     val stateStore = CallStateStore()
@@ -41,6 +43,7 @@ class CallManager(
     private var durationJob: Job? = null
     private var ringTimeoutJob: Job? = null
     private var callStartTimeMs: Long = 0L
+    private val terminatedCalls = ConcurrentHashMap<String, Long>()
 
     fun startAudioCall(peerKey: String) {
         scope.launch {
@@ -91,6 +94,7 @@ class CallManager(
                 return@launch
             }
             cancelRingTimeout()
+            com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
             val routeContext = adaptiveRouter.buildContext(contact)
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
@@ -110,10 +114,19 @@ class CallManager(
 
     fun endCall(reason: String = "Call ended") {
         cancelRingTimeout()
+        com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         stopDurationTimer()
         val duration = if (callStartTimeMs > 0) {
             ((System.currentTimeMillis() - callStartTimeMs) / 1000).toInt()
         } else 0
+        val endingCallId = activeCallId
+        val endingPeerKey = activePeerKey
+        if (endingCallId != null) {
+            rememberTerminated(endingCallId)
+            if (endingPeerKey != null) {
+                scope.launch { signaling.sendEnd(endingPeerKey, endingCallId, activeMode, reason) }
+            }
+        }
         activeEngine?.end()
         activeEngine = null
         activeCallId = null
@@ -142,6 +155,7 @@ class CallManager(
                     com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> handleOffer(signal, senderKey)
                     com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> handleAnswer(signal, senderKey)
                     com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> handleIce(signal)
+                    com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> handleRemoteEnd(signal, senderKey)
                 }
             }.onFailure { e ->
                 Log.e(TAG, "Failed to handle call signal $packetType", e)
@@ -150,6 +164,10 @@ class CallManager(
     }
 
     private suspend fun handleOffer(signal: CallSignal, senderKey: String) {
+        if (isTerminated(signal.callId)) {
+            Log.d(TAG, "Ignoring delayed offer for terminated call ${signal.callId}")
+            return
+        }
         val contact = db.contactDao().getContact(senderKey)
         val peerName = contact?.name ?: "Unknown Contact"
         val offer = AstraSessionDescription("offer", signal.sdp ?: return)
@@ -166,11 +184,14 @@ class CallManager(
         activeMode = signal.mode
         pendingOffer = offer
         stateStore.update(CallUiState.Ringing(signal.callId, senderKey, peerName, CallDirection.INCOMING, signal.mode))
+        com.torxone.app.service.NotificationHelper.showIncomingCall(context, signal.callId, senderKey, peerName)
         startRingTimeout()
     }
 
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
+        if (signal.callId != activeCallId || senderKey != activePeerKey || isTerminated(signal.callId)) return
         cancelRingTimeout()
+        com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         val contact = db.contactDao().getContact(senderKey)
         val callId = signal.callId
         val answer = AstraSessionDescription("answer", signal.sdp ?: return)
@@ -180,11 +201,40 @@ class CallManager(
     }
 
     private fun handleIce(signal: CallSignal) {
+        if (signal.callId != activeCallId || isTerminated(signal.callId)) return
         val candidateText = signal.candidate ?: return
         val mid = signal.sdpMid ?: return
         val index = signal.sdpMLineIndex ?: return
         activeEngine?.handleIceCandidate(AstraIceCandidate(mid, index, candidateText))
     }
+
+    private fun handleRemoteEnd(signal: CallSignal, senderKey: String) {
+        if (senderKey != activePeerKey || signal.callId != activeCallId) {
+            rememberTerminated(signal.callId)
+            return
+        }
+        val reason = signal.reason ?: "Remote ended call"
+        // Avoid echoing CALL_END back to the peer.
+        cancelRingTimeout()
+        com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
+        stopDurationTimer()
+        rememberTerminated(signal.callId)
+        activeEngine?.end()
+        activeEngine = null
+        activeCallId = null
+        activePeerKey = null
+        pendingOffer = null
+        callStartTimeMs = 0L
+        stateStore.update(CallUiState.Ended(reason, 0))
+    }
+
+    private fun rememberTerminated(callId: String) {
+        val now = System.currentTimeMillis()
+        terminatedCalls[callId] = now + TERMINATED_CALL_TTL_MS
+        terminatedCalls.entries.removeIf { it.value <= now }
+    }
+
+    private fun isTerminated(callId: String): Boolean = (terminatedCalls[callId] ?: 0L) > System.currentTimeMillis()
 
     private fun handleStartResult(
         result: CallStartResult,

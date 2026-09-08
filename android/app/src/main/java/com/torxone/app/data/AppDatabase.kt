@@ -67,7 +67,19 @@ data class GroupEntity(
     val creatorKey: String,
     val createdAt: Long,
     val myRole: String,
-    val muteUntil: Long = 0L
+    val muteUntil: Long = 0L,
+    val description: String? = null,
+    val updatedAt: Long = 0L,
+    val membershipState: String = "MEMBER",
+    val currentKeyVersion: Int = 1,
+    val whoCanSend: String = "MEMBERS",
+    val whoCanEditInfo: String = "ADMINS",
+    val whoCanAddMembers: String = "ADMINS",
+    val approvalRequired: Boolean = false,
+    val maxMembers: Int = 1000,
+    val avatarVersion: Int = 0,
+    val metadataVersion: Long = 0L,
+    val disappearingDuration: Long = 0L
 )
 
 @Entity(
@@ -86,7 +98,9 @@ data class GroupMemberEntity(
     val groupId: String,
     val memberKey: String,
     val role: String,
-    val joinedAt: Long
+    val joinedAt: Long,
+    val membershipState: String = "MEMBER",
+    val memberTag: String? = null
 )
 
 @Entity(
@@ -106,10 +120,123 @@ data class GroupKeyEntity(
     val distributedAt: Long
 )
 
+@Entity(
+    tableName = "group_events",
+    indices = [androidx.room.Index(value = ["groupId", "groupVersion"]), androidx.room.Index(value = ["groupId", "createdAt"])]
+)
+data class GroupEventEntity(
+    @PrimaryKey val eventId: String,
+    val groupId: String,
+    val eventType: String,
+    val actorKey: String,
+    val targetKey: String? = null,
+    val groupVersion: Long,
+    val keyVersion: Int,
+    val createdAt: Long,
+    val payload: String,
+    val signature: String
+)
+
+@Entity(
+    tableName = "processed_group_events",
+    primaryKeys = ["groupId", "eventId"],
+    indices = [androidx.room.Index(value = ["receivedAt"])]
+)
+data class ProcessedGroupEventEntity(
+    val groupId: String,
+    val eventId: String,
+    val senderKey: String,
+    val eventType: String,
+    val receivedAt: Long
+)
+
+@Entity(tableName = "pending_group_events", primaryKeys = ["eventId", "recipientKey"], indices = [androidx.room.Index(value = ["nextRetryAt"]), androidx.room.Index(value = ["groupId"])])
+data class PendingGroupEventEntity(
+    val eventId: String,
+    val groupId: String,
+    val recipientKey: String,
+    val payload: String,
+    val eventType: String,
+    val retryCount: Int = 0,
+    val createdAt: Long,
+    val nextRetryAt: Long,
+    val expiresAt: Long
+)
+
+@Entity(tableName = "group_sync_state")
+data class GroupSyncStateEntity(
+    @PrimaryKey val groupId: String,
+    val lastKnownGroupVersion: Long = 0L,
+    val lastKnownEventId: String? = null,
+    val lastSyncAt: Long = 0L
+)
+
+@Entity(tableName = "group_invites")
+data class GroupInviteEntity(
+    @PrimaryKey val inviteId: String,
+    val groupId: String,
+    val inviterKey: String,
+    val expiresAt: Long,
+    val maxUses: Int = 1,
+    val uses: Int = 0,
+    val revoked: Boolean = false,
+    val signature: String
+)
+
+@Dao
+interface GroupEventDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun insertEvent(event: GroupEventEntity): Long
+
+    @Query("SELECT * FROM group_events WHERE groupId = :groupId ORDER BY groupVersion ASC")
+    fun getEvents(groupId: String): List<GroupEventEntity>
+
+    @Query("SELECT COALESCE(MAX(groupVersion), 0) FROM group_events WHERE groupId = :groupId")
+    fun getLatestVersion(groupId: String): Long
+    @Query("SELECT * FROM group_events WHERE groupId = :groupId AND eventType = 'KEY_ROTATED' AND keyVersion = :keyVersion ORDER BY groupVersion DESC LIMIT 1")
+    fun getKeyRotationEvent(groupId: String, keyVersion: Int): GroupEventEntity?
+}
+
+@Dao
+interface ProcessedGroupEventDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    fun markProcessed(event: ProcessedGroupEventEntity): Long
+
+    @Query("SELECT COUNT(*) FROM processed_group_events WHERE groupId = :groupId AND eventId = :eventId")
+    fun wasProcessed(groupId: String, eventId: String): Int
+}
+
+@Dao
+interface GroupSyncDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertPending(event: PendingGroupEventEntity)
+    @Query("SELECT * FROM pending_group_events WHERE nextRetryAt <= :now AND expiresAt > :now ORDER BY nextRetryAt LIMIT :limit")
+    fun duePending(now: Long, limit: Int = 50): List<PendingGroupEventEntity>
+    @Query("DELETE FROM pending_group_events WHERE eventId = :eventId")
+    fun deletePending(eventId: String)
+    @Query("DELETE FROM pending_group_events WHERE eventId = :eventId AND recipientKey = :recipientKey")
+    fun deletePendingForRecipient(eventId: String, recipientKey: String)
+    @Query("UPDATE pending_group_events SET retryCount = :retryCount, nextRetryAt = :nextRetryAt WHERE eventId = :eventId AND recipientKey = :recipientKey")
+    fun reschedule(eventId: String, recipientKey: String, retryCount: Int, nextRetryAt: Long)
+    @Query("SELECT * FROM group_sync_state WHERE groupId = :groupId LIMIT 1")
+    fun getState(groupId: String): GroupSyncStateEntity?
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun upsertState(state: GroupSyncStateEntity)
+}
+
+@Dao
+interface GroupInviteDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) fun insertInvite(invite: GroupInviteEntity)
+    @Query("SELECT * FROM group_invites WHERE inviteId = :inviteId LIMIT 1") fun getInvite(inviteId: String): GroupInviteEntity?
+    @Query("UPDATE group_invites SET revoked = 1 WHERE inviteId = :inviteId") fun revoke(inviteId: String)
+    @Query("UPDATE group_invites SET uses = uses + 1 WHERE inviteId = :inviteId") fun incrementUses(inviteId: String)
+}
+
 @Dao
 interface GroupDao {
     @Query("SELECT * FROM groups ORDER BY createdAt DESC")
     fun getAllGroups(): Flow<List<GroupEntity>>
+    @Query("SELECT * FROM groups") fun getAllGroupsSync(): List<GroupEntity>
 
     @Query("SELECT * FROM groups WHERE groupId = :groupId LIMIT 1")
     fun getGroup(groupId: String): GroupEntity?
@@ -283,6 +410,15 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE messageId = :messageId")
     fun deleteMessage(messageId: String)
 
+    @Query("UPDATE messages SET text = :text, status = 'sent' WHERE messageId = :messageId")
+    fun updateMessageText(messageId: String, text: String)
+
+    @Query("UPDATE messages SET status = 'read' WHERE messageId = :messageId")
+    fun markMessageRead(messageId: String)
+
+    @Query("DELETE FROM messages WHERE conversationType = 'group' AND :now > timestamp + :duration")
+    fun deleteExpiredGroupMessages(now: Long, duration: Long)
+
     @Query("DELETE FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType")
     fun clearChat(contactKey: String, conversationType: String = "direct")
 
@@ -377,8 +513,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class],
-    version = 16,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class],
+    version = 20,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -392,6 +528,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pendingEncryptedPayloadDao(): PendingEncryptedPayloadDao
     abstract fun groupDao(): GroupDao
     abstract fun groupKeyDao(): GroupKeyDao
+    abstract fun groupEventDao(): GroupEventDao
+    abstract fun processedGroupEventDao(): ProcessedGroupEventDao
+    abstract fun groupSyncDao(): GroupSyncDao
+    abstract fun groupInviteDao(): GroupInviteDao
     abstract fun conversationDao(): ConversationDao
 
     companion object {
@@ -638,6 +778,52 @@ abstract class AppDatabase : RoomDatabase() {
                         FOREIGN KEY(`groupId`) REFERENCES `groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE
                     )
                 """.trimIndent())
+            }
+        }
+
+        val MIGRATION_16_17 = object : androidx.room.migration.Migration(16, 17) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE groups ADD COLUMN description TEXT")
+                db.execSQL("ALTER TABLE groups ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE groups ADD COLUMN membershipState TEXT NOT NULL DEFAULT 'MEMBER'")
+                db.execSQL("ALTER TABLE groups ADD COLUMN currentKeyVersion INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE groups ADD COLUMN whoCanSend TEXT NOT NULL DEFAULT 'MEMBERS'")
+                db.execSQL("ALTER TABLE groups ADD COLUMN whoCanEditInfo TEXT NOT NULL DEFAULT 'ADMINS'")
+                db.execSQL("ALTER TABLE groups ADD COLUMN whoCanAddMembers TEXT NOT NULL DEFAULT 'ADMINS'")
+                db.execSQL("ALTER TABLE groups ADD COLUMN approvalRequired INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE groups ADD COLUMN maxMembers INTEGER NOT NULL DEFAULT 1000")
+                db.execSQL("ALTER TABLE groups ADD COLUMN avatarVersion INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE groups ADD COLUMN metadataVersion INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE groups ADD COLUMN disappearingDuration INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE group_members ADD COLUMN membershipState TEXT NOT NULL DEFAULT 'MEMBER'")
+                db.execSQL("ALTER TABLE group_members ADD COLUMN memberTag TEXT")
+                db.execSQL("UPDATE group_members SET membershipState = 'INVITED' WHERE role = 'invited'")
+                db.execSQL("UPDATE group_members SET membershipState = 'MEMBER' WHERE role IN ('admin','member')")
+            }
+        }
+
+        val MIGRATION_17_18 = object : androidx.room.migration.Migration(17, 18) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `group_events` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `eventType` TEXT NOT NULL, `actorKey` TEXT NOT NULL, `targetKey` TEXT, `groupVersion` INTEGER NOT NULL, `keyVersion` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `payload` TEXT NOT NULL, `signature` TEXT NOT NULL, PRIMARY KEY(`eventId`))""")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_events_groupId_groupVersion` ON `group_events` (`groupId`, `groupVersion`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_events_groupId_createdAt` ON `group_events` (`groupId`, `createdAt`)")
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `processed_group_events` (`groupId` TEXT NOT NULL, `eventId` TEXT NOT NULL, `senderKey` TEXT NOT NULL, `eventType` TEXT NOT NULL, `receivedAt` INTEGER NOT NULL, PRIMARY KEY(`groupId`, `eventId`))""")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_processed_group_events_receivedAt` ON `processed_group_events` (`receivedAt`)")
+            }
+        }
+
+        val MIGRATION_18_19 = object : androidx.room.migration.Migration(18, 19) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `pending_group_events` (`eventId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `recipientKey` TEXT NOT NULL, `payload` TEXT NOT NULL, `eventType` TEXT NOT NULL, `retryCount` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `nextRetryAt` INTEGER NOT NULL, `expiresAt` INTEGER NOT NULL, PRIMARY KEY(`eventId`, `recipientKey`))""")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_group_events_nextRetryAt` ON `pending_group_events` (`nextRetryAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_group_events_groupId` ON `pending_group_events` (`groupId`)")
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `group_sync_state` (`groupId` TEXT NOT NULL, `lastKnownGroupVersion` INTEGER NOT NULL, `lastKnownEventId` TEXT, `lastSyncAt` INTEGER NOT NULL, PRIMARY KEY(`groupId`))""")
+            }
+        }
+
+        val MIGRATION_19_20 = object : androidx.room.migration.Migration(19, 20) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""CREATE TABLE IF NOT EXISTS `group_invites` (`inviteId` TEXT NOT NULL, `groupId` TEXT NOT NULL, `inviterKey` TEXT NOT NULL, `expiresAt` INTEGER NOT NULL, `maxUses` INTEGER NOT NULL, `uses` INTEGER NOT NULL, `revoked` INTEGER NOT NULL, `signature` TEXT NOT NULL, PRIMARY KEY(`inviteId`))""")
             }
         }
     }

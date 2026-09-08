@@ -132,7 +132,7 @@ fun ContactsScreen(
                             isOnline = isNearby || isLivePresence,
                             isTorRouteAvailable = isTorRouteAvailable,
                             onClick = {
-                                navController.navigate("chat/${contact.signingPublicKey}")
+                                navController.navigate("chat/direct/${contact.signingPublicKey}")
                             }
                         )
                     }

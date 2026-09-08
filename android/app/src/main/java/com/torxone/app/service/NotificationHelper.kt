@@ -19,9 +19,22 @@ object NotificationHelper {
     const val CHANNEL_SYSTEM = "astra_mesh_system"
     const val CHANNEL_UPDATES = "astra_mesh_updates"
     const val CHANNEL_CRITICAL = "astra_mesh_critical"
+    const val CHANNEL_CALLS = "astra_mesh_calls"
 
     const val NOTIFICATION_ID_FOREGROUND = 1
     const val NOTIFICATION_ID_SUMMARY = 2
+    const val NOTIFICATION_ID_INCOMING_CALL = 3
+    const val NOTIFICATION_ID_GROUP_JOIN = 4
+
+    fun showGroupJoinRequest(context: Context, groupId: String, groupName: String, memberKey: String) {
+        fun action(action: String, title: String): NotificationCompat.Action {
+            val intent = Intent(context, NotificationActionReceiver::class.java).apply { this.action = action; putExtra("groupId", groupId); putExtra("memberKey", memberKey) }
+            val pending = PendingIntent.getBroadcast(context, (groupId + memberKey + action).hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            return NotificationCompat.Action.Builder(0, title, pending).build()
+        }
+        val n = NotificationCompat.Builder(context, CHANNEL_MESSAGES).setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Join request").setContentText("A member wants to join $groupName").setAutoCancel(true).setPriority(NotificationCompat.PRIORITY_HIGH).addAction(action(NotificationActionReceiver.ACTION_APPROVE_JOIN, "Approve")).addAction(action(NotificationActionReceiver.ACTION_REJECT_JOIN, "Reject")).build()
+        context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID_GROUP_JOIN, n)
+    }
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -61,7 +74,18 @@ object NotificationHelper {
                 enableVibration(true)
             }
 
-            nm.createNotificationChannels(listOf(messagesChannel, systemChannel, updatesChannel, criticalChannel))
+            val callsChannel = NotificationChannel(
+                CHANNEL_CALLS,
+                "Incoming calls",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming TorX One calls"
+                enableVibration(true)
+                setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE), null)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
+
+            nm.createNotificationChannels(listOf(messagesChannel, systemChannel, updatesChannel, criticalChannel, callsChannel))
         }
     }
 
@@ -253,5 +277,43 @@ object NotificationHelper {
     fun clearContactNotifications(context: Context, contactKey: String) {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.cancel(contactKey.hashCode())
+    }
+
+    fun showIncomingCall(context: Context, callId: String, peerKey: String, peerName: String) {
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_call", callId)
+        }
+        val open = PendingIntent.getActivity(context, callId.hashCode(), openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        fun action(action: String, title: String): NotificationCompat.Action {
+            val intent = Intent(context, NotificationActionReceiver::class.java).apply {
+                this.action = action
+                putExtra("callId", callId)
+                putExtra("peerKey", peerKey)
+            }
+            val pending = PendingIntent.getBroadcast(context, (callId + action).hashCode(), intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            return NotificationCompat.Action.Builder(0, title, pending).build()
+        }
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle("Incoming TorX One call")
+            .setContentText(peerName)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(open)
+            .setFullScreenIntent(open, true)
+            .addAction(action(NotificationActionReceiver.ACTION_ANSWER_CALL, "Answer"))
+            .addAction(action(NotificationActionReceiver.ACTION_DECLINE_CALL, "Decline"))
+            .build()
+        context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID_INCOMING_CALL, notification)
+    }
+
+    fun clearIncomingCall(context: Context) {
+        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID_INCOMING_CALL)
     }
 }

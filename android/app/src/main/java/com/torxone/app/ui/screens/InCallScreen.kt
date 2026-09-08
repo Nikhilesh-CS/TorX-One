@@ -29,6 +29,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.torxone.app.call.CallDirection
 import com.torxone.app.call.CallUiState
+import com.torxone.app.ui.components.AstraAvatar
 import kotlinx.coroutines.delay
 
 @Composable
@@ -121,21 +122,7 @@ fun InCallScreen(
                 // Top section (Status & Peer)
                 Spacer(modifier = Modifier.weight(1f))
                 
-                // Avatar placeholder
-                Box(
-                    modifier = Modifier
-                        .size(120.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFF2D2D2D)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = peerName.take(1).uppercase(),
-                        color = Color.White,
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                AstraAvatar(model = null, name = peerName, size = 120.dp)
                 
                 Spacer(modifier = Modifier.height(24.dp))
                 
@@ -150,7 +137,7 @@ fun InCallScreen(
                 
                 // Status / Timer
                 val statusText = when (state) {
-                    is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming WhatsApp Call" else "Ringing..."
+                    is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming TorX One Call" else "Ringing..."
                     is CallUiState.Outgoing -> "Calling..."
                     is CallUiState.Accepted -> "Connecting..."
                     is CallUiState.Negotiating -> "Securing Call..."
@@ -268,6 +255,8 @@ private fun CallActionButton(
                 modifier = Modifier.size(32.dp)
             )
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = label, color = Color.White, fontSize = 12.sp)
     }
 }
 
