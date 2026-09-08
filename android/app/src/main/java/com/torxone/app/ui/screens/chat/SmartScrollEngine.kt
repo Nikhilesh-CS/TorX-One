@@ -25,13 +25,14 @@ class SmartScrollEngine(
 
     fun scrollToBottom() {
         scope.launch {
+            listState.scrollToItem(0)
             listState.animateScrollToItem(0)
             _showScrollToBottom.value = false
         }
     }
 
     fun onNewMessageArrived(isFromMe: Boolean) {
-        if (isFromMe || listState.firstVisibleItemIndex <= 1) {
+        if (isFromMe || listState.firstVisibleItemIndex <= 2) {
             scrollToBottom()
         } else {
             _showScrollToBottom.value = true

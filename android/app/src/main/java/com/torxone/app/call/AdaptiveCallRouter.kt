@@ -33,7 +33,8 @@ class AdaptiveCallRouter(
                 CallEngineType.WEBRTC,
                 CallEngineType.VOICE_NOTE
             )
-            Transport.FAILED -> emptyList()
+            Transport.FAILED,
+            Transport.PENDING -> emptyList()
         }
 
         return priority

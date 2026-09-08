@@ -1,6 +1,9 @@
 package com.torxone.app.call
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.PowerManager
 import android.util.Log
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.network.MessageRouter
@@ -9,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -30,6 +34,12 @@ class CallManager(
     private val signaling = CallSignalingHandler(messageRouter)
     private val permissions = AudioVideoPermissionManager(context)
 
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var proximityWakeLock: PowerManager.WakeLock? = null
+    private var toneGenerator: ToneGenerator? = null
+    private var ringbackJob: Job? = null
+
     private val webRtcEngine = WebRtcCallEngine(context, signaling, stateStore, audioRouteManager)
     private val voiceNoteEngine = VoiceNoteCallEngine(messageRouter)
     private val engines: List<CallEngine> = listOf(webRtcEngine, voiceNoteEngine)
@@ -45,6 +55,75 @@ class CallManager(
     private var callStartTimeMs: Long = 0L
     private val terminatedCalls = ConcurrentHashMap<String, Long>()
 
+    private fun acquireWakeLocks() {
+        try {
+            if (wakeLock == null) {
+                wakeLock = powerManager?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "torxone:call_active"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire(2 * 60 * 60 * 1000L) // 2 hours safety limit
+                }
+                Log.d(TAG, "Acquired PARTIAL_WAKE_LOCK for call")
+            }
+            if (proximityWakeLock == null && powerManager?.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK) == true) {
+                proximityWakeLock = powerManager.newWakeLock(
+                    PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                    "torxone:call_proximity"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire(2 * 60 * 60 * 1000L)
+                }
+                Log.d(TAG, "Acquired PROXIMITY_SCREEN_OFF_WAKE_LOCK for call")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error acquiring wake locks", e)
+        }
+    }
+
+    private fun releaseWakeLocks() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+            wakeLock = null
+            proximityWakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+            proximityWakeLock = null
+            Log.d(TAG, "Released wake locks for call")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing wake locks", e)
+        }
+    }
+
+    private fun startRingbackTone() {
+        stopRingbackTone()
+        ringbackJob = scope.launch(Dispatchers.Default) {
+            try {
+                val generator = ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+                toneGenerator = generator
+                while (isActive) {
+                    generator.startTone(ToneGenerator.TONE_SUP_RINGTONE, 2000)
+                    delay(4000)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed playing ringback tone", e)
+            }
+        }
+    }
+
+    private fun stopRingbackTone() {
+        ringbackJob?.cancel()
+        ringbackJob = null
+        try {
+            toneGenerator?.stopTone()
+            toneGenerator?.release()
+        } catch (e: Exception) {}
+        toneGenerator = null
+    }
+
     fun startAudioCall(peerKey: String) {
         scope.launch {
             if (!permissions.hasAudioPermission()) {
@@ -59,16 +138,24 @@ class CallManager(
             val routeContext = adaptiveRouter.buildContext(contact)
             if (routeContext.transport == com.torxone.app.network.Transport.FAILED) {
                 stateStore.update(CallUiState.Unavailable("Peer is offline. Move closer or wait for mesh connection."))
+                // Queue missed call record in caller chat and for remote peer
+                scope.launch {
+                    messageRouter.sendMessage(peerKey, "📞 Outgoing call (Peer offline)", replyToId = null)
+                }
                 return@launch
             }
             val callId = UUID.randomUUID().toString()
             activeCallId = callId
             activePeerKey = peerKey
+            acquireWakeLocks()
+            startRingbackTone()
             stateStore.update(CallUiState.Ringing(callId, peerKey, contact.name, CallDirection.OUTGOING, CallMode.AUDIO))
             startRingTimeout()
 
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
+                stopRingbackTone()
+                releaseWakeLocks()
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
                 return@launch
             }
@@ -94,10 +181,12 @@ class CallManager(
                 return@launch
             }
             cancelRingTimeout()
+            acquireWakeLocks()
             com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
             val routeContext = adaptiveRouter.buildContext(contact)
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
+                releaseWakeLocks()
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
                 return@launch
             }
@@ -109,11 +198,15 @@ class CallManager(
 
     fun rejectIncomingCall() {
         cancelRingTimeout()
+        stopRingbackTone()
+        releaseWakeLocks()
         endCall("Call declined")
     }
 
     fun endCall(reason: String = "Call ended") {
         cancelRingTimeout()
+        stopRingbackTone()
+        releaseWakeLocks()
         com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         stopDurationTimer()
         val duration = if (callStartTimeMs > 0) {
@@ -191,6 +284,7 @@ class CallManager(
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
         if (signal.callId != activeCallId || senderKey != activePeerKey || isTerminated(signal.callId)) return
         cancelRingTimeout()
+        stopRingbackTone()
         com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         val contact = db.contactDao().getContact(senderKey)
         val callId = signal.callId
@@ -216,6 +310,8 @@ class CallManager(
         val reason = signal.reason ?: "Remote ended call"
         // Avoid echoing CALL_END back to the peer.
         cancelRingTimeout()
+        stopRingbackTone()
+        releaseWakeLocks()
         com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         stopDurationTimer()
         rememberTerminated(signal.callId)
@@ -304,7 +400,13 @@ class CallManager(
         ringTimeoutJob = scope.launch {
             delay(RING_TIMEOUT_MS)
             Log.d(TAG, "Ring timeout — ending call")
+            val peerKey = activePeerKey
             endCall("No answer")
+            if (peerKey != null) {
+                scope.launch {
+                    messageRouter.sendMessage(peerKey, "📞 Missed voice call", replyToId = null)
+                }
+            }
         }
     }
 

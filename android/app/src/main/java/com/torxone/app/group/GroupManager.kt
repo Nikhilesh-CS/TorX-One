@@ -182,7 +182,7 @@ class GroupManager(
         if (group.myRole != "invited") return@withContext false
 
         // Update local role
-        db.groupDao().insertGroup(group.copy(myRole = "member"))
+        db.groupDao().updateGroup(group.copy(myRole = "member"))
 
         // Send GROUP_JOIN to creator
         val joinEvent = eventManager.createLocalEvent(groupId, "MEMBER_JOINED", targetKey = mySigningKey, payload = JSONObject())
@@ -232,7 +232,7 @@ class GroupManager(
         val actor = db.groupDao().getGroupMember(groupId, identitySigningKey())
         if (!GroupPermission.canEditInfo(group, actor) || name.isBlank()) return@withContext false
         val updated = group.copy(name = name.trim(), avatarUri = avatarUri, description = description ?: group.description, whoCanSend = whoCanSend ?: group.whoCanSend, whoCanEditInfo = whoCanEditInfo ?: group.whoCanEditInfo, whoCanAddMembers = whoCanAddMembers ?: group.whoCanAddMembers, updatedAt = System.currentTimeMillis(), metadataVersion = group.metadataVersion + 1)
-        db.groupDao().insertGroup(updated)
+        db.groupDao().updateGroup(updated)
         val updateEvent = eventManager.createLocalEvent(groupId, "GROUP_INFO_UPDATE", payload = JSONObject().put("name", updated.name).put("avatarUri", avatarUri ?: "").put("description", updated.description ?: "").put("whoCanSend", updated.whoCanSend).put("whoCanEditInfo", updated.whoCanEditInfo).put("whoCanAddMembers", updated.whoCanAddMembers))
         val payload = JSONObject().put("action", "metadata").put("groupId", groupId)
             .put("name", updated.name).put("avatarUri", avatarUri).put("description", updated.description).put("whoCanSend", updated.whoCanSend).put("whoCanEditInfo", updated.whoCanEditInfo).put("whoCanAddMembers", updated.whoCanAddMembers).apply { mergeEvent(updateEvent) }.toString()
@@ -245,7 +245,7 @@ class GroupManager(
         val group = db.groupDao().getGroup(groupId) ?: return@withContext false
         val actor = db.groupDao().getGroupMember(groupId, identitySigningKey())
         if (!GroupPermission.canEditInfo(group, actor) || durationMs < 0) return@withContext false
-        db.groupDao().insertGroup(group.copy(disappearingDuration = durationMs, updatedAt = System.currentTimeMillis(), metadataVersion = group.metadataVersion + 1))
+        db.groupDao().updateGroup(group.copy(disappearingDuration = durationMs, updatedAt = System.currentTimeMillis(), metadataVersion = group.metadataVersion + 1))
         val event = eventManager.createLocalEvent(groupId, "GROUP_INFO_UPDATE", payload = JSONObject().put("name", group.name).put("avatarUri", group.avatarUri ?: "").put("disappearingDuration", durationMs))
         val wire = JSONObject().put("action", "metadata").put("groupId", groupId).put("name", group.name).put("avatarUri", group.avatarUri).put("disappearingDuration", durationMs).apply { mergeEvent(event) }.toString()
         db.groupDao().getGroupMembersSync(groupId).filter { it.role != "invited" && it.memberKey != identitySigningKey() }.forEach { sendControl(groupId, it.memberKey, wire, MeshProtocol.TYPE_GROUP_UPDATE) }
@@ -255,7 +255,7 @@ class GroupManager(
     suspend fun setJoinApprovalRequired(groupId: String, enabled: Boolean): Boolean = withContext(Dispatchers.IO) {
         val group = db.groupDao().getGroup(groupId) ?: return@withContext false
         if (!GroupPermission.canManageAdmins(db.groupDao().getGroupMember(groupId, identitySigningKey()))) return@withContext false
-        db.groupDao().insertGroup(group.copy(approvalRequired = enabled, updatedAt = System.currentTimeMillis(), metadataVersion = group.metadataVersion + 1))
+        db.groupDao().updateGroup(group.copy(approvalRequired = enabled, updatedAt = System.currentTimeMillis(), metadataVersion = group.metadataVersion + 1))
         true
     }
 
@@ -281,7 +281,7 @@ class GroupManager(
         if (!GroupPermission.canManageAdmins(actor) || target == null || target.membershipState != "MEMBER" || memberKey == actorKey) return@withContext false
         db.groupDao().insertGroupMember(actor!!.copy(role = "admin"))
         db.groupDao().insertGroupMember(target.copy(role = "owner"))
-        db.groupDao().insertGroup(group.copy(creatorKey = memberKey, myRole = "admin", updatedAt = System.currentTimeMillis()))
+        db.groupDao().updateGroup(group.copy(creatorKey = memberKey, myRole = "admin", updatedAt = System.currentTimeMillis()))
         val event = eventManager.createLocalEvent(groupId, "OWNERSHIP_TRANSFER", targetKey = memberKey, payload = JSONObject())
         val wire = JSONObject().put("action", "ownership_transfer").put("groupId", groupId).put("memberKey", memberKey).apply { mergeEvent(event) }.toString()
         db.groupDao().getGroupMembersSync(groupId).filter { it.role != "invited" && it.memberKey != actorKey }.forEach { sendControl(groupId, it.memberKey, wire, MeshProtocol.TYPE_GROUP_UPDATE) }
@@ -296,7 +296,35 @@ class GroupManager(
      */
     suspend fun setGroupMuted(groupId: String, muted: Boolean): Boolean = withContext(Dispatchers.IO) {
         val group = db.groupDao().getGroup(groupId) ?: return@withContext false
-        db.groupDao().insertGroup(group.copy(muteUntil = if (muted) -1L else 0L))
+        db.groupDao().updateGroup(group.copy(muteUntil = if (muted) -1L else 0L))
+        true
+    }
+
+    /**
+     * Completely deletes a group for the owner, broadcasts removal to all members,
+     * and deletes all local group records and messages.
+     */
+    suspend fun deleteGroup(groupId: String): Boolean = withContext(Dispatchers.IO) {
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext false
+        val myKey = identitySigningKey()
+        if (group.creatorKey != myKey && group.myRole != "owner") return@withContext false
+
+        // Broadcast delete to all active members
+        val deleteEvent = eventManager.createLocalEvent(groupId, "GROUP_DELETED")
+        val payload = JSONObject().apply {
+            put("action", "group_deleted")
+            put("groupId", groupId)
+            mergeEvent(deleteEvent)
+        }.toString()
+
+        val members = db.groupDao().getGroupMembersSync(groupId)
+        members.filter { it.role != "invited" && it.memberKey != myKey }.forEach {
+            sendControl(groupId, it.memberKey, payload, MeshProtocol.TYPE_GROUP_UPDATE)
+        }
+
+        // Clean up messages, group members (via cascade on group delete), and group
+        db.messageDao().clearChat(groupId, "group")
+        db.groupDao().deleteGroup(groupId)
         true
     }
 
@@ -306,7 +334,7 @@ class GroupManager(
     suspend fun declineInvite(groupId: String) = withContext(Dispatchers.IO) {
         val group = db.groupDao().getGroup(groupId) ?: return@withContext
         if (group.myRole == "invited") {
-            // foreignKey cascade will delete members
+            db.messageDao().clearChat(groupId, "group")
             db.groupDao().deleteGroup(groupId)
         }
     }
@@ -432,12 +460,16 @@ class GroupManager(
         val target = event.optString("targetKey")
         when (type) {
             "GROUP_INFO_UPDATE" -> event.optJSONObject("payload")?.let { p ->
-                db.groupDao().insertGroup(group.copy(name = p.optString("name", group.name), description = p.optString("description").takeIf { it.isNotBlank() }, avatarUri = p.optString("avatarUri").takeIf { it.isNotBlank() }, disappearingDuration = p.optLong("disappearingDuration", group.disappearingDuration), whoCanSend = p.optString("whoCanSend", group.whoCanSend), whoCanEditInfo = p.optString("whoCanEditInfo", group.whoCanEditInfo), whoCanAddMembers = p.optString("whoCanAddMembers", group.whoCanAddMembers), metadataVersion = event.optLong("groupVersion", group.metadataVersion)))
+                db.groupDao().updateGroup(group.copy(name = p.optString("name", group.name), description = p.optString("description").takeIf { it.isNotBlank() }, avatarUri = p.optString("avatarUri").takeIf { it.isNotBlank() }, disappearingDuration = p.optLong("disappearingDuration", group.disappearingDuration), whoCanSend = p.optString("whoCanSend", group.whoCanSend), whoCanEditInfo = p.optString("whoCanEditInfo", group.whoCanEditInfo), whoCanAddMembers = p.optString("whoCanAddMembers", group.whoCanAddMembers), metadataVersion = event.optLong("groupVersion", group.metadataVersion)))
             }
             "MEMBER_REMOVED", "MEMBER_LEFT" -> if (target.isNotBlank()) db.groupDao().deleteGroupMember(group.groupId, target)
             "ROLE_CHANGE" -> if (target.isNotBlank()) db.groupDao().getGroupMember(group.groupId, target)?.let { db.groupDao().insertGroupMember(it.copy(role = event.optJSONObject("payload")?.optString("role", it.role) ?: it.role)) }
-            "OWNERSHIP_TRANSFER" -> if (target.isNotBlank()) db.groupDao().getGroupMember(group.groupId, target)?.let { db.groupDao().insertGroupMember(it.copy(role = "owner")); db.groupDao().insertGroup(group.copy(creatorKey = target, myRole = if (identitySigningKey() == target) "owner" else "admin")) }
+            "OWNERSHIP_TRANSFER" -> if (target.isNotBlank()) db.groupDao().getGroupMember(group.groupId, target)?.let { db.groupDao().insertGroupMember(it.copy(role = "owner")); db.groupDao().updateGroup(group.copy(creatorKey = target, myRole = if (identitySigningKey() == target) "owner" else "admin")) }
             "KEY_ROTATED" -> event.optJSONObject("payload")?.optString("aesKeyBase64")?.takeIf { it.isNotBlank() }?.let { db.groupKeyDao().insertKey(com.torxone.app.data.GroupKeyEntity(group.groupId, event.optInt("keyVersion"), it, System.currentTimeMillis())) }
+            "GROUP_DELETED" -> {
+                db.messageDao().clearChat(group.groupId, "group")
+                db.groupDao().deleteGroup(group.groupId)
+            }
         }
     }
 
@@ -578,7 +610,10 @@ class GroupManager(
         if (myKey == group.creatorKey) return@withContext false // creator must explicitly remove/close the group in V1
         val leaveEvent = eventManager.createLocalEvent(groupId, "MEMBER_LEFT", targetKey = myKey)
         val payload = JSONObject().put("groupId", groupId).put("memberKey", myKey).apply { mergeEvent(leaveEvent) }.toString()
-        sendControl(groupId, group.creatorKey, payload, MeshProtocol.TYPE_GROUP_LEAVE).success
+        sendControl(groupId, group.creatorKey, payload, MeshProtocol.TYPE_GROUP_LEAVE)
+        db.messageDao().clearChat(groupId, "group")
+        db.groupDao().deleteGroup(groupId)
+        true
     }
 
     private suspend fun handleIncomingLeave(json: JSONObject, senderKey: String) {
@@ -598,7 +633,7 @@ class GroupManager(
         val next = GroupKeyEntity(groupId, latest.keyVersion + 1, GroupCryptoManager.newKeyBase64(), System.currentTimeMillis())
         db.groupKeyDao().insertKey(next)
         db.groupDao().getGroup(groupId)?.let {
-            db.groupDao().insertGroup(it.copy(currentKeyVersion = next.keyVersion, updatedAt = System.currentTimeMillis()))
+            db.groupDao().updateGroup(it.copy(currentKeyVersion = next.keyVersion, updatedAt = System.currentTimeMillis()))
         }
         val rotateEvent = eventManager.createLocalEvent(groupId, "KEY_ROTATED", keyVersion = next.keyVersion, payload = JSONObject().put("aesKeyBase64", next.aesKeyBase64))
         db.groupDao().getGroupMembersSync(groupId)
@@ -619,12 +654,20 @@ class GroupManager(
         val groupId = json.optString("groupId")
         val removedMemberKey = json.optString("memberKey")
         val group = db.groupDao().getGroup(groupId) ?: return
+
+        if (json.optString("action") == "group_deleted") {
+            if (senderKey != group.creatorKey) return
+            db.messageDao().clearChat(groupId, "group")
+            db.groupDao().deleteGroup(groupId)
+            return
+        }
+
         val actor = db.groupDao().getGroupMember(groupId, senderKey)
         if (json.optString("action") == "join_approved") {
             val targetKey = json.optString("memberKey")
             if (senderKey != group.creatorKey || targetKey != identitySigningKey()) return
             db.groupDao().getGroupMember(groupId, targetKey)?.let { db.groupDao().insertGroupMember(it.copy(role = "member", membershipState = "MEMBER")) }
-            db.groupDao().insertGroup(group.copy(myRole = "member"))
+            db.groupDao().updateGroup(group.copy(myRole = "member"))
             return
         }
         if (json.optString("action") == "role_change" || json.optString("action") == "ownership_transfer") {
@@ -641,7 +684,7 @@ class GroupManager(
                 db.groupDao().insertGroupMember(target.copy(role = "owner"))
                 val currentKey = identitySigningKey()
                 db.groupDao().getGroupMember(groupId, currentKey)?.let { db.groupDao().insertGroupMember(it.copy(role = "admin")) }
-                db.groupDao().insertGroup(group.copy(creatorKey = targetKey, myRole = if (currentKey == targetKey) "owner" else "admin"))
+                db.groupDao().updateGroup(group.copy(creatorKey = targetKey, myRole = if (currentKey == targetKey) "owner" else "admin"))
             }
             return
         }
@@ -654,7 +697,7 @@ class GroupManager(
             if (name.isBlank()) return
             val eventPayload = json.optJSONObject("payload")
             if (eventPayload == null || eventPayload.optString("name") != name || eventPayload.optString("avatarUri") != json.optString("avatarUri")) return
-                db.groupDao().insertGroup(group.copy(name = name, avatarUri = json.optString("avatarUri").takeIf { it.isNotBlank() }, description = json.optString("description").takeIf { it.isNotBlank() }, disappearingDuration = json.optLong("disappearingDuration", group.disappearingDuration), whoCanSend = json.optString("whoCanSend", group.whoCanSend), whoCanEditInfo = json.optString("whoCanEditInfo", group.whoCanEditInfo), whoCanAddMembers = json.optString("whoCanAddMembers", group.whoCanAddMembers), metadataVersion = maxOf(group.metadataVersion, json.optLong("groupVersion", group.metadataVersion)), updatedAt = System.currentTimeMillis()))
+            db.groupDao().updateGroup(group.copy(name = name, avatarUri = json.optString("avatarUri").takeIf { it.isNotBlank() }, description = json.optString("description").takeIf { it.isNotBlank() }, disappearingDuration = json.optLong("disappearingDuration", group.disappearingDuration), whoCanSend = json.optString("whoCanSend", group.whoCanSend), whoCanEditInfo = json.optString("whoCanEditInfo", group.whoCanEditInfo), whoCanAddMembers = json.optString("whoCanAddMembers", group.whoCanAddMembers), metadataVersion = maxOf(group.metadataVersion, json.optLong("groupVersion", group.metadataVersion)), updatedAt = System.currentTimeMillis()))
             return
         }
         if (json.optString("eventType") != "MEMBER_REMOVED" || json.optString("targetKey") != removedMemberKey) return
@@ -710,7 +753,7 @@ class GroupManager(
             return
         }
         db.groupKeyDao().insertKey(GroupKeyEntity(groupId, version, encodedKey, System.currentTimeMillis()))
-        db.groupDao().insertGroup(group.copy(currentKeyVersion = maxOf(group.currentKeyVersion, version), updatedAt = System.currentTimeMillis()))
+        db.groupDao().updateGroup(group.copy(currentKeyVersion = maxOf(group.currentKeyVersion, version), updatedAt = System.currentTimeMillis()))
     }
 
     private fun identitySigningKey(): String = identityManager.loadIdentity()?.let { CryptoManager.toHex(it.signingPublicKey) }.orEmpty()

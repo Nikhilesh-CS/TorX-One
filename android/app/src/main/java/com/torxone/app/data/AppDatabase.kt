@@ -15,6 +15,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.Update
 import java.util.UUID
 
 @Entity(tableName = "contacts")
@@ -246,6 +247,9 @@ interface GroupDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertGroup(group: GroupEntity)
+
+    @Update
+    fun updateGroup(group: GroupEntity)
 
     @Query("DELETE FROM groups WHERE groupId = :groupId")
     fun deleteGroup(groupId: String)

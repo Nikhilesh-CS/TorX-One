@@ -14,7 +14,7 @@ import java.util.UUID
 import com.torxone.app.group.GroupCryptoManager
 import com.torxone.app.group.GroupPermission
 
-enum class Transport { NEARBY_DIRECT, NEARBY_RELAY, TOR, FAILED }
+enum class Transport { NEARBY_DIRECT, NEARBY_RELAY, TOR, FAILED, PENDING }
 
 data class SendResult(val success: Boolean, val transport: Transport, val error: String? = null)
 
@@ -269,10 +269,37 @@ class MessageRouter(
         if (!GroupPermission.canSendMessages(group, localMembership)) {
             return@withContext SendResult(false, Transport.FAILED, "You do not have permission to send in this group")
         }
-        val groupKey = db.groupKeyDao().getLatestKey(groupId)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Waiting for the creator to distribute the group key")
-
         val messageId = java.util.UUID.randomUUID().toString()
+        val entity = MessageEntity(
+            messageId = messageId,
+            contactKey = groupId,
+            conversationType = "group",
+            senderKey = myKey,
+            direction = "sent",
+            status = "pending",
+            text = text.trim(),
+            timestamp = System.currentTimeMillis(),
+            replyToId = replyToId
+        )
+        db.messageDao().insertMessage(entity)
+
+        var groupKey = db.groupKeyDao().getLatestKey(groupId)
+        if (groupKey == null && (group.creatorKey == myKey || group.myRole == "owner")) {
+            val newKey = com.torxone.app.data.GroupKeyEntity(
+                groupId = groupId,
+                keyVersion = maxOf(1, group.currentKeyVersion),
+                aesKeyBase64 = GroupCryptoManager.newKeyBase64(),
+                distributedAt = System.currentTimeMillis()
+            )
+            db.groupKeyDao().insertKey(newKey)
+            groupKey = newKey
+        }
+
+        if (groupKey == null) {
+            com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, 1)
+            return@withContext SendResult(false, Transport.PENDING, "Waiting for group key distribution")
+        }
+
         val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
         // Group payloads always use an object.  The direct-message encoder returns raw
         // text when there is no reply, which made JSONObject("hello") crash the sender.
@@ -310,19 +337,6 @@ class MessageRouter(
             put("iv", encrypted.ivBase64)
         }
 
-        val entity = MessageEntity(
-            messageId = messageId,
-            contactKey = groupId,
-            conversationType = "group",
-            senderKey = myKey,
-            direction = "sent",
-            status = "pending",
-            text = text.trim(),
-            timestamp = System.currentTimeMillis(),
-            replyToId = replyToId
-        )
-        db.messageDao().insertMessage(entity)
-
         val members = db.groupDao().getGroupMembersSync(groupId)
         var sentToAnyMember = false
         var failedRecipients = 0
@@ -350,8 +364,9 @@ class MessageRouter(
             }
         }
 
-        db.messageDao().updateMessageStatus(messageId, if (sentToAnyMember || members.count { it.role != "invited" } <= 1) "sent" else "failed")
-        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(false, Transport.FAILED, "No group members are currently reachable")
+        val finalStatus = if (sentToAnyMember || members.count { it.role != "invited" } <= 1) "sent" else "pending"
+        db.messageDao().updateMessageStatus(messageId, finalStatus)
+        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(true, Transport.PENDING, "Queued for offline delivery")
         else SendResult(true, if (failedRecipients > 0) Transport.NEARBY_RELAY else Transport.NEARBY_DIRECT)
     }
     fun getBestTransport(contact: ContactEntity): Transport {

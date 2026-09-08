@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,6 +36,9 @@ import kotlinx.coroutines.delay
 @Composable
 fun InCallScreen(
     state: CallUiState,
+    isMinimized: Boolean = false,
+    onMinimize: () -> Unit = {},
+    onExpand: () -> Unit = {},
     onAccept: () -> Unit,
     onReject: () -> Unit,
     onEnd: () -> Unit,
@@ -43,6 +47,16 @@ fun InCallScreen(
     onDismissEnded: () -> Unit
 ) {
     if (state is CallUiState.Idle) return
+
+    if (isMinimized && state !is CallUiState.Ended && state !is CallUiState.Unavailable) {
+        ActiveCallBanner(
+            state = state,
+            onExpand = onExpand,
+            onToggleMute = onToggleMute,
+            onEnd = onEnd
+        )
+        return
+    }
 
     if (state is CallUiState.Unavailable) {
         AlertDialog(
@@ -101,9 +115,9 @@ fun InCallScreen(
     }
 
     Dialog(
-        onDismissRequest = { },
+        onDismissRequest = onMinimize,
         properties = DialogProperties(
-            dismissOnBackPress = false,
+            dismissOnBackPress = true,
             dismissOnClickOutside = false,
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false
@@ -116,9 +130,32 @@ fun InCallScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = 48.dp, horizontal = 24.dp),
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(vertical = 24.dp, horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Minimize button at top
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    IconButton(
+                        onClick = onMinimize,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.12f))
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "Minimize Call",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                }
+
                 // Top section (Status & Peer)
                 Spacer(modifier = Modifier.weight(1f))
                 
@@ -292,4 +329,115 @@ private fun formatDuration(seconds: Int): String {
     val m = seconds / 60
     val s = seconds % 60
     return String.format("%02d:%02d", m, s)
+}
+
+@Composable
+fun ActiveCallBanner(
+    state: CallUiState,
+    onExpand: () -> Unit,
+    onToggleMute: () -> Unit,
+    onEnd: () -> Unit
+) {
+    val peerName = when (state) {
+        is CallUiState.Ringing -> state.peerName
+        is CallUiState.Outgoing -> state.peerName
+        is CallUiState.Accepted -> state.peerName
+        is CallUiState.Negotiating -> state.peerName
+        is CallUiState.IceConnecting -> state.peerName
+        is CallUiState.MediaConnecting -> state.peerName
+        is CallUiState.Reconnecting -> state.peerName
+        is CallUiState.Connected -> state.peerName
+        else -> ""
+    }
+    val statusText = when (state) {
+        is CallUiState.Connected -> formatDuration(state.callDurationSeconds)
+        is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming Call" else "Ringing..."
+        else -> "Call Active"
+    }
+    val isMuted = (state as? CallUiState.Connected)?.isMuted == true
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .statusBarsPadding()
+            .clickable { onExpand() },
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF1B382B)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2E7D32)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Phone,
+                        contentDescription = "Active call",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = peerName,
+                        color = Color.White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = statusText,
+                        color = Color(0xFF81C784),
+                        fontSize = 13.sp
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onToggleMute,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(if (isMuted) Color.White.copy(alpha = 0.2f) else Color.Transparent)
+                ) {
+                    Icon(
+                        imageVector = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = "Mute",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onEnd,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFE53935))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CallEnd,
+                        contentDescription = "End Call",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
 }

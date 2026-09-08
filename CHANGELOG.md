@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.22] - 2026-09-08
+### Added
+- Background call stability: Partial CPU wake lock and proximity screen-off wake lock to prevent call/audio from cutting off when the screen turns off.
+- Minimized In-Call banner: Allows browsing other chats, groups, and settings while the call continues with quick mute and hang up controls.
+- Outgoing ringback tone: Standard telephony supervisory ringback tone plays during outgoing calls until answered or ended.
+- Store-and-forward missed-call events: Calling an offline peer queues a call event delivered when the peer reconnects.
+- Interactive group avatar picker: Group creators and admins can upload and update group photos directly from Group Info.
+- Dedicated owner group deletion: Cleanly dissolves group and removes local and remote records.
+- 3-dot conversation menu: Quick access to Group Info, Search, Mute, Clear Chat, and Group Leave/Delete.
+
+### Fixed
+- Chat auto-scroll race condition: Sending or receiving messages now immediately and smoothly scrolls to the newest message.
+- Group member and key wipe: Replaced `insertGroup(REPLACE)` with atomic update queries to eliminate SQLite foreign key cascading deletions.
+- Exhaustive `Transport.PENDING` handling in call routing and messaging.
+
 ## [1.0.21] - 2026-09-08
 ### Added
 - Complete group messaging system with creation, invites, and membership management.

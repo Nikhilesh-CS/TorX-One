@@ -43,6 +43,20 @@ fun GroupInfoScreen(groupId: String, navController: NavController, db: AppDataba
     var showScanner by remember { mutableStateOf(false) }
     val manager = com.torxone.app.service.TorXOneService.getInstance()?.groupManager
 
+    val avatarPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri: android.net.Uri? ->
+        if (uri != null) {
+            val cur = group
+            if (cur != null) {
+                scope.launch {
+                    manager?.updateGroupMetadata(groupId, cur.name, uri.toString(), cur.description)
+                    Toast.makeText(context, "Group avatar updated", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     Scaffold(topBar = {
         TopAppBar(title = { Text("Group info") }, navigationIcon = {
             IconButton(onClick = { navController.popBackStack() }) { Icon(Icons.Rounded.ArrowBack, "Back") }
@@ -54,7 +68,9 @@ fun GroupInfoScreen(groupId: String, navController: NavController, db: AppDataba
         LazyColumn(Modifier.padding(padding).fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AstraAvatar(model = current.avatarUri, name = current.name, size = 64.dp)
+                    Box(modifier = Modifier.clickable(enabled = isCreator) { avatarPicker.launch("image/*") }) {
+                        AstraAvatar(model = current.avatarUri, name = current.name, size = 64.dp)
+                    }
                     Spacer(Modifier.width(16.dp))
                     Column {
                         Text(current.name, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -116,7 +132,39 @@ fun GroupInfoScreen(groupId: String, navController: NavController, db: AppDataba
                         }
                     }) else null)
             }
-            if (!isCreator) item { OutlinedButton(onClick = { scope.launch { manager?.leaveGroup(groupId); navController.popBackStack() } }, modifier = Modifier.fillMaxWidth()) { Text("Leave group") } }
+            if (isOwner) {
+                item {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                if (manager?.deleteGroup(groupId) == true) {
+                                    Toast.makeText(context, "Group deleted", Toast.LENGTH_SHORT).show()
+                                    navController.popBackStack()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Delete group")
+                    }
+                }
+            } else {
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                manager?.leaveGroup(groupId)
+                                navController.popBackStack()
+                            }
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Leave group")
+                    }
+                }
+            }
         }
     }
     if (showAddMembers) AlertDialog(onDismissRequest = { showAddMembers = false }, title = { Text("Add members") }, text = {

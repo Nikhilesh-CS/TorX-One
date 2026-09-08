@@ -438,25 +438,42 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 onNavigateBack = { navController.popBackStack() }
                             )
                         }
-                        }
                     }
 
                     meshService?.let { activeService ->
                         val callState by activeService.callManager.stateStore.state.collectAsState()
+                        var isCallMinimized by remember { mutableStateOf(false) }
+
+                        LaunchedEffect(callState) {
+                            if (callState is com.torxone.app.call.CallUiState.Idle) {
+                                isCallMinimized = false
+                            }
+                        }
+
                         com.torxone.app.ui.screens.InCallScreen(
                             state = callState,
+                            isMinimized = isCallMinimized,
+                            onMinimize = { isCallMinimized = true },
+                            onExpand = { isCallMinimized = false },
                             onAccept = { activeService.callManager.acceptIncomingCall() },
                             onReject = { activeService.callManager.rejectIncomingCall() },
-                            onEnd = { activeService.callManager.endCall() },
+                            onEnd = {
+                                isCallMinimized = false
+                                activeService.callManager.endCall()
+                            },
                             onToggleMute = { activeService.callManager.toggleMute() },
                             onToggleSpeaker = { activeService.callManager.toggleSpeaker() },
-                            onDismissEnded = { activeService.callManager.stateStore.reset() }
+                            onDismissEnded = {
+                                isCallMinimized = false
+                                activeService.callManager.stateStore.reset()
+                            }
                         )
                     }
                 }
             }
         }
     }
+}
 
     private fun startAndBindService() {
         TorXOneService.start(this)

@@ -91,6 +91,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -153,6 +156,7 @@ import com.torxone.app.ui.components.TransportType
 import com.torxone.app.ui.screens.chat.ChatViewModel
 import com.torxone.app.ui.screens.chat.SmartScrollEngine
 import com.torxone.app.ui.theme.AstraTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -245,14 +249,6 @@ fun ChatScreen(
         derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 80 }
     }
 
-    // Auto-scroll to newest message (index 0) if user is near bottom
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            if (listState.firstVisibleItemIndex <= 2) {
-                listState.animateScrollToItem(0)
-            }
-        }
-    }
 
     var text by remember { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<MessagePayload?>(null) }
@@ -264,6 +260,7 @@ fun ChatScreen(
     var showAttachmentSheet by remember { mutableStateOf(false) }
     var showVoiceRecorder by remember { mutableStateOf(false) }
     var structuredAttachment by remember { mutableStateOf<String?>(null) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
     var pendingCameraUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVideoUriString by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingCameraUri = pendingCameraUriString?.let { Uri.parse(it) }
@@ -367,10 +364,11 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(messages.size) {
-        val lastMessage = messages.lastOrNull()
-        if (lastMessage != null && !searchMode) {
-            smartScrollEngine.onNewMessageArrived(lastMessage.senderId == "me")
+    val latestMessage = messages.lastOrNull()
+    LaunchedEffect(latestMessage?.id) {
+        if (latestMessage != null && !searchMode) {
+            kotlinx.coroutines.delay(60)
+            smartScrollEngine.onNewMessageArrived(latestMessage.senderId == "me")
         }
     }
 
@@ -486,6 +484,26 @@ fun ChatScreen(
                 onVideoCall = {
                     sendPresence(contactKey, "in_video_call", "In video call", ttlMs = 30_000L)
                     Toast.makeText(context, "Audio call first. Video layer will be added after audio is stable.", Toast.LENGTH_LONG).show()
+                },
+                isGroup = conversationType == "group",
+                onClearChat = { showClearChatDialog = true },
+                onMuteToggle = {
+                    scope.launch(Dispatchers.IO) {
+                        if (conversationType == "group") {
+                            val grp = db.groupDao().getGroup(contactKey)
+                            val isMuted = grp?.muteUntil == -1L || (grp?.muteUntil ?: 0) > System.currentTimeMillis()
+                            activeService?.groupManager?.setGroupMuted(contactKey, !isMuted)
+                        } else {
+                            val ct = db.contactDao().getContact(contactKey)
+                            if (ct != null) {
+                                val isMuted = ct.muteUntil == -1L || ct.muteUntil > System.currentTimeMillis()
+                                db.contactDao().insertContact(ct.copy(muteUntil = if (isMuted) 0L else -1L))
+                            }
+                        }
+                    }
+                },
+                onLeaveOrDeleteGroup = {
+                    navController.navigate("group_info/$contactKey")
                 }
             )
         },
@@ -524,9 +542,6 @@ fun ChatScreen(
                             viewModel.sendMessage(outgoing, replyTo?.id)
                             text = ""
                             replyTo = null
-                            scope.launch {
-                                listState.animateScrollToItem(0)
-                            }
                         }
                     }
                 )
@@ -685,6 +700,29 @@ fun ChatScreen(
         )
     }
 
+    if (showClearChatDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearChatDialog = false },
+            title = { Text("Clear chat") },
+            text = { Text("Are you sure you want to delete all messages in this conversation?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearChatDialog = false
+                    scope.launch(Dispatchers.IO) {
+                        db.messageDao().clearChat(contactKey, conversationType)
+                    }
+                }) {
+                    Text("Clear", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearChatDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     if (showAttachmentSheet) {
         AttachmentSheet(
             onDismiss = { showAttachmentSheet = false },
@@ -800,7 +838,11 @@ private fun ChatHeader(
     onDelete: () -> Unit,
     onOpenProfile: () -> Unit,
     onVoiceCall: () -> Unit,
-    onVideoCall: () -> Unit
+    onVideoCall: () -> Unit,
+    isGroup: Boolean = false,
+    onClearChat: () -> Unit = {},
+    onMuteToggle: () -> Unit = {},
+    onLeaveOrDeleteGroup: () -> Unit = {}
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
@@ -835,10 +877,14 @@ private fun ChatHeader(
                         contactEndpoint = contactEndpoint,
                         contactOnion = contactOnion,
                         livePresenceLabel = livePresenceLabel,
+                        isGroup = isGroup,
                         onOpenProfile = onOpenProfile,
                         onSearch = onSearch,
                         onVoiceCall = onVoiceCall,
-                        onVideoCall = onVideoCall
+                        onVideoCall = onVideoCall,
+                        onClearChat = onClearChat,
+                        onMuteToggle = onMuteToggle,
+                        onLeaveOrDeleteGroup = onLeaveOrDeleteGroup
                     )
                 }
             }
@@ -855,11 +901,16 @@ private fun NormalHeader(
     contactEndpoint: String,
     contactOnion: String,
     livePresenceLabel: String?,
+    isGroup: Boolean,
     onOpenProfile: () -> Unit,
     onSearch: () -> Unit,
     onVoiceCall: () -> Unit,
-    onVideoCall: () -> Unit
+    onVideoCall: () -> Unit,
+    onClearChat: () -> Unit,
+    onMuteToggle: () -> Unit,
+    onLeaveOrDeleteGroup: () -> Unit
 ) {
+    var showMenu by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -908,8 +959,53 @@ private fun NormalHeader(
         IconButton(onClick = onVideoCall, modifier = Modifier.size(44.dp)) {
             Icon(Icons.Rounded.Videocam, contentDescription = "Video call")
         }
-        IconButton(onClick = { }, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.Rounded.MoreVert, contentDescription = "Conversation menu")
+        Box {
+            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Rounded.MoreVert, contentDescription = "Conversation menu")
+            }
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = { showMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text(if (isGroup) "Group info" else "Contact info") },
+                    onClick = {
+                        showMenu = false
+                        onOpenProfile()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Search messages") },
+                    onClick = {
+                        showMenu = false
+                        onSearch()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Mute notifications") },
+                    onClick = {
+                        showMenu = false
+                        onMuteToggle()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Clear chat") },
+                    onClick = {
+                        showMenu = false
+                        onClearChat()
+                    }
+                )
+                if (isGroup) {
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("Group settings / Leave", color = MaterialTheme.colorScheme.error) },
+                        onClick = {
+                            showMenu = false
+                            onLeaveOrDeleteGroup()
+                        }
+                    )
+                }
+            }
         }
     }
 }
