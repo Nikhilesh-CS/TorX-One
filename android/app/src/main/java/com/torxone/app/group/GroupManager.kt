@@ -140,9 +140,14 @@ class GroupManager(
         scope.launch(Dispatchers.IO) {
             val json = try { JSONObject(plaintext) } catch (e: Exception) { return@launch }
             
-            when (messageType) {
-                MeshProtocol.TYPE_GROUP_INVITE -> handleIncomingInvite(json, senderKey)
-                MeshProtocol.TYPE_GROUP_JOIN -> handleIncomingJoin(json, senderKey)
+            if (messageType == MeshProtocol.TYPE_GROUP_INVITE) {
+                handleIncomingInvite(json, senderKey)
+            } else if (messageType == MeshProtocol.TYPE_GROUP_JOIN) {
+                handleIncomingJoin(json, senderKey)
+            } else if (messageType == MeshProtocol.TYPE_GROUP_UPDATE) {
+                Log.d(TAG, "[GROUP_UPDATE] Not yet implemented")
+            } else if (messageType == MeshProtocol.TYPE_GROUP_LEAVE) {
+                Log.d(TAG, "[GROUP_LEAVE] Not yet implemented")
             }
         }
     }

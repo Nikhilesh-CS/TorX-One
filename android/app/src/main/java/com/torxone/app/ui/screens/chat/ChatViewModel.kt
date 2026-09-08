@@ -213,6 +213,8 @@ class ChatViewModel(
                         messageRouter.sendRawPayload(member.memberKey, finalPayload.toString(), com.torxone.app.network.MeshProtocol.TYPE_GROUP_MESSAGE)
                     }
                 }
+                
+                db.messageDao().updateMessageStatus(messageId, "sent")
             } else {
                 val result = messageRouter.sendMessage(
                     contactKey = contactKey,

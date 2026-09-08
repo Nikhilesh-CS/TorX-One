@@ -744,6 +744,11 @@ class MessageRouter(
             return
         }
 
+        if (messageType == MeshProtocol.TYPE_GROUP_MESSAGE) {
+            handleGroupMessage(plaintext, senderKey, messageId, viaEndpoint, senderOnion)
+            return
+        }
+
         val chatPayload = decodeChatMessagePayload(plaintext)
 
         Log.d(TAG, "[RECV] Message from ${contact.name} (${chatPayload.text.length} chars)")
@@ -782,6 +787,61 @@ class MessageRouter(
         }
 
         // Send ACK back to sender
+        if (messageId.isNotBlank()) {
+            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+        }
+    }
+
+    // ──────────────────────── GROUP MESSAGING ────────────────────────
+
+    private suspend fun handleGroupMessage(jsonStr: String, senderKey: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
+        val json = org.json.JSONObject(jsonStr)
+        val groupId = json.optString("groupId")
+        val innerSenderKey = json.optString("senderKey")
+        val innerPayload = json.optString("payload")
+
+        if (groupId.isBlank() || innerSenderKey.isBlank()) return
+
+        val chatPayload = decodeChatMessagePayload(innerPayload)
+
+        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
+            Log.d(TAG, "[RECV] Duplicate group message ignored: $messageId")
+            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            return
+        }
+
+        db.messageDao().insertMessage(
+            MessageEntity(
+                messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(),
+                contactKey = groupId,
+                conversationType = "group",
+                senderKey = innerSenderKey,
+                text = chatPayload.text,
+                timestamp = System.currentTimeMillis(),
+                direction = "received",
+                status = "delivered",
+                replyToId = chatPayload.replyToId,
+                replyToText = chatPayload.replyToText,
+                replyToSender = chatPayload.replyToSender,
+                replyToType = chatPayload.replyToType
+            )
+        )
+
+        val service = com.torxone.app.service.TorXOneService.getInstance()
+        if (service != null) {
+            val isActive = com.torxone.app.service.ActiveConversationTracker.isActive(groupId)
+            if (isActive) {
+                com.torxone.app.service.NotificationHelper.clearContactNotifications(service, groupId)
+            } else {
+                // Muting logic for groups can go here later
+                val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group")
+                val group = db.groupDao().getGroup(groupId)
+                if (group != null) {
+                    com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = group.name), unreadMsgs)
+                }
+            }
+        }
+
         if (messageId.isNotBlank()) {
             sendAck(messageId, senderKey, viaEndpoint, senderOnion)
         }
