@@ -238,6 +238,11 @@ class GroupManager(
             Log.w(TAG, "[GROUP_JOIN] Unknown group $groupId")
             return
         }
+
+        if (group.creatorKey != creatorKey) {
+            Log.w(TAG, "[GROUP_JOIN] Claimed creator ($creatorKey) does not match actual creator (${group.creatorKey})")
+            return
+        }
         
         val identity = identityManager.loadIdentity() ?: return
         val mySigningKey = com.torxone.app.crypto.CryptoManager.toHex(identity.signingPublicKey)

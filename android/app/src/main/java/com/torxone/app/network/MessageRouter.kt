@@ -802,6 +802,30 @@ class MessageRouter(
 
         if (groupId.isBlank() || innerSenderKey.isBlank()) return
 
+        if (senderKey != innerSenderKey) {
+            Log.w(TAG, "[GROUP] Rejected message: outer sender ($senderKey) != inner sender ($innerSenderKey)")
+            return
+        }
+
+        val group = db.groupDao().getGroup(groupId)
+        if (group == null) {
+            Log.w(TAG, "[GROUP] Rejected message: group $groupId does not exist locally")
+            return
+        }
+
+        val myKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+        val receiverMember = db.groupDao().getGroupMember(groupId, myKey)
+        if (receiverMember == null) {
+            Log.w(TAG, "[GROUP] Rejected message: I am not a member of group $groupId")
+            return
+        }
+
+        val senderMember = db.groupDao().getGroupMember(groupId, senderKey)
+        if (senderMember == null || senderMember.role == "invited") {
+            Log.w(TAG, "[GROUP] Rejected message: sender $senderKey is not an active member of group $groupId")
+            return
+        }
+
         val chatPayload = decodeChatMessagePayload(innerPayload)
 
         if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {

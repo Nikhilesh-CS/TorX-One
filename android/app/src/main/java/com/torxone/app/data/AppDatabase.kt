@@ -111,6 +111,9 @@ interface GroupDao {
     @Query("SELECT * FROM group_members WHERE groupId = :groupId")
     fun getGroupMembersSync(groupId: String): List<GroupMemberEntity>
 
+    @Query("SELECT * FROM group_members WHERE groupId = :groupId AND memberKey = :memberKey LIMIT 1")
+    fun getGroupMember(groupId: String, memberKey: String): GroupMemberEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertGroupMember(member: GroupMemberEntity)
 
