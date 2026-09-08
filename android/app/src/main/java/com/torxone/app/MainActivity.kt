@@ -275,7 +275,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 updater.downloadAndInstallUpdate(
                                     updateInfo = info,
                                     onProgress = { },
-                                    onComplete = { isDownloadingUpdate = false; updateInfo = null },
+                                    onInstallerLaunched = {
+                                        isDownloadingUpdate = false
+                                        updateInfo = null
+                                        Toast.makeText(this@MainActivity, "Android installer opened. Confirm the update to finish.", Toast.LENGTH_LONG).show()
+                                    },
                                     onError = { err -> 
                                         isDownloadingUpdate = false
                                         updateInfo = null

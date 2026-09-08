@@ -213,7 +213,11 @@ fun SettingsScreen(
                 updater.downloadAndInstallUpdate(
                     updateInfo = info,
                     onProgress = { },
-                    onComplete = { isDownloadingUpdate = false; updateInfo = null },
+                    onInstallerLaunched = {
+                        isDownloadingUpdate = false
+                        updateInfo = null
+                        showToast("Android installer opened. Confirm the update to finish.")
+                    },
                     onError = { err ->
                         isDownloadingUpdate = false
                         updateInfo = null

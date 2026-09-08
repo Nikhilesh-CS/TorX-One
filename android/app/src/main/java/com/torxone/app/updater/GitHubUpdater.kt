@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.net.URL
+import java.security.MessageDigest
 import javax.net.ssl.HttpsURLConnection
 
 data class UpdateInfo(
@@ -24,8 +25,14 @@ data class UpdateInfo(
     val releaseNotes: String,
     val downloadUrl: String,
     val isUpdateAvailable: Boolean,
-    val sha256: String? = null
+    val sha256: String? = null,
+    val assetName: String
 )
+
+enum class UpdateState {
+    DOWNLOADING, VERIFYING, INSTALLER_LAUNCHED,
+    DOWNLOAD_FAILED, SIGNATURE_INVALID, INVALID_APK, INSTALLER_UNAVAILABLE, INSTALL_PERMISSION_REQUIRED
+}
 
 class GitHubUpdater(private val context: Context) {
 
@@ -59,13 +66,25 @@ class GitHubUpdater(private val context: Context) {
                 val releaseNotes = json.getString("body")
                 
                 val assets = json.getJSONArray("assets")
+                val expectedAssetName = "TorX-One-v$tagName-release.apk"
                 var downloadUrl = ""
+                var sha256: String? = null
                 for (i in 0 until assets.length()) {
                     val asset = assets.getJSONObject(i)
-                    if (asset.getString("name").endsWith(".apk")) {
+                    if (asset.getString("name") == expectedAssetName) {
                         downloadUrl = asset.getString("browser_download_url")
+                        sha256 = asset.optString("digest").removePrefix("sha256:").takeIf { it.matches(Regex("[0-9a-fA-F]{64}")) }
                         break
                     }
+                }
+
+                if (downloadUrl.isBlank()) {
+                    Log.e("GitHubUpdater", "Release $tagName is missing required asset $expectedAssetName")
+                    return@withContext null
+                }
+                if (sha256 == null) {
+                    Log.e("GitHubUpdater", "Release $tagName is missing a SHA-256 asset digest")
+                    return@withContext null
                 }
 
                 // Simple version string comparison (assuming semantic versioning like 1.0.0)
@@ -80,7 +99,9 @@ class GitHubUpdater(private val context: Context) {
                     version = tagName,
                     releaseNotes = releaseNotes,
                     downloadUrl = downloadUrl,
-                    isUpdateAvailable = isUpdateAvailable
+                    isUpdateAvailable = isUpdateAvailable,
+                    sha256 = sha256,
+                    assetName = expectedAssetName
                 )
             }
         } catch (e: Exception) {
@@ -89,9 +110,15 @@ class GitHubUpdater(private val context: Context) {
         return@withContext null
     }
 
-    fun downloadAndInstallUpdate(updateInfo: UpdateInfo, onProgress: (Float) -> Unit, onComplete: () -> Unit, onError: (String) -> Unit) {
+    fun downloadAndInstallUpdate(
+        updateInfo: UpdateInfo,
+        onProgress: (Float) -> Unit,
+        onInstallerLaunched: () -> Unit,
+        onError: (String) -> Unit,
+        onState: (UpdateState) -> Unit = {}
+    ) {
         if (updateInfo.downloadUrl.isEmpty()) {
-            onError("No APK found in the release.")
+            onError("Required release APK is missing.")
             return
         }
         Thread {
@@ -101,6 +128,7 @@ class GitHubUpdater(private val context: Context) {
             val apkFile = File(outputDir, fileName)
 
             try {
+                postState(onState, UpdateState.DOWNLOADING)
                 if (apkFile.exists()) apkFile.delete()
                 outputDir.mkdirs()
 
@@ -130,33 +158,41 @@ class GitHubUpdater(private val context: Context) {
                 }
 
                 postProgress(onProgress, 1f)
-                installApk(apkFile, onError)
-                postComplete(onComplete)
+                postState(onState, UpdateState.VERIFYING)
+                val validationError = validateDownloadedApk(apkFile, updateInfo)
+                if (validationError != null) {
+                    apkFile.delete()
+                    postState(onState, if (validationError.startsWith("Signature")) UpdateState.SIGNATURE_INVALID else UpdateState.INVALID_APK)
+                    postError(onError, validationError)
+                    return@Thread
+                }
+                installApk(apkFile, onInstallerLaunched, onError, onState)
             } catch (e: Exception) {
                 Log.e("GitHubUpdater", "Failed to download update", e)
                 apkFile.delete()
+                postState(onState, UpdateState.DOWNLOAD_FAILED)
                 postError(onError, "Download failed: ${e.message}")
             }
         }.start()
     }
 
-    private fun installApk(apkFile: File, onError: (String) -> Unit) {
+    private fun installApk(
+        apkFile: File,
+        onInstallerLaunched: () -> Unit,
+        onError: (String) -> Unit,
+        onState: (UpdateState) -> Unit
+    ) {
         try {
             if (!apkFile.exists()) {
+                postState(onState, UpdateState.INVALID_APK)
                 postError(onError, "Downloaded APK not found.")
-                return
-            }
-
-            // Verify signature matches currently installed app
-            if (!verifyApkSignature(apkFile)) {
-                postError(onError, "Security Error: The downloaded update's signature does not match the currently installed app. Update aborted to prevent hijacking.")
-                apkFile.delete()
                 return
             }
 
             // On Android 8.0+, check if installing unknown apps is permitted
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!context.packageManager.canRequestPackageInstalls()) {
+                    postState(onState, UpdateState.INSTALL_PERMISSION_REQUIRED)
                     mainHandler.post {
                         Toast.makeText(context, "Please enable 'Allow from this source' to install the update", Toast.LENGTH_LONG).show()
                         val settingsIntent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
@@ -165,6 +201,7 @@ class GitHubUpdater(private val context: Context) {
                         }
                         context.startActivity(settingsIntent)
                     }
+                    postError(onError, "Allow installs from TorX One in Settings, then retry the update.")
                     return
                 }
             }
@@ -191,13 +228,19 @@ class GitHubUpdater(private val context: Context) {
             mainHandler.post {
                 try {
                     context.startActivity(intent)
+                    // ACTION_VIEW provides no reliable installation result. This event means only
+                    // that Android Package Installer was opened; it must never be shown as done.
+                    onState(UpdateState.INSTALLER_LAUNCHED)
+                    onInstallerLaunched()
                 } catch (e: Exception) {
                     Log.e("GitHubUpdater", "Failed to start install activity", e)
+                    onState(UpdateState.INSTALLER_UNAVAILABLE)
                     postError(onError, "Failed to launch installer: ${e.message}")
                 }
             }
         } catch (e: Exception) {
             Log.e("GitHubUpdater", "Failed to install APK", e)
+            postState(onState, UpdateState.INSTALLER_UNAVAILABLE)
             postError(onError, "Failed to launch installer: ${e.message}")
         }
     }
@@ -206,13 +249,47 @@ class GitHubUpdater(private val context: Context) {
         mainHandler.post { onProgress(value) }
     }
 
-    private fun postComplete(onComplete: () -> Unit) {
-        mainHandler.post { onComplete() }
-    }
-
     private fun postError(onError: (String) -> Unit, message: String) {
         mainHandler.post { onError(message) }
     }
+
+    private fun postState(onState: (UpdateState) -> Unit, state: UpdateState) {
+        mainHandler.post { onState(state) }
+    }
+
+    /** Returns a user-safe validation error, or null only for an installable update candidate. */
+    private fun validateDownloadedApk(apkFile: File, updateInfo: UpdateInfo): String? {
+        if (!apkFile.exists() || apkFile.length() <= 0L) return "Invalid APK: downloaded file is empty."
+        updateInfo.sha256?.let { expected ->
+            if (!sha256(apkFile).equals(expected, ignoreCase = true)) return "Invalid APK: SHA-256 digest mismatch."
+        }
+        val archive = archivePackageInfo(apkFile) ?: return "Invalid APK: Android could not parse the package."
+        if (archive.packageName != context.packageName) return "Invalid APK: package name does not match TorX One."
+        if (archiveVersionCode(archive) <= installedVersionCode()) return "Invalid APK: versionCode is not newer than the installed app."
+        if (!verifyApkSignature(apkFile)) return "Signature invalid: update certificate does not match the installed app."
+        return null
+    }
+
+    private fun archivePackageInfo(apkFile: File) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+    } else {
+        @Suppress("DEPRECATION") context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
+    }
+
+    private fun installedVersionCode(): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+    } else {
+        @Suppress("DEPRECATION") context.packageManager.getPackageInfo(context.packageName, 0).versionCode.toLong()
+    }
+
+    private fun archiveVersionCode(info: android.content.pm.PackageInfo): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        info.longVersionCode
+    } else {
+        @Suppress("DEPRECATION") info.versionCode.toLong()
+    }
+
+    private fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+        .joinToString("") { "%02x".format(it) }
 
     private fun verifyApkSignature(apkFile: File): Boolean {
         return try {

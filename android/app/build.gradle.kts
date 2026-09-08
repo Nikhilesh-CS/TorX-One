@@ -30,6 +30,13 @@ val hasReleaseSigning = listOf(
     releaseKeyPassword
 ).all { !it.isNullOrBlank() }
 
+fun requireReleaseSigning() {
+    check(hasReleaseSigning) {
+        "Release signing is required. Set TORXONE_RELEASE_STORE_FILE, " +
+            "TORXONE_RELEASE_STORE_PASSWORD, TORXONE_RELEASE_KEY_ALIAS, and TORXONE_RELEASE_KEY_PASSWORD."
+    }
+}
+
 android {
     namespace = "com.torxone.app"
     compileSdk = 34
@@ -63,11 +70,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = if (hasReleaseSigning) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // Never fall back to debug signing. Release tasks are rejected below when secrets
+            // are absent, and this config only exists when the production key is configured.
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
@@ -90,6 +95,10 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
+}
+
+gradle.taskGraph.whenReady {
+    if (allTasks.any { it.name.contains("Release", ignoreCase = true) }) requireReleaseSigning()
 }
 
 dependencies {
