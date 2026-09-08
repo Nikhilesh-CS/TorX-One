@@ -374,11 +374,19 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 settingsManager = service.settingsManager
                             )
                         }
-                        composable("chat/{contactKey}") { backStackEntry ->
+                        composable("create_group") {
+                            com.torxone.app.ui.screens.CreateGroupScreen(
+                                navController = navController,
+                                db = service.db
+                            )
+                        }
+                        composable("chat/{conversationType}/{contactKey}") { backStackEntry ->
+                            val conversationType = backStackEntry.arguments?.getString("conversationType") ?: "direct"
                             val contactKey = backStackEntry.arguments?.getString("contactKey")
                                 ?: return@composable
                             ChatScreen(
                                 contactKey = contactKey,
+                                conversationType = conversationType,
                                 navController = navController,
                                 db = service.db,
                                 nearbyManager = service.nearbyManager,

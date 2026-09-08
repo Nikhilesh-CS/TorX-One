@@ -736,6 +736,14 @@ class MessageRouter(
             return
         }
 
+        if (messageType == MeshProtocol.TYPE_GROUP_INVITE ||
+            messageType == MeshProtocol.TYPE_GROUP_JOIN ||
+            messageType == MeshProtocol.TYPE_GROUP_UPDATE ||
+            messageType == MeshProtocol.TYPE_GROUP_LEAVE) {
+            service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey)
+            return
+        }
+
         val chatPayload = decodeChatMessagePayload(plaintext)
 
         Log.d(TAG, "[RECV] Message from ${contact.name} (${chatPayload.text.length} chars)")

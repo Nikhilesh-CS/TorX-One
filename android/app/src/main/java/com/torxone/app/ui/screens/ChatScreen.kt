@@ -175,6 +175,7 @@ private val ReactionChoices = listOf(
 @Composable
 fun ChatScreen(
     contactKey: String,
+    conversationType: String,
     navController: NavController,
     db: AppDatabase,
     nearbyManager: NearbyConnectionManager,
@@ -184,7 +185,7 @@ fun ChatScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val viewModel = remember(contactKey) { ChatViewModel(contactKey, db, messageRouter) }
+    val viewModel = remember(contactKey, conversationType) { ChatViewModel(contactKey, conversationType, db, messageRouter) }
 
     DisposableEffect(contactKey, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -219,6 +220,7 @@ fun ChatScreen(
     val connectedEndpoints by nearbyManager.connectedEndpoints.collectAsStateWithLifecycle()
     val messages by viewModel.conversationEngine.messages.collectAsStateWithLifecycle()
     val unreadCount by viewModel.unreadCount.collectAsStateWithLifecycle()
+    val groupRole by viewModel.groupRole.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchEngine.searchQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchEngine.searchResults.collectAsStateWithLifecycle()
@@ -488,45 +490,47 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            ChatComposer(
-                text = text,
-                replyTo = replyTo,
-                contactName = contactName,
-                onTextChange = { text = it },
-                onCancelReply = { replyTo = null },
-                onOpenAttachmentSheet = { showAttachmentSheet = true },
-                onCamera = {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        sendPresence(contactKey, "taking_photo", "Taking photo...")
-                        val uri = createTempMediaUri(context, "camera", ".jpg")
-                        pendingCameraUriString = uri.toString()
-                        activeService?.identityManager?.isAwaitingExternalActivity = true
-                        cameraLauncher.launch(uri)
-                    } else {
-                        pendingCameraAction = "photo"
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
-                },
-                onVoice = {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                        showVoiceRecorder = true
-                    } else {
-                        pendingAudioAction = "voice"
-                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                },
-                onSend = {
-                    val outgoing = text.trim()
-                    if (outgoing.isNotEmpty()) {
-                        viewModel.sendMessage(outgoing, replyTo?.id)
-                        text = ""
-                        replyTo = null
-                        scope.launch {
-                            listState.animateScrollToItem(0)
+            if (groupRole != "invited") {
+                ChatComposer(
+                    text = text,
+                    replyTo = replyTo,
+                    contactName = contactName,
+                    onTextChange = { text = it },
+                    onCancelReply = { replyTo = null },
+                    onOpenAttachmentSheet = { showAttachmentSheet = true },
+                    onCamera = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            sendPresence(contactKey, "taking_photo", "Taking photo...")
+                            val uri = createTempMediaUri(context, "camera", ".jpg")
+                            pendingCameraUriString = uri.toString()
+                            activeService?.identityManager?.isAwaitingExternalActivity = true
+                            cameraLauncher.launch(uri)
+                        } else {
+                            pendingCameraAction = "photo"
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    },
+                    onVoice = {
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                            showVoiceRecorder = true
+                        } else {
+                            pendingAudioAction = "voice"
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    onSend = {
+                        val outgoing = text.trim()
+                        if (outgoing.isNotEmpty()) {
+                            viewModel.sendMessage(outgoing, replyTo?.id)
+                            text = ""
+                            replyTo = null
+                            scope.launch {
+                                listState.animateScrollToItem(0)
+                            }
                         }
                     }
-                }
-            )
+                )
+            }
         }
     ) { padding ->
         Box(
@@ -537,6 +541,26 @@ fun ChatScreen(
             when {
                 isLoading -> {
                     com.torxone.app.ui.components.AstraLoadingState(message = "Loading messages...")
+                }
+                groupRole == "invited" -> {
+                    com.torxone.app.ui.components.AstraEmptyState(
+                        title = "You've been invited",
+                        message = "You have been invited to join $contactName",
+                        action = {
+                            Row(modifier = Modifier.padding(top = 16.dp)) {
+                                androidx.compose.material3.OutlinedButton(
+                                    onClick = { 
+                                        viewModel.declineInvite()
+                                        navController.popBackStack()
+                                    }
+                                ) { Text("Decline") }
+                                Spacer(Modifier.width(16.dp))
+                                androidx.compose.material3.Button(
+                                    onClick = { viewModel.acceptInvite() }
+                                ) { Text("Join") }
+                            }
+                        }
+                    )
                 }
                 messages.isEmpty() -> {
                     com.torxone.app.ui.components.AstraEmptyState(

@@ -96,6 +96,9 @@ interface GroupDao {
     @Query("SELECT * FROM groups WHERE groupId = :groupId LIMIT 1")
     fun getGroup(groupId: String): GroupEntity?
 
+    @Query("SELECT * FROM groups WHERE groupId = :groupId LIMIT 1")
+    fun getGroupFlow(groupId: String): Flow<GroupEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertGroup(group: GroupEntity)
 

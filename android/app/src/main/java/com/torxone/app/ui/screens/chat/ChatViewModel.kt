@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 
 class ChatViewModel(
     val contactKey: String,
+    val conversationType: String,
     private val db: AppDatabase,
     private val messageRouter: MessageRouter
 ) : ViewModel() {
@@ -32,8 +33,11 @@ class ChatViewModel(
     private val _contactOnion = MutableStateFlow("")
     val contactOnion: StateFlow<String> = _contactOnion
 
+    private val _groupRole = MutableStateFlow<String?>(null)
+    val groupRole: StateFlow<String?> = _groupRole
+
     val unreadCount: StateFlow<Int> = db.messageDao()
-        .getUnreadCountForConversation(contactKey)
+        .getUnreadCountForConversation(contactKey, conversationType)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
 
     init {
@@ -43,11 +47,23 @@ class ChatViewModel(
 
     private fun loadContact() {
         viewModelScope.launch(Dispatchers.IO) {
-            val contact = db.contactDao().getContact(contactKey)
-            if (contact != null) {
-                _contactName.value = contact.name
-                _contactEndpoint.value = contact.endpointId
-                _contactOnion.value = contact.onionAddress
+            if (conversationType == "group") {
+                // Poll group role continuously to catch updates when joined
+                db.groupDao().getGroupFlow(contactKey).collect { group ->
+                    if (group != null) {
+                        _contactName.value = group.name
+                        _contactEndpoint.value = "" // Groups don't have a single endpoint
+                        _contactOnion.value = "" // Groups don't have a single onion
+                        _groupRole.value = group.myRole
+                    }
+                }
+            } else {
+                val contact = db.contactDao().getContact(contactKey)
+                if (contact != null) {
+                    _contactName.value = contact.name
+                    _contactEndpoint.value = contact.endpointId
+                    _contactOnion.value = contact.onionAddress
+                }
             }
         }
     }
@@ -58,7 +74,7 @@ class ChatViewModel(
     private fun observeMessages() {
         viewModelScope.launch(Dispatchers.IO) {
             _messageLimit.flatMapLatest { limit ->
-                db.messageDao().getMessagesForConversation(contactKey, limit = limit)
+                db.messageDao().getMessagesForConversation(contactKey, conversationType, limit = limit)
             }.collect { entities ->
                 _isLoading.value = false
                 val payloads = entities.map { entity ->
@@ -151,19 +167,62 @@ class ChatViewModel(
     }
 
     fun sendMessage(text: String, replyToId: String? = null) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val replyTarget = replyToId?.let { id ->
                 conversationEngine.messages.value.firstOrNull { it.id == id }
             }
-            val result = messageRouter.sendMessage(
-                contactKey = contactKey,
-                text = text,
-                replyToId = replyTarget?.id,
-                replyToText = replyTarget?.replyPreviewText(),
-                replyToSender = replyTarget?.senderId,
-                replyToType = replyTarget?.messageType
-            )
-            // The DB observation will pick up the new message and feed it to conversationEngine
+            if (conversationType == "group") {
+                val group = db.groupDao().getGroup(contactKey) ?: return@launch
+                val identity = com.torxone.app.service.TorXOneService.getInstance()?.identityManager?.loadIdentity() ?: return@launch
+                val myKey = com.torxone.app.crypto.CryptoManager.toHex(identity.signingPublicKey)
+                
+                val messageId = java.util.UUID.randomUUID().toString()
+                
+                val jsonPayload = org.json.JSONObject().apply {
+                    put("type", "TEXT")
+                    put("text", text.trim())
+                    put("messageId", messageId)
+                    if (replyToId != null) {
+                        put("replyToId", replyToId)
+                    }
+                }
+                
+                val finalPayload = org.json.JSONObject().apply {
+                    put("type", com.torxone.app.network.MeshProtocol.TYPE_GROUP_MESSAGE)
+                    put("groupId", contactKey)
+                    put("senderKey", myKey)
+                    put("payload", jsonPayload)
+                }
+                
+                val entity = MessageEntity(
+                    messageId = messageId,
+                    contactKey = contactKey,
+                    conversationType = "group",
+                    senderKey = myKey,
+                    direction = "sent",
+                    status = "pending",
+                    text = text.trim(),
+                    timestamp = System.currentTimeMillis(),
+                    replyToId = replyToId
+                )
+                db.messageDao().insertMessage(entity)
+                
+                val members = db.groupDao().getGroupMembersSync(contactKey)
+                members.forEach { member ->
+                    if (member.memberKey != myKey) {
+                        messageRouter.sendRawPayload(member.memberKey, finalPayload.toString(), com.torxone.app.network.MeshProtocol.TYPE_GROUP_MESSAGE)
+                    }
+                }
+            } else {
+                val result = messageRouter.sendMessage(
+                    contactKey = contactKey,
+                    text = text,
+                    replyToId = replyTarget?.id,
+                    replyToText = replyTarget?.replyPreviewText(),
+                    replyToSender = replyTarget?.senderId,
+                    replyToType = replyTarget?.messageType
+                )
+            }
         }
     }
 
@@ -177,10 +236,10 @@ class ChatViewModel(
 
     fun markVisibleMessagesRead() {
         viewModelScope.launch(Dispatchers.IO) {
-            val unread = db.messageDao().getUnreadMessagesSync(contactKey)
+            val unread = db.messageDao().getUnreadMessagesSync(contactKey, conversationType)
             if (unread.isEmpty()) return@launch
-            unread.forEach { messageRouter.sendReadReceipt(it.messageId, contactKey) }
-            db.messageDao().markMessagesAsRead(contactKey)
+            unread.forEach { messageRouter.sendReadReceipt(it.messageId, contactKey) } // TODO Group read receipts
+            db.messageDao().markMessagesAsRead(contactKey, conversationType)
         }
     }
 
@@ -188,6 +247,22 @@ class ChatViewModel(
         if (messageIds.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             messageIds.forEach { db.messageDao().deleteMessage(it) }
+        }
+    }
+
+    fun acceptInvite() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (conversationType == "group") {
+                com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.acceptInvite(contactKey)
+            }
+        }
+    }
+
+    fun declineInvite() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (conversationType == "group") {
+                com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.declineInvite(contactKey)
+            }
         }
     }
 }

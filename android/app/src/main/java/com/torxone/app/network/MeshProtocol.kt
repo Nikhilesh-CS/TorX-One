@@ -43,6 +43,7 @@ object MeshProtocol {
     const val TYPE_GROUP_JOIN = "group_join"
     const val TYPE_GROUP_UPDATE = "group_update"
     const val TYPE_GROUP_LEAVE = "group_leave"
+    const val TYPE_GROUP_MESSAGE = "group_msg"
     
     const val DEFAULT_TTL = 5
     // Single encrypted frames are for chat/control metadata, not large media.

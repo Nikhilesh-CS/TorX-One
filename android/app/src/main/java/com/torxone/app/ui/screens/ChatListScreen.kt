@@ -156,11 +156,18 @@ fun ChatListScreen(
                         Icon(Icons.Default.ContentCopy, contentDescription = "Share contact")
                     }
                     FloatingActionButton(
+                        onClick = { navController.navigate("create_group") },
+                        containerColor = Color(0xE61B2030),
+                        contentColor = Color(0xFFF6D09A)
+                    ) {
+                        Icon(androidx.compose.material.icons.Icons.Default.PersonAdd, contentDescription = "Create group")
+                    }
+                    FloatingActionButton(
                         onClick = { showAddContact = true },
                         containerColor = Color(0xFF9AF6D0),
                         contentColor = Color(0xFF06120F)
                     ) {
-                        Icon(Icons.Default.PersonAdd, contentDescription = "Add contact")
+                        Icon(androidx.compose.material.icons.Icons.Default.PersonAdd, contentDescription = "Add contact")
                     }
                 }
             },
@@ -322,10 +329,9 @@ fun ChatListScreen(
                         unreadCount = unreadCount,
                         onClick = {
                             if (conversation.type == "group") {
-                                // For now, just navigate to the same chat screen, but chat screen expects contactKey
-                                navController.navigate("chat/${conversation.id}")
+                                navController.navigate("chat/${conversation.type}/${conversation.id}")
                             } else {
-                                navController.navigate("chat/${conversation.id}")
+                                navController.navigate("chat/${conversation.type}/${conversation.id}")
                             }
                         },
                         onLongClick = {

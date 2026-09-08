@@ -83,6 +83,8 @@ class TorXOneService : Service() {
         private set
     lateinit var listenTogetherManager: com.torxone.app.music.ListenTogetherManager
         private set
+    lateinit var groupManager: com.torxone.app.group.GroupManager
+        private set
     lateinit var settingsManager: com.torxone.app.data.SettingsManager
         private set
 
@@ -144,6 +146,7 @@ class TorXOneService : Service() {
         val musicRepository = com.torxone.app.music.MusicNoteRepositoryImpl(db.musicNoteDao())
         musicNoteManager = com.torxone.app.music.MusicNoteManager(this, serviceScope, db, identityManager, musicRepository, messageRouter)
         listenTogetherManager = com.torxone.app.music.ListenTogetherManager(serviceScope, messageRouter)
+        groupManager = com.torxone.app.group.GroupManager(this, serviceScope, db, identityManager, messageRouter)
         
         settingsManager = com.torxone.app.data.SettingsManager(this)
 
