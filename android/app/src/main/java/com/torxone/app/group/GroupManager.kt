@@ -5,6 +5,7 @@ import android.util.Log
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.data.GroupEntity
 import com.torxone.app.data.GroupMemberEntity
+import com.torxone.app.data.GroupKeyEntity
 import com.torxone.app.identity.IdentityManager
 import com.torxone.app.network.MessageRouter
 import com.torxone.app.network.MeshProtocol
@@ -15,6 +16,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import com.torxone.app.crypto.CryptoManager
+import com.torxone.app.group.GroupCryptoManager
 
 class GroupManager(
     private val context: Context,
@@ -47,6 +50,7 @@ class GroupManager(
             myRole = "admin"
         )
         db.groupDao().insertGroup(group)
+        db.groupKeyDao().insertKey(GroupKeyEntity(groupId, 1, GroupCryptoManager.newKeyBase64(), now))
 
         // 2. Insert creator as member
         db.groupDao().insertGroupMember(
@@ -145,9 +149,11 @@ class GroupManager(
             } else if (messageType == MeshProtocol.TYPE_GROUP_JOIN) {
                 handleIncomingJoin(json, senderKey)
             } else if (messageType == MeshProtocol.TYPE_GROUP_UPDATE) {
-                Log.d(TAG, "[GROUP_UPDATE] Not yet implemented")
+                handleIncomingMembershipUpdate(json, senderKey)
             } else if (messageType == MeshProtocol.TYPE_GROUP_LEAVE) {
-                Log.d(TAG, "[GROUP_LEAVE] Not yet implemented")
+                handleIncomingLeave(json, senderKey)
+            } else if (messageType == MeshProtocol.TYPE_GROUP_KEY) {
+                handleIncomingKey(json, senderKey)
             }
         }
     }
@@ -261,6 +267,95 @@ class GroupManager(
 
         // Update their status
         db.groupDao().insertGroupMember(member.copy(role = "member"))
+        distributeLatestKey(groupId, memberKey)
         Log.d(TAG, "[GROUP_JOIN] Member $memberKey joined group $groupId")
     }
+
+    /** Creator-only removal; membership update precedes key rotation for remote rejection. */
+    suspend fun removeMember(groupId: String, memberKey: String): Boolean = withContext(Dispatchers.IO) {
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext false
+        val myKey = identityManager.loadIdentity()?.let { CryptoManager.toHex(it.signingPublicKey) } ?: return@withContext false
+        if (group.creatorKey != myKey || memberKey == myKey) return@withContext false
+        if (db.groupDao().getGroupMember(groupId, memberKey) == null) return@withContext false
+        db.groupDao().deleteGroupMember(groupId, memberKey)
+        distributeRemoval(groupId, memberKey)
+        rotateAndDistribute(groupId)
+        true
+    }
+
+    suspend fun leaveGroup(groupId: String): Boolean = withContext(Dispatchers.IO) {
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext false
+        val myKey = identityManager.loadIdentity()?.let { CryptoManager.toHex(it.signingPublicKey) } ?: return@withContext false
+        if (myKey == group.creatorKey) return@withContext false // creator must explicitly remove/close the group in V1
+        val payload = JSONObject().put("groupId", groupId).put("memberKey", myKey).toString()
+        messageRouter.sendRawPayload(group.creatorKey, payload, MeshProtocol.TYPE_GROUP_LEAVE).success
+    }
+
+    private suspend fun handleIncomingLeave(json: JSONObject, senderKey: String) {
+        val groupId = json.optString("groupId")
+        val memberKey = json.optString("memberKey")
+        val group = db.groupDao().getGroup(groupId) ?: return
+        val myKey = identityManager.loadIdentity()?.let { CryptoManager.toHex(it.signingPublicKey) } ?: return
+        if (senderKey != memberKey || group.creatorKey != myKey || memberKey == myKey) return
+        if (db.groupDao().getGroupMember(groupId, memberKey) == null) return
+        db.groupDao().deleteGroupMember(groupId, memberKey)
+        distributeRemoval(groupId, memberKey)
+        rotateAndDistribute(groupId)
+    }
+
+    private suspend fun rotateAndDistribute(groupId: String) {
+        val latest = db.groupKeyDao().getLatestKey(groupId) ?: return
+        val next = GroupKeyEntity(groupId, latest.keyVersion + 1, GroupCryptoManager.newKeyBase64(), System.currentTimeMillis())
+        db.groupKeyDao().insertKey(next)
+        db.groupDao().getGroupMembersSync(groupId)
+            .filter { it.role != "invited" }
+            .forEach { member -> if (member.memberKey != identitySigningKey()) distributeKey(next, member.memberKey) }
+    }
+
+    private suspend fun distributeRemoval(groupId: String, removedMemberKey: String) {
+        val payload = JSONObject().put("action", "remove_member")
+            .put("groupId", groupId).put("memberKey", removedMemberKey).toString()
+        db.groupDao().getGroupMembersSync(groupId)
+            .filter { it.role != "invited" && it.memberKey != identitySigningKey() }
+            .forEach { messageRouter.sendRawPayload(it.memberKey, payload, MeshProtocol.TYPE_GROUP_UPDATE) }
+    }
+
+    private suspend fun handleIncomingMembershipUpdate(json: JSONObject, senderKey: String) {
+        val groupId = json.optString("groupId")
+        val removedMemberKey = json.optString("memberKey")
+        val group = db.groupDao().getGroup(groupId) ?: return
+        if (senderKey != group.creatorKey || json.optString("action") != "remove_member" || removedMemberKey.isBlank()) {
+            Log.w(TAG, "[GROUP_UPDATE] Rejected unauthorized membership update")
+            return
+        }
+        db.groupDao().deleteGroupMember(groupId, removedMemberKey)
+    }
+
+    private suspend fun distributeLatestKey(groupId: String, recipientKey: String) {
+        db.groupKeyDao().getLatestKey(groupId)?.let { distributeKey(it, recipientKey) }
+    }
+
+    private suspend fun distributeKey(key: GroupKeyEntity, recipientKey: String) {
+        val payload = JSONObject().apply {
+            put("groupId", key.groupId)
+            put("keyVersion", key.keyVersion)
+            put("aesKeyBase64", key.aesKeyBase64)
+        }.toString()
+        messageRouter.sendRawPayload(recipientKey, payload, MeshProtocol.TYPE_GROUP_KEY)
+    }
+
+    private suspend fun handleIncomingKey(json: JSONObject, senderKey: String) {
+        val groupId = json.optString("groupId")
+        val version = json.optInt("keyVersion", 0)
+        val encodedKey = json.optString("aesKeyBase64")
+        val group = db.groupDao().getGroup(groupId) ?: return
+        if (senderKey != group.creatorKey || version <= 0 || !isValidAes256Key(encodedKey)) {
+            Log.w(TAG, "[GROUP_KEY] Rejected unauthorized or malformed key distribution")
+            return
+        }
+        db.groupKeyDao().insertKey(GroupKeyEntity(groupId, version, encodedKey, System.currentTimeMillis()))
+    }
+
+    private fun identitySigningKey(): String = identityManager.loadIdentity()?.let { CryptoManager.toHex(it.signingPublicKey) }.orEmpty()
+    private fun isValidAes256Key(value: String) = runCatching { java.util.Base64.getDecoder().decode(value).size == 32 }.getOrDefault(false)
 }

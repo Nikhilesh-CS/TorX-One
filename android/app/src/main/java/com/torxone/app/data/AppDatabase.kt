@@ -89,6 +89,23 @@ data class GroupMemberEntity(
     val joinedAt: Long
 )
 
+@Entity(
+    tableName = "group_keys",
+    primaryKeys = ["groupId", "keyVersion"],
+    foreignKeys = [androidx.room.ForeignKey(
+        entity = GroupEntity::class,
+        parentColumns = ["groupId"],
+        childColumns = ["groupId"],
+        onDelete = androidx.room.ForeignKey.CASCADE
+    )]
+)
+data class GroupKeyEntity(
+    val groupId: String,
+    val keyVersion: Int,
+    val aesKeyBase64: String,
+    val distributedAt: Long
+)
+
 @Dao
 interface GroupDao {
     @Query("SELECT * FROM groups ORDER BY createdAt DESC")
@@ -123,6 +140,18 @@ interface GroupDao {
 
     @Query("DELETE FROM group_members WHERE groupId = :groupId AND memberKey = :memberKey")
     fun deleteGroupMember(groupId: String, memberKey: String)
+}
+
+@Dao
+interface GroupKeyDao {
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId ORDER BY keyVersion DESC LIMIT 1")
+    fun getLatestKey(groupId: String): GroupKeyEntity?
+
+    @Query("SELECT * FROM group_keys WHERE groupId = :groupId AND keyVersion = :keyVersion LIMIT 1")
+    fun getKey(groupId: String, keyVersion: Int): GroupKeyEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertKey(key: GroupKeyEntity)
 }
 
 @Entity(tableName = "connection_requests")
@@ -348,8 +377,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class],
-    version = 15,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class],
+    version = 16,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -362,6 +391,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun musicNoteDao(): MusicNoteDao
     abstract fun pendingEncryptedPayloadDao(): PendingEncryptedPayloadDao
     abstract fun groupDao(): GroupDao
+    abstract fun groupKeyDao(): GroupKeyDao
     abstract fun conversationDao(): ConversationDao
 
     companion object {
@@ -593,6 +623,21 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_14_15 = object : androidx.room.migration.Migration(14, 15) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE groups ADD COLUMN muteUntil INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_15_16 = object : androidx.room.migration.Migration(15, 16) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `group_keys` (
+                        `groupId` TEXT NOT NULL,
+                        `keyVersion` INTEGER NOT NULL,
+                        `aesKeyBase64` TEXT NOT NULL,
+                        `distributedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`groupId`, `keyVersion`),
+                        FOREIGN KEY(`groupId`) REFERENCES `groups`(`groupId`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
             }
         }
     }

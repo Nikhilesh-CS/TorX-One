@@ -172,49 +172,7 @@ class ChatViewModel(
                 conversationEngine.messages.value.firstOrNull { it.id == id }
             }
             if (conversationType == "group") {
-                val group = db.groupDao().getGroup(contactKey) ?: return@launch
-                val identity = com.torxone.app.service.TorXOneService.getInstance()?.identityManager?.loadIdentity() ?: return@launch
-                val myKey = com.torxone.app.crypto.CryptoManager.toHex(identity.signingPublicKey)
-                
-                val messageId = java.util.UUID.randomUUID().toString()
-                
-                val jsonPayload = org.json.JSONObject().apply {
-                    put("type", "TEXT")
-                    put("text", text.trim())
-                    put("messageId", messageId)
-                    if (replyToId != null) {
-                        put("replyToId", replyToId)
-                    }
-                }
-                
-                val finalPayload = org.json.JSONObject().apply {
-                    put("type", com.torxone.app.network.MeshProtocol.TYPE_GROUP_MESSAGE)
-                    put("groupId", contactKey)
-                    put("senderKey", myKey)
-                    put("payload", jsonPayload)
-                }
-                
-                val entity = MessageEntity(
-                    messageId = messageId,
-                    contactKey = contactKey,
-                    conversationType = "group",
-                    senderKey = myKey,
-                    direction = "sent",
-                    status = "pending",
-                    text = text.trim(),
-                    timestamp = System.currentTimeMillis(),
-                    replyToId = replyToId
-                )
-                db.messageDao().insertMessage(entity)
-                
-                val members = db.groupDao().getGroupMembersSync(contactKey)
-                members.forEach { member ->
-                    if (member.memberKey != myKey) {
-                        messageRouter.sendRawPayload(member.memberKey, finalPayload.toString(), com.torxone.app.network.MeshProtocol.TYPE_GROUP_MESSAGE)
-                    }
-                }
-                
-                db.messageDao().updateMessageStatus(messageId, "sent")
+                messageRouter.sendGroupMessage(contactKey, text, replyToId)
             } else {
                 val result = messageRouter.sendMessage(
                     contactKey = contactKey,

@@ -10,6 +10,7 @@ import com.torxone.app.data.ReactionOutboxEntity
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.util.UUID
+import com.torxone.app.group.GroupCryptoManager
 
 enum class Transport { NEARBY_DIRECT, NEARBY_RELAY, TOR, FAILED }
 
@@ -242,24 +243,34 @@ class MessageRouter(
     }
 
 
-    suspend fun sendGroupMessage(groupId: String, text: String): SendResult = withContext(Dispatchers.IO) {
+    suspend fun sendGroupMessage(groupId: String, text: String, replyToId: String? = null): SendResult = withContext(Dispatchers.IO) {
         val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
         val myKey = CryptoManager.toHex(identity.signingPublicKey)
         val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
+        val localMembership = db.groupDao().getGroupMember(groupId, myKey)
+        if (localMembership == null || localMembership.role == "invited") {
+            return@withContext SendResult(false, Transport.FAILED, "Accept the group invitation before sending")
+        }
+        val groupKey = db.groupKeyDao().getLatestKey(groupId)
+            ?: return@withContext SendResult(false, Transport.FAILED, "Waiting for the creator to distribute the group key")
 
         val messageId = java.util.UUID.randomUUID().toString()
-
-        val jsonPayload = JSONObject().apply {
+        val innerPayload = JSONObject().apply {
             put("type", "TEXT")
             put("text", text.trim())
             put("messageId", messageId)
+            put("senderKey", myKey)
+            put("timestamp", System.currentTimeMillis())
+            if (replyToId != null) put("replyToId", replyToId)
         }
-
+        val encrypted = GroupCryptoManager.encrypt(groupKey, innerPayload.toString())
         val finalPayload = JSONObject().apply {
             put("type", MeshProtocol.TYPE_GROUP_MESSAGE)
+            put("schemaVersion", 2)
             put("groupId", groupId)
-            put("senderKey", myKey)
-            put("payload", jsonPayload)
+            put("keyVersion", groupKey.keyVersion)
+            put("ciphertext", encrypted.ciphertextBase64)
+            put("iv", encrypted.ivBase64)
         }
 
         val entity = MessageEntity(
@@ -270,19 +281,22 @@ class MessageRouter(
             direction = "sent",
             status = "pending",
             text = text.trim(),
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            replyToId = replyToId
         )
         db.messageDao().insertMessage(entity)
 
         val members = db.groupDao().getGroupMembersSync(groupId)
-        members.forEach { member ->
+        var sentToAnyMember = false
+        members.filter { it.role != "invited" }.forEach { member ->
             if (member.memberKey != myKey) {
                 sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+                sentToAnyMember = true
             }
         }
 
         db.messageDao().updateMessageStatus(messageId, "sent")
-        SendResult(true, Transport.NEARBY_RELAY)
+        SendResult(true, if (sentToAnyMember) Transport.NEARBY_RELAY else Transport.FAILED)
     }
     fun getBestTransport(contact: ContactEntity): Transport {
         val connected = nearbyManager.connectedEndpoints.value
@@ -782,7 +796,8 @@ class MessageRouter(
         if (messageType == MeshProtocol.TYPE_GROUP_INVITE ||
             messageType == MeshProtocol.TYPE_GROUP_JOIN ||
             messageType == MeshProtocol.TYPE_GROUP_UPDATE ||
-            messageType == MeshProtocol.TYPE_GROUP_LEAVE) {
+            messageType == MeshProtocol.TYPE_GROUP_LEAVE ||
+            messageType == MeshProtocol.TYPE_GROUP_KEY) {
             service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey)
             return
         }
@@ -839,16 +854,16 @@ class MessageRouter(
 
     private suspend fun handleGroupMessage(jsonStr: String, senderKey: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
         val json = org.json.JSONObject(jsonStr)
-        val groupId = json.optString("groupId")
-        val innerSenderKey = json.optString("senderKey")
-        val innerPayload = json.optString("payload")
-
-        if (groupId.isBlank() || innerSenderKey.isBlank()) return
-
-        if (senderKey != innerSenderKey) {
-            Log.w(TAG, "[GROUP] Rejected message: outer sender ($senderKey) != inner sender ($innerSenderKey)")
+        // Phase 3 is strict: never accept the old Phase 2 plaintext group payload.
+        if (json.optInt("schemaVersion", 0) != 2) {
+            Log.w(TAG, "[GROUP] Rejected legacy plaintext group message")
             return
         }
+        val groupId = json.optString("groupId")
+        val keyVersion = json.optInt("keyVersion", 0)
+        val ciphertext = json.optString("ciphertext")
+        val iv = json.optString("iv")
+        if (groupId.isBlank() || keyVersion <= 0 || ciphertext.isBlank() || iv.isBlank()) return
 
         val group = db.groupDao().getGroup(groupId)
         if (group == null) {
@@ -869,17 +884,39 @@ class MessageRouter(
             return
         }
 
-        val chatPayload = decodeChatMessagePayload(innerPayload)
+        val key = db.groupKeyDao().getKey(groupId, keyVersion)
+        if (key == null) {
+            Log.w(TAG, "[GROUP] Missing key version $keyVersion for $groupId; dropping ciphertext")
+            return
+        }
+        if (db.groupKeyDao().getLatestKey(groupId)?.keyVersion != keyVersion) {
+            Log.w(TAG, "[GROUP] Rejected stale key version $keyVersion for $groupId")
+            return
+        }
+        val inner = try {
+            JSONObject(GroupCryptoManager.decrypt(key, ciphertext, iv))
+        } catch (error: Exception) {
+            Log.w(TAG, "[GROUP] Ciphertext authentication/decryption failed", error)
+            return
+        }
+        val innerSenderKey = inner.optString("senderKey")
+        val innerMessageId = inner.optString("messageId")
+        if (innerSenderKey != senderKey || innerMessageId.isBlank()) {
+            Log.w(TAG, "[GROUP] Rejected sender-mismatched or replay-unsafe payload")
+            return
+        }
 
-        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
-            Log.d(TAG, "[RECV] Duplicate group message ignored: $messageId")
+        val chatPayload = decodeChatMessagePayload(inner.toString())
+
+        if (db.messageDao().getMessageById(innerMessageId) != null) {
+            Log.d(TAG, "[RECV] Duplicate group message ignored: $innerMessageId")
             sendAck(messageId, senderKey, viaEndpoint, senderOnion)
             return
         }
 
         db.messageDao().insertMessage(
             MessageEntity(
-                messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(),
+                messageId = innerMessageId,
                 contactKey = groupId,
                 conversationType = "group",
                 senderKey = innerSenderKey,
