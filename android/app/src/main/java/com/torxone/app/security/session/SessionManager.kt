@@ -226,7 +226,15 @@ class SessionManager(
             throw firstError
         }
         if (!replayProtection.checkAndMark(sessionId, msgNum)) throw SecurityException("Replay rejected: Counter #$msgNum in session $sessionId already processed")
-        sessionDao.upsertSession(result.second)
+        if (result.second.state == "ACTIVE") {
+            sessionDao.upsertSession(result.second)
+            // Keep only the successfully authenticated session generation as
+            // the durable active state. Temporary transition sessions are
+            // useful only for this receive attempt and must never be promoted.
+            sessionDao.pruneOldSessions(normalizedSender, result.second.sessionId)
+        } else {
+            Log.d(TAG, "[$sessionId] Decrypted with temporary transition session; active session preserved")
+        }
         skippedKeyDao?.pruneExpiredKeys(System.currentTimeMillis() - 7 * 24 * 3600 * 1000L)
         return DecryptedResult(result.first, innerType, sessionId, msgNum)
     }
