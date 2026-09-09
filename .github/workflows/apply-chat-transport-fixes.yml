@@ -1,0 +1,82 @@
+name: Apply chat transport fixes
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply fixes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re, subprocess
+
+          def edit(path, fn):
+              p=Path(path); s=p.read_text(); n=fn(s)
+              if n==s: raise SystemExit(f'NO CHANGE: {path}')
+              p.write_text(n); print(path, len(s), '->', len(n))
+
+          def tor(s):
+              if 'torSocketPool' not in s:
+                  s=s.replace('import java.util.concurrent.atomic.AtomicBoolean\n','import java.util.concurrent.atomic.AtomicBoolean\nimport java.util.concurrent.ConcurrentHashMap\n',1)
+                  m='    private var watchdogJob: Job? = null\n'; assert m in s
+                  s=s.replace(m,m+'    private val torSocketPool = ConcurrentHashMap<String, Socket>()\n    private val torSocketLocks = ConcurrentHashMap<String, Any>()\n',1)
+              if 'closePooledTorSockets()' not in s:
+                  m='        socketServer?.stop()\n'; assert m in s
+                  s=s.replace(m,'        closePooledTorSockets()\n'+m,1)
+              pat=r'''    fun sendToOnion\(onionHost: String, payload: String\): Boolean \{.*?\n    \}\n\n    private fun startLocalServer\(\) \{'''
+              rep='''    fun sendToOnion(onionHost: String, payload: String): Boolean {\n        val lock = torSocketLocks.computeIfAbsent(onionHost) { Any() }\n        synchronized(lock) {\n            repeat(2) { attempt ->\n                val socket = getOrCreatePooledSocket(onionHost) ?: return false\n                try {\n                    socket.getOutputStream().apply {\n                        write(payload.toByteArray(Charsets.UTF_8))\n                        write('\\n'.code)\n                        flush()\n                    }\n                    addTorLog("[TOR] Packet sent to $onionHost${if (attempt > 0) " after reconnect" else ""}")\n                    return true\n                } catch (e: Exception) {\n                    addTorLog("[TOR] Persistent socket failed: ${e.message}")\n                    removePooledSocket(onionHost, socket)\n                    if (attempt == 1) _lastError.value = "Send failed: ${e.message}"\n                }\n            }\n        }\n        return false\n    }\n\n    private fun getOrCreatePooledSocket(onionHost: String): Socket? {\n        val existing = torSocketPool[onionHost]\n        if (existing != null && existing.isConnected && !existing.isClosed) return existing\n        if (existing != null) removePooledSocket(onionHost, existing)\n        val created = createTorSocket(onionHost) ?: return null\n        created.keepAlive = true\n        created.tcpNoDelay = true\n        torSocketPool[onionHost] = created\n        return created\n    }\n\n    private fun removePooledSocket(onionHost: String, socket: Socket?) {\n        if (socket == null) return\n        torSocketPool.remove(onionHost, socket)\n        runCatching { socket.close() }\n    }\n\n    private fun closePooledTorSockets() {\n        torSocketPool.values.toList().forEach { runCatching { it.close() } }\n        torSocketPool.clear()\n        torSocketLocks.clear()\n    }\n\n    private fun startLocalServer() {'''
+              s,c=re.subn(pat,rep,s,flags=re.S); assert c==1,c
+              return s
+
+          def session(s):
+              if 'encryptLocks' not in s:
+                  s=s.replace('import java.util.UUID\n','import java.util.UUID\nimport java.util.concurrent.ConcurrentHashMap\nimport kotlinx.coroutines.sync.Mutex\nimport kotlinx.coroutines.sync.withLock\n',1)
+                  m='    private val skippedKeyDao: SkippedMessageKeyDao? = null\n) {'; assert m in s
+                  s=s.replace(m,m+'\n    private val encryptLocks = ConcurrentHashMap<String, Mutex>()',1)
+                  sig='    suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {'; assert sig in s
+                  s=s.replace(sig,sig+'\n        val contactKey = contact.signingPublicKey.trim().lowercase()\n        return encryptLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {\n            encryptLocked(contact, plaintext, messageType)\n        }\n    }\n\n    private suspend fun encryptLocked(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {',1)
+                  old='        val contactKey = contact.signingPublicKey.trim().lowercase()\n        var session = sessionDao.getSession(contactKey)'; assert old in s
+                  s=s.replace(old,'        var session = sessionDao.getSession(contactKey)',1)
+              return s
+
+          def router(s):
+              if 'retryBackoffMs' not in s:
+                  s=s.replace('private const val RETRY_INTERVAL_MS = 30_000L // 30 seconds','private const val RETRY_INTERVAL_MS = 2_000L // fast first retry',1)
+                  s=s.replace('private var retryIntervalMs: Long = RETRY_INTERVAL_MS','private var retryIntervalMs: Long = RETRY_INTERVAL_MS\n    private var retryBackoffMs: Long = RETRY_INTERVAL_MS',1)
+              # Preserve sender time inside the encrypted chat envelope.
+              if 'val timestamp: Long? = null' not in s:
+                  old='''    private data class ChatMessagePayload(\n        val text: String,\n        val replyToId: String? = null,'''; assert old in s
+                  s=s.replace(old,'''    private data class ChatMessagePayload(\n        val text: String,\n        val timestamp: Long? = null,\n        val replyToId: String? = null,''',1)
+              if 'put("version", 2)' not in s:
+                  pat=r'''    private fun encodeChatMessagePayload\(.*?\n    \}\n\n    private fun decodeChatMessagePayload'''
+                  rep='''    private fun encodeChatMessagePayload(\n        text: String, replyToId: String?, replyToText: String?,\n        replyToSender: String?, replyToType: String?\n    ): String {\n        val timestamp = System.currentTimeMillis()\n        return JSONObject().apply {\n            put("astraType", "chat_message")\n            put("version", 2)\n            put("timestamp", timestamp)\n            put("text", text)\n            replyToId?.takeIf { it.isNotBlank() }?.let { id ->\n                put("reply", JSONObject()\n                    .put("originalMessageId", id)\n                    .put("originalSender", replyToSender ?: "")\n                    .put("originalType", replyToType ?: "TEXT")\n                    .put("originalPreview", replyToText ?: ""))\n            }\n        }.toString()\n    }\n\n    private fun decodeChatMessagePayload'''
+                  s,c=re.subn(pat,rep,s,flags=re.S); assert c==1,c
+                  old='''            ChatMessagePayload(\n                text = json.optString("text", ""),'''; assert old in s
+                  s=s.replace(old,'''            ChatMessagePayload(\n                text = json.optString("text", ""),\n                timestamp = json.optLong("timestamp", 0L).takeIf { it > 0L },''',1)
+                  anchor=s.find('val chatPayload = decodeChatMessagePayload(plaintext)')
+                  idx=s.find('timestamp = System.currentTimeMillis(),',anchor); assert idx!=-1
+                  s=s[:idx]+s[idx:].replace('timestamp = System.currentTimeMillis(),','timestamp = chatPayload.timestamp ?: System.currentTimeMillis(),',1)
+              old='''            while (isActive) {\n                delay(retryIntervalMs)\n                try {\n                    retryPendingMessages()\n                } catch (e: Exception) {\n                    Log.e(TAG, "[RETRY] Error in retry loop", e)\n                }\n            }'''
+              if old in s:
+                  new='''            while (isActive) {\n                delay(retryBackoffMs)\n                try {\n                    retryPendingMessages()\n                    val stillPending = db.messageDao().getPendingMessages().isNotEmpty()\n                    retryBackoffMs = if (stillPending) (retryBackoffMs * 2).coerceAtMost(60_000L) else RETRY_INTERVAL_MS\n                } catch (e: Exception) {\n                    retryBackoffMs = (retryBackoffMs * 2).coerceAtMost(60_000L)\n                    Log.e(TAG, "[RETRY] Error in retry loop", e)\n                }\n            }'''
+                  s=s.replace(old,new,1)
+              s=s.replace('''    fun ensureRetryLoopRunning() {\n        if (retryJob?.isActive == true) return\n        retryJob = scope.launch(Dispatchers.IO) {''','''    fun ensureRetryLoopRunning() {\n        if (retryJob?.isActive == true) return\n        retryBackoffMs = RETRY_INTERVAL_MS\n        retryJob = scope.launch(Dispatchers.IO) {''',1)
+              s=s.replace('''    fun setBackgroundRetryInterval(intervalMs: Long) {\n        retryIntervalMs = intervalMs.coerceIn(10_000L, 120_000L)\n    }''','''    fun setBackgroundRetryInterval(intervalMs: Long) {\n        retryIntervalMs = intervalMs.coerceIn(2_000L, 120_000L)\n        retryBackoffMs = retryIntervalMs\n    }''',1)
+              return s
+
+          edit('android/app/src/main/java/com/torxone/app/network/TorManager.kt',tor)
+          edit('android/app/src/main/java/com/torxone/app/security/session/SessionManager.kt',session)
+          edit('android/app/src/main/java/com/torxone/app/network/MessageRouter.kt',router)
+          wf=Path('.github/workflows/apply-chat-transport-fixes.yml'); wf.unlink()
+          subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
+          subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
+          subprocess.run(['git','add','.'],check=True)
+          subprocess.run(['git','commit','-m','fix(chat): speed up Tor transport and stabilize message ordering'],check=True)
+          subprocess.run(['git','push'],check=True)
+          PY
