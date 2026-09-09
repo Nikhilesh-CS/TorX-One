@@ -65,6 +65,11 @@ class WebRtcCallEngine(
     /** True after call has been accepted (startOutgoing/startIncoming completed). */
     private var hasAcceptedCall = false
     private var isCleaningUp = false
+    private val isRemoteDescriptionSet = AtomicBoolean(false)
+    private val queuedIceCandidates = java.util.concurrent.ConcurrentLinkedQueue<AstraIceCandidate>()
+    private val appliedIceKeys = java.util.Collections.synchronizedSet(HashSet<String>())
+    @Volatile
+    var currentGeneration: Long = 0L
 
     override fun isAvailable(context: CallRouteContext): Boolean = true
 
@@ -91,7 +96,7 @@ class WebRtcCallEngine(
 
                 val offer = rtcClient.createOffer()
                 diagnostics?.markOfferSent()
-                signaling.sendOffer(contact.signingPublicKey, callId, CallMode.AUDIO, offer)
+                signaling.sendOffer(contact.signingPublicKey, callId, CallMode.AUDIO, offer, currentGeneration)
 
                 Log.d(TAG, "Outgoing call offer sent: $callId")
                 CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
@@ -126,9 +131,11 @@ class WebRtcCallEngine(
                 rtcClient.setMicEnabled(!callAudioManager.isMuted)
 
                 rtcClient.setRemoteDescription(offer)
+                isRemoteDescriptionSet.set(true)
+                flushQueuedIceCandidates()
                 val answer = rtcClient.createAnswer()
                 diagnostics?.markAnswerSent()
-                signaling.sendAnswer(contact.signingPublicKey, callId, CallMode.AUDIO, answer)
+                signaling.sendAnswer(contact.signingPublicKey, callId, CallMode.AUDIO, answer, currentGeneration)
 
                 Log.d(TAG, "Incoming call accepted, answer sent: $callId")
                 CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
@@ -145,6 +152,8 @@ class WebRtcCallEngine(
         val rtcClient = client ?: return
         diagnostics?.record("REMOTE_DESCRIPTION_SET")
         rtcClient.setRemoteDescription(description)
+        isRemoteDescriptionSet.set(true)
+        flushQueuedIceCandidates()
     }
 
     override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {
@@ -153,8 +162,10 @@ class WebRtcCallEngine(
         diagnostics?.record("RENEGOTIATION_PROCESSING")
         try {
             rtcClient.setRemoteDescriptionSuspend(offer)
+            isRemoteDescriptionSet.set(true)
+            flushQueuedIceCandidates()
             val answer = rtcClient.createAnswer()
-            signaling.sendAnswer(peerKey, callId, activeMode, answer)
+            signaling.sendAnswer(peerKey, callId, activeMode, answer, currentGeneration)
             Log.d(TAG, "Renegotiation answer dispatched for call $callId")
         } catch (e: Exception) {
             Log.e(TAG, "Failed responding to renegotiation offer", e)
@@ -162,7 +173,35 @@ class WebRtcCallEngine(
     }
 
     override fun handleIceCandidate(candidate: AstraIceCandidate) {
-        client?.addIceCandidate(candidate)
+        val key = "${candidate.sdpMid}_${candidate.sdpMLineIndex}_${candidate.sdp}"
+        if (!appliedIceKeys.add(key)) {
+            Log.d(TAG, "[ICE] Duplicate candidate ignored ($key)")
+            return
+        }
+        val rtcClient = client
+        if (rtcClient != null && isRemoteDescriptionSet.get()) {
+            rtcClient.addIceCandidate(candidate)
+        } else {
+            if (queuedIceCandidates.size < 100) {
+                queuedIceCandidates.add(candidate)
+                Log.d(TAG, "[ICE] Queued candidate mid=${candidate.sdpMid} (remote SDP pending, queueSize=${queuedIceCandidates.size})")
+            } else {
+                Log.w(TAG, "[ICE] Dropped candidate mid=${candidate.sdpMid} (queue full: 100)")
+            }
+        }
+    }
+
+    private fun flushQueuedIceCandidates() {
+        val rtcClient = client ?: return
+        var flushedCount = 0
+        while (true) {
+            val c = queuedIceCandidates.poll() ?: break
+            rtcClient.addIceCandidate(c)
+            flushedCount++
+        }
+        if (flushedCount > 0) {
+            Log.d(TAG, "[ICE] Flushed $flushedCount queued candidates to WebRTC client")
+        }
     }
 
     fun setMicEnabled(enabled: Boolean) {
@@ -193,7 +232,7 @@ class WebRtcCallEngine(
                 val peerKey = activePeerKey ?: return@WebRtcClient
                 diagnostics?.markIceCandidateSent(candidate.sdpMid)
                 engineScope?.launch(Dispatchers.IO) {
-                    signaling.sendIceCandidate(peerKey, callId, activeMode, candidate)
+                    signaling.sendIceCandidate(peerKey, callId, activeMode, candidate, currentGeneration)
                 }
             },
             onConnected = {
@@ -302,7 +341,8 @@ class WebRtcCallEngine(
                     diagnostics?.record("ICE_RESTART_TRIGGERED")
                     val newOffer = client?.performIceRestart()
                     if (newOffer != null) {
-                        signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                        currentGeneration++
+                        signaling.sendOffer(peerKey, callId, activeMode, newOffer, currentGeneration)
                         diagnostics?.record("ICE_RESTART_OFFER_SENT")
                     }
                 } catch (e: Exception) {
@@ -361,7 +401,8 @@ class WebRtcCallEngine(
                 Log.i(TAG, "Executing handover single-flight ICE restart")
                 val newOffer = client?.performIceRestart()
                 if (newOffer != null) {
-                    signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                    currentGeneration++
+                    signaling.sendOffer(peerKey, callId, activeMode, newOffer, currentGeneration)
                     diagnostics?.record("HANDOVER_RESTART_OFFER_SENT")
                 }
             } catch (e: Exception) {
@@ -403,6 +444,10 @@ class WebRtcCallEngine(
         qualityMonitor?.stop()
         qualityMonitor = null
         iceRestartInProgress.set(false)
+        isRemoteDescriptionSet.set(false)
+        queuedIceCandidates.clear()
+        appliedIceKeys.clear()
+        currentGeneration = 0L
         hasEstablishedCall = false
         hasAcceptedCall = false
         engineScope?.cancel()

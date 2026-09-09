@@ -950,7 +950,7 @@ class MessageRouter(
         val service = com.torxone.app.service.TorXOneService.getInstance()
         if (messageType != MeshProtocol.TYPE_PROFILE_UPDATE && messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO && messageType != MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) service?.profileSyncManager?.syncWithContactSoon(senderKey)
         if (messageType == MeshProtocol.TYPE_MEDIA_CHUNK || messageType == MeshProtocol.TYPE_MEDIA_OFFER || messageType == MeshProtocol.TYPE_MEDIA_ACK || messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) { service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey); return }
-        if (messageType == MeshProtocol.TYPE_CALL_OFFER || messageType == MeshProtocol.TYPE_CALL_ANSWER || messageType == MeshProtocol.TYPE_ICE_CANDIDATE || messageType == MeshProtocol.TYPE_CALL_END) { service?.callManager?.handleSignal(messageType, plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_CALL_OFFER || messageType == MeshProtocol.TYPE_CALL_ANSWER || messageType == MeshProtocol.TYPE_ICE_CANDIDATE || messageType == MeshProtocol.TYPE_CALL_END || messageType == MeshProtocol.TYPE_CALL_ACK) { service?.callManager?.handleSignal(messageType, plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_PROFILE_UPDATE || messageType == MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO || messageType == MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) { service?.profileSyncManager?.handleProfilePacket(messageType, plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_REACTION) { handleReactionPacket(plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_POLL_VOTE) { handlePollVotePacket(plaintext, senderKey); return }

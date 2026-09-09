@@ -37,7 +37,7 @@ class CallManager(
     val audioRouteManager: AudioRouteManager by lazy { AudioRouteManager(context) }
     val ringtoneManager: CallRingtoneManager = ringtoneManagerOverride ?: CallRingtoneManager(context)
     private val scope = scopeOverride ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val signaling = CallSignalingHandler(messageRouter)
+    private val signaling = CallSignalingHandler(messageRouter, db, scope)
     private val permissions = AudioVideoPermissionManager(context)
 
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -63,6 +63,26 @@ class CallManager(
     private val terminatedCalls = ConcurrentHashMap<String, Long>()
     @Volatile
     private var callGeneration: Long = 0L
+    @Volatile
+    private var currentRemoteGeneration: Long = 0L
+    @Volatile
+    private var lastProcessedSeq: Int = 0
+    private val earlyIceCandidates = ConcurrentHashMap<String, MutableList<AstraIceCandidate>>()
+    private val processedSignalIds = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
+    private val outOfOrderSignals = ConcurrentHashMap<String, java.util.concurrent.ConcurrentSkipListMap<Int, Pair<String, CallSignal>>>()
+
+    private fun rememberSignalId(signalId: String) {
+        synchronized(processedSignalIds) {
+            if (processedSignalIds.size >= 1000) {
+                val it = processedSignalIds.iterator()
+                if (it.hasNext()) {
+                    it.next()
+                    it.remove()
+                }
+            }
+            processedSignalIds.add(signalId)
+        }
+    }
 
     private var activeDiagnostics: CallConnectionDiagnostics? = null
     private var transportSession: CallTransportSession? = null
@@ -190,8 +210,10 @@ class CallManager(
                 return@launch
             }
 
+            signaling.resetSequence()
             activeEngine = selected
             (selected as? WebRtcCallEngine)?.diagnostics = diagnostics
+            (selected as? WebRtcCallEngine)?.currentGeneration = generation
             val result = selected.startOutgoing(callId, contact, routeContext)
             if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
                 Log.d(TAG, "Call $callId cancelled during startOutgoing (gen $generation vs $callGeneration)")
@@ -238,11 +260,19 @@ class CallManager(
 
             activeEngine = selected
             (selected as? WebRtcCallEngine)?.diagnostics = activeDiagnostics
+            (selected as? WebRtcCallEngine)?.currentGeneration = generation
             val result = selected.acceptIncoming(callId, contact, offer)
             if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
                 Log.d(TAG, "Call $callId cancelled during acceptIncoming (gen $generation vs $callGeneration)")
                 selected.end()
                 return@launch
+            }
+            val early = earlyIceCandidates.remove(callId)
+            if (!early.isNullOrEmpty()) {
+                Log.d(TAG, "Draining ${early.size} early ICE candidates for call $callId")
+                for (cand in early) {
+                    selected.handleIceCandidate(cand)
+                }
             }
             handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type, generation, selected)
         }
@@ -284,8 +314,11 @@ class CallManager(
         val endingPeerKey = activePeerKey
         if (endingCallId != null) {
             rememberTerminated(endingCallId)
+            earlyIceCandidates.remove(endingCallId)
+            outOfOrderSignals.remove(endingCallId)
+            signaling.clearCallSignals(endingCallId)
             if (endingPeerKey != null) {
-                scope.launch { signaling.sendEnd(endingPeerKey, endingCallId, activeMode, reason) }
+                scope.launch { signaling.sendEnd(endingPeerKey, endingCallId, activeMode, reason, callGeneration) }
             }
         }
         activeEngine?.end()
@@ -313,11 +346,124 @@ class CallManager(
         scope.launch {
             runCatching {
                 val signal = signaling.parse(rawPayload)
-                when (packetType) {
-                    com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> handleOffer(signal, senderKey)
-                    com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> handleAnswer(signal, senderKey)
-                    com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> handleIce(signal, senderKey)
-                    com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> handleRemoteEnd(signal, senderKey)
+
+                // 1. Handle incoming CALL_ACK directly
+                if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_ACK) {
+                    signaling.handleAck(signal)
+                    return@launch
+                }
+
+                val callId = signal.callId
+
+                // 2. Check if this call has already been terminated
+                if (isTerminated(callId)) {
+                    Log.d(TAG, "Signal $packetType received for terminated call $callId, re-ACKing and ignoring")
+                    signaling.sendAck(
+                        peerKey = senderKey,
+                        callId = callId,
+                        ackSignalId = signal.signalId,
+                        generation = signal.generation,
+                        seq = signal.seq,
+                        ackType = "TERMINATED_ACK"
+                    )
+                    return@launch
+                }
+
+                // 3. Exact signalId duplicate detection (Lost ACK scenario)
+                val isDuplicateSignalId = synchronized(processedSignalIds) {
+                    processedSignalIds.contains(signal.signalId)
+                }
+                if (isDuplicateSignalId) {
+                    Log.d(TAG, "Duplicate signalId=${signal.signalId} received for call $callId, re-ACKing and ignoring")
+                    val ackType = when (packetType) {
+                        com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> "OFFER_ACK"
+                        com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> "ANSWER_ACK"
+                        com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> "ICE_ACK"
+                        com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> "END_ACK"
+                        else -> "CALL_ACK"
+                    }
+                    signaling.sendAck(
+                        peerKey = senderKey,
+                        callId = callId,
+                        ackSignalId = signal.signalId,
+                        generation = signal.generation,
+                        seq = signal.seq,
+                        ackType = ackType
+                    )
+                    return@launch
+                }
+
+                // 4. Strict generation rules
+                // Older generation: ignore + re-ACK so sender stops retrying
+                if (signal.generation > 0L && signal.generation < currentRemoteGeneration) {
+                    Log.w(TAG, "Dropping older generation signal (gen=${signal.generation} < curr=$currentRemoteGeneration) for call $callId")
+                    signaling.sendAck(
+                        peerKey = senderKey,
+                        callId = callId,
+                        ackSignalId = signal.signalId,
+                        generation = signal.generation,
+                        seq = signal.seq,
+                        ackType = "STALE_GEN_ACK"
+                    )
+                    return@launch
+                }
+
+                // Newer generation: reset expected sequence window
+                if (signal.generation > currentRemoteGeneration) {
+                    Log.i(TAG, "Newer generation signal (gen=${signal.generation} > curr=$currentRemoteGeneration) for call $callId - resetting seq window")
+                    currentRemoteGeneration = signal.generation
+                    lastProcessedSeq = 0
+                    outOfOrderSignals.remove(callId)
+                }
+
+                // 5. CALL_END is authoritative and bypasses sequence ordering
+                if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_END) {
+                    rememberSignalId(signal.signalId)
+                    if (signal.seq > lastProcessedSeq) {
+                        lastProcessedSeq = signal.seq
+                    }
+                    handleRemoteEnd(signal, senderKey)
+                    return@launch
+                }
+
+                // 6. Same generation sequence rules
+                if (signal.generation == currentRemoteGeneration && signal.seq > 0) {
+                    if (signal.seq <= lastProcessedSeq) {
+                        Log.d(TAG, "Duplicate or old seq=${signal.seq} <= lastProcessedSeq=$lastProcessedSeq, re-ACKing and ignoring")
+                        signaling.sendAck(
+                            peerKey = senderKey,
+                            callId = callId,
+                            ackSignalId = signal.signalId,
+                            generation = signal.generation,
+                            seq = signal.seq,
+                            ackType = "DUP_SEQ_ACK"
+                        )
+                        return@launch
+                    }
+
+                    // Strict ordering: if signal.seq > lastProcessedSeq + 1, buffer it
+                    if (lastProcessedSeq > 0 && signal.seq > lastProcessedSeq + 1) {
+                        Log.d(TAG, "Out-of-order signal seq=${signal.seq} (expected ${lastProcessedSeq + 1}), buffering")
+                        val buffer = outOfOrderSignals.getOrPut(callId) { java.util.concurrent.ConcurrentSkipListMap() }
+                        if (buffer.size < 100) {
+                            buffer[signal.seq] = Pair(packetType, signal)
+                        }
+                        return@launch
+                    }
+                }
+
+                // 7. Process current signal
+                processSignal(packetType, signal, senderKey)
+
+                // 8. Drain any subsequent buffered signals that can now be processed in order
+                val buffer = outOfOrderSignals[callId]
+                if (buffer != null) {
+                    while (true) {
+                        val nextSeq = lastProcessedSeq + 1
+                        val nextEntry = buffer.remove(nextSeq) ?: break
+                        Log.d(TAG, "Processing buffered signal seq=$nextSeq type=${nextEntry.first}")
+                        processSignal(nextEntry.first, nextEntry.second, senderKey)
+                    }
                 }
             }.onFailure { e ->
                 if (e is SecurityException) {
@@ -326,6 +472,19 @@ class CallManager(
                     Log.e(TAG, "Failed to handle call signal $packetType", e)
                 }
             }
+        }
+    }
+
+    private suspend fun processSignal(packetType: String, signal: CallSignal, senderKey: String) {
+        rememberSignalId(signal.signalId)
+        if (signal.seq > 0) {
+            lastProcessedSeq = signal.seq
+        }
+        when (packetType) {
+            com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> handleOffer(signal, senderKey)
+            com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> handleAnswer(signal, senderKey)
+            com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> handleIce(signal, senderKey)
+            com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> handleRemoteEnd(signal, senderKey)
         }
     }
 
@@ -373,9 +532,25 @@ class CallManager(
                 activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
                 pendingOffer = offer
                 activeEngine?.handleRenegotiationOffer(offer, normalizedSenderKey, signal.callId)
+                signaling.sendAck(
+                    peerKey = normalizedSenderKey,
+                    callId = signal.callId,
+                    ackSignalId = signal.signalId,
+                    generation = signal.generation,
+                    seq = signal.seq,
+                    ackType = "OFFER_ACK"
+                )
             } else {
                 Log.d(TAG, "Dropping duplicate CALL_OFFER for active call ${signal.callId}; state=${currentState::class.simpleName}")
                 activeDiagnostics?.record("DUPLICATE_OFFER_DROPPED")
+                signaling.sendAck(
+                    peerKey = normalizedSenderKey,
+                    callId = signal.callId,
+                    ackSignalId = signal.signalId,
+                    generation = signal.generation,
+                    seq = signal.seq,
+                    ackType = "OFFER_ACK"
+                )
             }
             return
         }
@@ -395,7 +570,7 @@ class CallManager(
             return
         }
 
-        callGeneration++
+        callGeneration = if (signal.generation > 0L) signal.generation else (callGeneration + 1)
         activeCallId = signal.callId
         activePeerKey = normalizedSenderKey
         activeMode = signal.mode
@@ -417,6 +592,16 @@ class CallManager(
         ringtoneManager.start()
         stateStore.update(CallUiState.Ringing(signal.callId, normalizedSenderKey, peerName, CallDirection.INCOMING, signal.mode))
         com.torxone.app.service.NotificationHelper.showIncomingCall(context, signal.callId, normalizedSenderKey, peerName)
+
+        // ACK the OFFER as successfully accepted/registered by signaling layer
+        signaling.sendAck(
+            peerKey = normalizedSenderKey,
+            callId = signal.callId,
+            ackSignalId = signal.signalId,
+            generation = signal.generation,
+            seq = signal.seq,
+            ackType = "OFFER_ACK"
+        )
     }
 
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
@@ -432,9 +617,19 @@ class CallManager(
         val peerName = contact?.name ?: "Unknown Contact"
         stateStore.update(CallUiState.Accepted(callId, senderKey, peerName, signal.mode))
         startConnectEstablishmentTimeout(callId)
+
+        // ACK the ANSWER as successfully accepted and registered
+        signaling.sendAck(
+            peerKey = senderKey,
+            callId = signal.callId,
+            ackSignalId = signal.signalId,
+            generation = signal.generation,
+            seq = signal.seq,
+            ackType = "ANSWER_ACK"
+        )
     }
 
-    private fun handleIce(signal: CallSignal, senderKey: String) {
+    private suspend fun handleIce(signal: CallSignal, senderKey: String) {
         if (signal.callId != activeCallId || isTerminated(signal.callId)) {
             CallSecurityLogger.logSecurityEvent(
                 CallSecurityLogger.EVENT_STALE_SIGNAL_DISCARDED,
@@ -452,14 +647,48 @@ class CallManager(
         val candidateText = signal.candidate ?: return
         val mid = signal.sdpMid ?: return
         val index = signal.sdpMLineIndex ?: return
-        activeDiagnostics?.markIceCandidateReceived(mid)
-        activeEngine?.handleIceCandidate(AstraIceCandidate(mid, index, candidateText))
+        val candidate = AstraIceCandidate(mid, index, candidateText)
+
+        val engine = activeEngine
+        if (engine != null) {
+            activeDiagnostics?.markIceCandidateReceived(mid)
+            engine.handleIceCandidate(candidate)
+        } else {
+            Log.d(TAG, "Queueing early ICE candidate for call ${signal.callId} before engine accept")
+            val list = earlyIceCandidates.getOrPut(signal.callId) { java.util.Collections.synchronizedList(mutableListOf()) }
+            synchronized(list) {
+                if (list.size < 100 && list.none { it.sdpMid == mid && it.sdpMLineIndex == index && it.sdp == candidateText }) {
+                    list.add(candidate)
+                }
+            }
+        }
+
+        // ACK the ICE candidate as accepted/queued
+        signaling.sendAck(
+            peerKey = senderKey,
+            callId = signal.callId,
+            ackSignalId = signal.signalId,
+            generation = signal.generation,
+            seq = signal.seq,
+            ackType = "ICE_ACK"
+        )
     }
 
-    private fun handleRemoteEnd(signal: CallSignal, senderKey: String) {
+    private suspend fun handleRemoteEnd(signal: CallSignal, senderKey: String) {
         ringtoneManager.stop()
         if (senderKey != activePeerKey || signal.callId != activeCallId) {
             rememberTerminated(signal.callId)
+            earlyIceCandidates.remove(signal.callId)
+            outOfOrderSignals.remove(signal.callId)
+            signaling.clearCallSignals(signal.callId)
+            signaling.sendAck(
+                peerKey = senderKey,
+                callId = signal.callId,
+                ackSignalId = signal.signalId,
+                generation = signal.generation,
+                seq = signal.seq,
+                ackType = "END_ACK"
+            )
             return
         }
         val isIncomingRinging = (stateStore.state.value as? CallUiState.Ringing)?.direction == CallDirection.INCOMING
@@ -489,6 +718,9 @@ class CallManager(
         com.torxone.app.service.NotificationHelper.clearOngoingCall(context)
         stopDurationTimer()
         rememberTerminated(signal.callId)
+        earlyIceCandidates.remove(signal.callId)
+        outOfOrderSignals.remove(signal.callId)
+        signaling.clearCallSignals(signal.callId)
         activeEngine?.end()
         activeEngine = null
         activeCallId = null
@@ -497,6 +729,16 @@ class CallManager(
         callStartMonotonicMs = 0L
         stateStore.update(CallUiState.Ended(reason, 0))
         scheduleEndedReset()
+
+        // ACK the CALL_END signal
+        signaling.sendAck(
+            peerKey = senderKey,
+            callId = signal.callId,
+            ackSignalId = signal.signalId,
+            generation = signal.generation,
+            seq = signal.seq,
+            ackType = "END_ACK"
+        )
     }
 
     private fun scheduleEndedReset() {

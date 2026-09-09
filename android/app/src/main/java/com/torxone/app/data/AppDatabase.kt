@@ -558,6 +558,55 @@ data class MessageOutboxEntity(
     val nextRetryAt: Long = 0L
 )
 
+@Dao
+interface CallSignalingOutboxDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertSignal(signal: CallSignalingOutboxEntity)
+
+    @Query("SELECT * FROM call_signaling_outbox WHERE signalId = :signalId LIMIT 1")
+    fun getSignal(signalId: String): CallSignalingOutboxEntity?
+
+    @Query("SELECT * FROM call_signaling_outbox WHERE nextRetryAt <= :now ORDER BY createdAt ASC LIMIT :limit")
+    fun getPendingSignals(now: Long = System.currentTimeMillis(), limit: Int = 50): List<CallSignalingOutboxEntity>
+
+    @Query("SELECT * FROM call_signaling_outbox WHERE callId = :callId")
+    fun getSignalsForCall(callId: String): List<CallSignalingOutboxEntity>
+
+    @Query("DELETE FROM call_signaling_outbox WHERE signalId = :signalId")
+    fun deleteSignal(signalId: String)
+
+    @Query("DELETE FROM call_signaling_outbox WHERE callId = :callId")
+    fun deleteSignalsForCall(callId: String)
+
+    @Query("UPDATE call_signaling_outbox SET retryCount = retryCount + 1, nextRetryAt = :nextRetryAt WHERE signalId = :signalId")
+    fun updateRetry(signalId: String, nextRetryAt: Long)
+
+    @Query("DELETE FROM call_signaling_outbox WHERE createdAt < :cutoff")
+    fun purgeOldSignals(cutoff: Long)
+}
+
+@Entity(
+    tableName = "call_signaling_outbox",
+    indices = [
+        androidx.room.Index(value = ["callId"]),
+        androidx.room.Index(value = ["peerKey"]),
+        androidx.room.Index(value = ["nextRetryAt"])
+    ]
+)
+data class CallSignalingOutboxEntity(
+    @PrimaryKey val signalId: String,
+    val callId: String,
+    val peerKey: String,
+    val signalType: String,
+    val generation: Long,
+    val seq: Int,
+    val rawPayload: String,
+    val messageType: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val retryCount: Int = 0,
+    val nextRetryAt: Long = 0L
+)
+
 @Entity(tableName = "music_notes")
 data class MusicNoteEntity(
     @PrimaryKey val noteId: String = UUID.randomUUID().toString(),
@@ -601,8 +650,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class],
-    version = 24,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class],
+    version = 25,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -626,6 +675,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
     abstract fun receiptOutboxDao(): ReceiptOutboxDao
     abstract fun messageOutboxDao(): MessageOutboxDao
+    abstract fun callSignalingOutboxDao(): CallSignalingOutboxDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -992,6 +1042,30 @@ abstract class AppDatabase : RoomDatabase() {
                 """.trimIndent())
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_outbox_contactKey` ON `message_outbox` (`contactKey`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_outbox_nextRetryAt` ON `message_outbox` (`nextRetryAt`)")
+            }
+        }
+
+        val MIGRATION_24_25 = object : androidx.room.migration.Migration(24, 25) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `call_signaling_outbox` (
+                        `signalId` TEXT NOT NULL,
+                        `callId` TEXT NOT NULL,
+                        `peerKey` TEXT NOT NULL,
+                        `signalType` TEXT NOT NULL,
+                        `generation` INTEGER NOT NULL,
+                        `seq` INTEGER NOT NULL,
+                        `rawPayload` TEXT NOT NULL,
+                        `messageType` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `retryCount` INTEGER NOT NULL DEFAULT 0,
+                        `nextRetryAt` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`signalId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_callId` ON `call_signaling_outbox` (`callId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_peerKey` ON `call_signaling_outbox` (`peerKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_nextRetryAt` ON `call_signaling_outbox` (`nextRetryAt`)")
             }
         }
     }

@@ -38,6 +38,7 @@ object MeshProtocol {
     const val TYPE_CALL_ANSWER = "call_answer"
     const val TYPE_ICE_CANDIDATE = "ice_candidate"
     const val TYPE_CALL_END = "call_end"
+    const val TYPE_CALL_ACK = "call_ack"
     
     // Group signaling
     const val TYPE_GROUP_INVITE = "group_invite"
@@ -128,6 +129,30 @@ object MeshProtocol {
         val json = parse(raw) ?: return null
         if (json.optString("type") != TYPE_READ) return null
         return json.optString("msgId").takeIf { it.isNotBlank() }
+    }
+
+    fun encodeCallAck(
+        callId: String,
+        signalId: String,
+        ackSignalId: String,
+        fromKey: String,
+        toKey: String,
+        generation: Long,
+        seq: Int,
+        ackType: String = "CALL_ACK"
+    ): String {
+        return JSONObject()
+            .put("type", TYPE_CALL_ACK)
+            .put("callId", callId)
+            .put("signalId", signalId)
+            .put("ackSignalId", ackSignalId)
+            .put("from", fromKey)
+            .put("to", toKey)
+            .put("generation", generation)
+            .put("seq", seq)
+            .put("ackType", ackType)
+            .put("timestamp", System.currentTimeMillis())
+            .toString()
     }
 
     fun encodePing(timestamp: Long, fromOnion: String): String {
