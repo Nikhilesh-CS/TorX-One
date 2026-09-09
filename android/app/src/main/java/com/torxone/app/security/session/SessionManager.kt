@@ -9,12 +9,16 @@ import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.MeshProtocol
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 class SessionManager(
     private val sessionDao: SessionDao,
     private val replayProtection: ReplayProtection,
     private val contactDao: ContactDao? = null,
     private val skippedKeyDao: SkippedMessageKeyDao? = null
 ) {
+    private val encryptLocks = ConcurrentHashMap<String, Mutex>()
     companion object {
         private const val TAG = "SessionManager"
         private const val SCHEMA_VERSION = 1
@@ -27,10 +31,16 @@ class SessionManager(
     data class SessionWirePayload(val wireJsonString: String, val sessionId: String, val messageId: String)
     data class DecryptedResult(val plaintext: String, val messageType: String, val sessionId: String, val msgNum: Int)
     suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {
+        val contactKey = contact.signingPublicKey.trim().lowercase()
+        return encryptLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {
+            encryptLocked(contact, plaintext, messageType)
+        }
+    }
+
+    private suspend fun encryptLocked(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {
         val id = identity ?: throw IllegalStateException("Identity not available")
         val mySigKeyHex = CryptoManager.toHex(id.signingPublicKey)
         val myEncKeyHex = CryptoManager.toHex(id.encryptionPublicKey)
-        val contactKey = contact.signingPublicKey.trim().lowercase()
         var session = sessionDao.getSession(contactKey)
         if (session == null || session.state != "ACTIVE") {
             session = initializeInitiatorSession(contactKey, contact.encryptionPublicKey, id)

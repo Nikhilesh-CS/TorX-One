@@ -52,6 +52,7 @@ class MessageRouter(
     private var retryJob: Job? = null
     @Volatile
     private var retryIntervalMs: Long = RETRY_INTERVAL_MS
+    private var retryBackoffMs: Long = RETRY_INTERVAL_MS
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
     private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -540,6 +541,7 @@ class MessageRouter(
 
     fun ensureRetryLoopRunning() {
         if (retryJob?.isActive == true) return
+        retryBackoffMs = RETRY_INTERVAL_MS
         retryJob = scope.launch(Dispatchers.IO) {
             Log.d(TAG, "[RETRY] Starting retry loop")
             var currentDelay = 1_000L

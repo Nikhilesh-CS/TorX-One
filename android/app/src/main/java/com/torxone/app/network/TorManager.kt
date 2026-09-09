@@ -11,6 +11,7 @@ import java.net.Proxy
 import java.net.Socket
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 import android.util.Base64
 
 class TorManager(private val context: Context) {
@@ -62,6 +63,8 @@ class TorManager(private val context: Context) {
     private var restartAttempts = 0
     private var restartJob: Job? = null
     private var watchdogJob: Job? = null
+    private val torSocketPool = ConcurrentHashMap<String, Socket>()
+    private val torSocketLocks = ConcurrentHashMap<String, Any>()
 
     private fun addTorLog(msg: String) {
         val current = _torLogs.value.toMutableList()
@@ -271,6 +274,7 @@ class TorManager(private val context: Context) {
         watchdogJob?.cancel()
         restartJob = null
         watchdogJob = null
+        closePooledTorSockets()
         socketServer?.stop()
         torProcess?.destroy()
         _isTorReady.value = false
@@ -423,26 +427,50 @@ class TorManager(private val context: Context) {
     }
 
     fun sendToOnion(onionHost: String, payload: String): Boolean {
-        addTorLog("[TOR] Sending message to $onionHost")
-        val socket = createTorSocket(onionHost) ?: return false
-        return try {
-            socket.getOutputStream().use { out ->
-                out.write(payload.toByteArray(Charsets.UTF_8))
-                out.write('\n'.code)
-                out.flush()
-            }
-            addTorLog("[TOR] Packet sent successfully to $onionHost")
-            true
-        } catch (e: Exception) {
-            _lastError.value = "Send failed: ${e.message}"
-            addTorLog("[TOR] Delivery failed to $onionHost: ${e.message}")
-            false
-        } finally {
-            try {
-                socket.close()
-            } catch (_: Exception) {
+        val lock = torSocketLocks.computeIfAbsent(onionHost) { Any() }
+        synchronized(lock) {
+            repeat(2) { attempt ->
+                val socket = getOrCreatePooledSocket(onionHost) ?: return false
+                try {
+                    socket.getOutputStream().apply {
+                        write(payload.toByteArray(Charsets.UTF_8))
+                        write('
+'.code)
+                        flush()
+                    }
+                    addTorLog("[TOR] Packet sent to $onionHost${if (attempt > 0) " after reconnect" else ""}")
+                    return true
+                } catch (e: Exception) {
+                    addTorLog("[TOR] Persistent socket failed: ${e.message}")
+                    removePooledSocket(onionHost, socket)
+                    if (attempt == 1) _lastError.value = "Send failed: ${e.message}"
+                }
             }
         }
+        return false
+    }
+
+    private fun getOrCreatePooledSocket(onionHost: String): Socket? {
+        val existing = torSocketPool[onionHost]
+        if (existing != null && existing.isConnected && !existing.isClosed) return existing
+        if (existing != null) removePooledSocket(onionHost, existing)
+        val created = createTorSocket(onionHost) ?: return null
+        created.keepAlive = true
+        created.tcpNoDelay = true
+        torSocketPool[onionHost] = created
+        return created
+    }
+
+    private fun removePooledSocket(onionHost: String, socket: Socket?) {
+        if (socket == null) return
+        torSocketPool.remove(onionHost, socket)
+        runCatching { socket.close() }
+    }
+
+    private fun closePooledTorSockets() {
+        torSocketPool.values.toList().forEach { runCatching { it.close() } }
+        torSocketPool.clear()
+        torSocketLocks.clear()
     }
 
     private fun startLocalServer() {
