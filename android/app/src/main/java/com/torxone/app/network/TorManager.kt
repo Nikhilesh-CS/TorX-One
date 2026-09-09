@@ -25,6 +25,10 @@ class TorManager(private val context: Context) {
         private const val BOOTSTRAP_TIMEOUT_MS = 120_000L
         private const val RESTART_BASE_DELAY_MS = 2_000L
         private const val RESTART_MAX_DELAY_MS = 60_000L
+        // Mobile Tor onion rendezvous circuits commonly take 20–40 seconds,
+        // especially for the reverse path used by delivery receipts.
+        private const val ONION_CONNECT_TIMEOUT_MS = 60_000
+        private const val ONION_READ_TIMEOUT_MS = 60_000
     }
 
     private val _torState = MutableStateFlow<TorState>(TorState.Idle)
@@ -408,8 +412,8 @@ class TorManager(private val context: Context) {
     fun createTorSocket(
         onionHost: String,
         port: Int = LOCAL_PORT,
-        connectTimeoutMs: Int = 15_000,
-        readTimeoutMs: Int = 30_000
+        connectTimeoutMs: Int = ONION_CONNECT_TIMEOUT_MS,
+        readTimeoutMs: Int = ONION_READ_TIMEOUT_MS
     ): Socket? {
         if (!_isTorReady.value) {
             addTorLog("[SOCKET] Tor not ready, cannot create socket to $onionHost")
@@ -456,7 +460,8 @@ class TorManager(private val context: Context) {
 
     private fun getOrCreatePooledSocket(onionHost: String): Socket? {
         val existing = torSocketPool[onionHost]
-        if (existing != null && existing.isConnected && !existing.isClosed) return existing
+        if (existing != null && existing.isConnected && !existing.isClosed &&
+            !existing.isOutputShutdown && !existing.isInputShutdown) return existing
         if (existing != null) removePooledSocket(onionHost, existing)
         val created = createTorSocket(onionHost) ?: return null
         created.keepAlive = true
