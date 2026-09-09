@@ -153,6 +153,26 @@ object MeshProtocol {
         return json.toString()
     }
 
+    fun encodeSessionRelay(
+        dest: String,
+        from: String,
+        sessionWireJson: String,
+        ttl: Int = DEFAULT_TTL,
+        messageId: String? = null,
+        senderOnion: String? = null
+    ): String {
+        val json = JSONObject()
+            .put("type", TYPE_RELAY)
+            .put("dest", dest)
+            .put("from", from)
+            .put("ttl", ttl)
+            .put("innerType", TYPE_SESSION_MSG)
+            .put("sessionWire", sessionWireJson)
+        if (!messageId.isNullOrBlank()) json.put("msgId", messageId)
+        if (!senderOnion.isNullOrBlank()) json.put("senderOnion", senderOnion)
+        return json.toString()
+    }
+
     fun parse(raw: String): JSONObject? {
         if (raw.length > MAX_FRAME_BYTES) return null
         return try {

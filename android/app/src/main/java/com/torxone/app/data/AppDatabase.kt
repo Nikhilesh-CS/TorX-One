@@ -411,7 +411,7 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertAll(messages: List<MessageEntity>)
 
-    @Query("SELECT * FROM messages WHERE direction = 'sent' AND status = 'pending' AND retryCount < 40")
+    @Query("SELECT * FROM messages WHERE direction = 'sent' AND (status = 'pending' OR status = 'sent' OR status = 'in_transit') AND retryCount < 40")
     fun getPendingMessages(): List<MessageEntity>
 
     @Query("UPDATE messages SET retryCount = retryCount + 1 WHERE messageId = :messageId")
@@ -524,7 +524,7 @@ interface MusicNoteDao {
 
 @Database(
     entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class],
-    version = 22,
+    version = 23,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -852,6 +852,33 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("""CREATE TABLE IF NOT EXISTS `session_skipped_keys` (`sessionId` TEXT NOT NULL, `ratchetPubHex` TEXT NOT NULL, `msgNum` INTEGER NOT NULL, `messageKeyHex` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`sessionId`, `ratchetPubHex`, `msgNum`))""")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_session_skipped_keys_createdAt` ON `session_skipped_keys` (`createdAt`)")
+            }
+        }
+
+        val MIGRATION_22_23 = object : androidx.room.migration.Migration(22, 23) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `sessions_new` (
+                        `contactKey` TEXT NOT NULL,
+                        `sessionId` TEXT NOT NULL,
+                        `rootKeyHex` TEXT NOT NULL,
+                        `sendChainKeyHex` TEXT NOT NULL,
+                        `recvChainKeyHex` TEXT NOT NULL,
+                        `localRatchetPubHex` TEXT NOT NULL,
+                        `localRatchetSecHex` TEXT NOT NULL,
+                        `remoteRatchetPubHex` TEXT NOT NULL,
+                        `sendMsgCount` INTEGER NOT NULL DEFAULT 0,
+                        `recvMsgCount` INTEGER NOT NULL DEFAULT 0,
+                        `previousSendCount` INTEGER NOT NULL DEFAULT 0,
+                        `lastActiveAt` INTEGER NOT NULL DEFAULT 0,
+                        `state` TEXT NOT NULL DEFAULT 'ACTIVE',
+                        PRIMARY KEY(`contactKey`, `sessionId`)
+                    )
+                """.trimIndent())
+                db.execSQL("INSERT OR IGNORE INTO `sessions_new` SELECT * FROM `sessions`")
+                db.execSQL("DROP TABLE `sessions`")
+                db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_contactKey_lastActiveAt` ON `sessions` (`contactKey`, `lastActiveAt`)")
             }
         }
     }

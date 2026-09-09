@@ -48,9 +48,9 @@ data class CallPrivacyPolicy(
     val maskNotificationIdentities: Boolean = false
 ) {
     companion object {
-        /** Normal: Host + srflx + relay all allowed. Local IPs stripped by default. */
+        /** Normal: Host + srflx + relay all allowed. Local LAN host candidates allowed for same-network P2P. */
         val NORMAL = CallPrivacyPolicy(
-            stripLocalIps = true,
+            stripLocalIps = false,
             allowDirectP2P = true,
             allowSrflxCandidates = true,
             allowRelayCandidates = true,

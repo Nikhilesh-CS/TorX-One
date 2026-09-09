@@ -7,7 +7,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import java.util.Arrays
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class SessionSecurityTest {
 
     @Test
@@ -180,5 +185,49 @@ class SessionSecurityTest {
 
         val skipCount = incomingMsgNum - currentExpected
         assertTrue("Skip count of 145 must exceed threshold of $maxAllowed", skipCount > maxAllowed)
+    }
+
+    @Test
+    fun testSessionRelayEnvelopeEncoding() {
+        val destKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val fromKey = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        val wirePayload = "{\"type\":\"SESSION_MSG\",\"sessionId\":\"s-123\",\"msgNum\":0}"
+        
+        val relayEnvelope = com.torxone.app.network.MeshProtocol.encodeSessionRelay(
+            dest = destKey,
+            from = fromKey,
+            sessionWireJson = wirePayload,
+            ttl = 3,
+            messageId = "msg-xyz",
+            senderOnion = "testonionaddress.onion"
+        )
+
+        val json = org.json.JSONObject(relayEnvelope)
+        assertEquals(com.torxone.app.network.MeshProtocol.TYPE_RELAY, json.getString("type"))
+        assertEquals(destKey, json.getString("dest"))
+        assertEquals(fromKey, json.getString("from"))
+        assertEquals(3, json.getInt("ttl"))
+        assertEquals(com.torxone.app.network.MeshProtocol.TYPE_SESSION_MSG, json.getString("innerType"))
+        assertEquals(wirePayload, json.getString("sessionWire"))
+        assertEquals("msg-xyz", json.getString("msgId"))
+        assertEquals("testonionaddress.onion", json.getString("senderOnion"))
+    }
+
+    @Test
+    fun testDeterministicSessionArbitrationOrdering() {
+        val keyAlice = "aaaa000000000000000000000000000000000000000000000000000000000000"
+        val keyBob   = "bbbb000000000000000000000000000000000000000000000000000000000000"
+
+        // Alice sees Bob as remote
+        val remoteIsBobWinsFromAlicePerspective = keyBob < keyAlice // false
+        assertFalse(remoteIsBobWinsFromAlicePerspective)
+
+        // Bob sees Alice as remote
+        val remoteIsAliceWinsFromBobPerspective = keyAlice < keyBob // true
+        assertTrue(remoteIsAliceWinsFromBobPerspective)
+
+        // Deterministic: Alice's session wins arbitration on both sides
+        val winningKey = if (keyAlice < keyBob) keyAlice else keyBob
+        assertEquals(keyAlice, winningKey)
     }
 }

@@ -23,16 +23,16 @@ class CallSecurityTest {
     }
 
     @Test
-    fun `NORMAL policy strips private RFC1918 host candidates`() {
+    fun `NORMAL policy allows private RFC1918 host candidates for local LAN P2P`() {
         val policy = CallPrivacyPolicy.NORMAL
         val candidate192 = "candidate:1 1 udp 2122260223 192.168.1.100 50000 typ host generation 0"
-        assertFalse(policy.shouldSignalCandidate(candidate192))
+        assertTrue(policy.shouldSignalCandidate(candidate192))
 
         val candidate10 = "candidate:1 1 udp 2122260223 10.0.0.5 50000 typ host generation 0"
-        assertFalse(policy.shouldSignalCandidate(candidate10))
+        assertTrue(policy.shouldSignalCandidate(candidate10))
 
         val candidate172 = "candidate:1 1 udp 2122260223 172.16.0.1 50000 typ host generation 0"
-        assertFalse(policy.shouldSignalCandidate(candidate172))
+        assertTrue(policy.shouldSignalCandidate(candidate172))
     }
 
     @Test
@@ -210,28 +210,24 @@ class CallSecurityTest {
     }
 
     @Test
-    fun `DefaultIceServerProvider with NORMAL policy returns TURN servers`() {
+    fun `DefaultIceServerProvider with NORMAL policy returns TURN and STUN servers`() {
         val provider = DefaultIceServerProvider(CallPrivacyPolicy.NORMAL)
         val servers = kotlinx.coroutines.runBlocking { provider.getIceServers() }
-        assertTrue("Should have TURN servers", servers.isNotEmpty())
-        // Verify no Google STUN servers exist
-        servers.forEach { server ->
-            server.urls.forEach { url ->
-                assertFalse("No Google STUN allowed: $url", url.contains("google.com"))
-            }
-        }
+        assertTrue("Should have ICE servers", servers.isNotEmpty())
+        // NORMAL mode includes Google STUN for NAT traversal
+        assertTrue("STUN should be present in NORMAL mode", servers.any { s -> s.urls.any { u -> u.contains("stun.l.google.com") } })
+        assertTrue("TURN should be present in NORMAL mode", servers.any { s -> s.urls.any { u -> u.contains("openrelay.metered.ca") } })
     }
 
     @Test
-    fun `no hardcoded Google STUN servers in any provider`() {
-        listOf(CallPrivacyPolicy.NORMAL, CallPrivacyPolicy.PRIVACY, CallPrivacyPolicy.STRICT).forEach { policy ->
-            val provider = DefaultIceServerProvider(policy)
-            val servers = kotlinx.coroutines.runBlocking { provider.getIceServers() }
-            servers.forEach { server ->
-                server.urls.forEach { url ->
-                    assertFalse("Google STUN leak in ${policy}: $url", url.contains("google"))
-                    assertFalse("Google STUN leak in ${policy}: $url", url.contains("stun.l."))
-                }
+    fun `STRICT policy returns TURN only and no STUN servers`() {
+        val provider = DefaultIceServerProvider(CallPrivacyPolicy.STRICT)
+        val servers = kotlinx.coroutines.runBlocking { provider.getIceServers() }
+        assertTrue("STRICT should have TURN servers", servers.isNotEmpty())
+        servers.forEach { server ->
+            server.urls.forEach { url ->
+                assertFalse("No Google STUN allowed in STRICT: $url", url.contains("google"))
+                assertFalse("No STUN allowed in STRICT: $url", url.contains("stun:"))
             }
         }
     }

@@ -1,5 +1,7 @@
 package com.torxone.app.call
 
+import android.util.Log
+
 import com.torxone.app.network.MeshProtocol
 import com.torxone.app.network.MessageRouter
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +25,7 @@ class CallSignalingHandler(
     var activeSession: CallTransportSession? = null
 
     companion object {
+        private const val TAG = "CallSignalingHandler"
         /** Maximum raw signal payload size (bytes). Prevents memory exhaustion from malicious signals. */
         const val MAX_SIGNAL_SIZE = 65_536       // 64 KB
         /** Maximum SDP content size (bytes). */
@@ -32,14 +35,17 @@ class CallSignalingHandler(
     }
 
     suspend fun sendOffer(peerKey: String, callId: String, mode: CallMode, description: AstraSessionDescription) {
+        Log.d(TAG, "[CALL_SIG] Sent OFFER callId=$callId to=${peerKey.take(12)} mode=${mode.name}")
         sendSdp(peerKey, callId, mode, description, MeshProtocol.TYPE_CALL_OFFER)
     }
 
     suspend fun sendAnswer(peerKey: String, callId: String, mode: CallMode, description: AstraSessionDescription) {
+        Log.d(TAG, "[CALL_SIG] Sent ANSWER callId=$callId to=${peerKey.take(12)} mode=${mode.name}")
         sendSdp(peerKey, callId, mode, description, MeshProtocol.TYPE_CALL_ANSWER)
     }
 
     suspend fun sendIceCandidate(peerKey: String, callId: String, mode: CallMode, candidate: AstraIceCandidate) {
+        Log.d(TAG, "[CALL_SIG] Sent ICE candidate mid=${candidate.sdpMid} mLine=${candidate.sdpMLineIndex} callId=$callId to=${peerKey.take(12)}")
         val payload = JSONObject()
             .put("callId", callId)
             .put("mode", mode.name)
@@ -51,6 +57,7 @@ class CallSignalingHandler(
     }
 
     suspend fun sendEnd(peerKey: String, callId: String, mode: CallMode, reason: String) {
+        Log.d(TAG, "[CALL_SIG] Sent CALL_END callId=$callId to=${peerKey.take(12)} reason=$reason")
         val payload = JSONObject()
             .put("callId", callId)
             .put("mode", mode.name)
@@ -120,9 +127,11 @@ class CallSignalingHandler(
             throw SecurityException("ICE candidate exceeds maximum size: ${candidate.length} > $MAX_ICE_CANDIDATE_SIZE")
         }
 
+        val parsedMode = runCatching { CallMode.valueOf(json.optString("mode", CallMode.AUDIO.name)) }.getOrDefault(CallMode.AUDIO)
+        Log.d(TAG, "[CALL_SIG] Received signal callId=$callId mode=${parsedMode.name} hasSdp=${sdp != null} hasCandidate=${candidate != null} reason=${json.optString("reason")}")
         return CallSignal(
             callId = callId,
-            mode = runCatching { CallMode.valueOf(json.optString("mode", CallMode.AUDIO.name)) }.getOrDefault(CallMode.AUDIO),
+            mode = parsedMode,
             sdp = sdp,
             sdpType = json.optString("sdpType").takeIf { it.isNotBlank() },
             candidate = candidate,

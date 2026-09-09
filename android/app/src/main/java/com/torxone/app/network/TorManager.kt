@@ -396,18 +396,23 @@ class TorManager(private val context: Context) {
         }
     }
 
-    fun createTorSocket(onionHost: String, port: Int = LOCAL_PORT, timeoutMs: Int = 60_000): Socket? {
+    fun createTorSocket(
+        onionHost: String,
+        port: Int = LOCAL_PORT,
+        connectTimeoutMs: Int = 15_000,
+        readTimeoutMs: Int = 30_000
+    ): Socket? {
         if (!_isTorReady.value) {
             addTorLog("[SOCKET] Tor not ready, cannot create socket to $onionHost")
             return null
         }
         return try {
-            addTorLog("[SOCKET] Connecting to $onionHost:$port via SOCKS5 proxy")
+            addTorLog("[SOCKET] Connecting to $onionHost:$port via SOCKS5 proxy (connectTimeout=${connectTimeoutMs}ms)")
             val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(SOCKS_HOST, SOCKS_PORT))
             val socket = Socket(proxy)
-            socket.soTimeout = timeoutMs
+            socket.soTimeout = readTimeoutMs
             // Use createUnresolved to prevent local DNS leak which breaks SOCKS
-            socket.connect(InetSocketAddress.createUnresolved(onionHost, port), timeoutMs)
+            socket.connect(InetSocketAddress.createUnresolved(onionHost, port), connectTimeoutMs)
             addTorLog("[SOCKET] Connected to $onionHost successfully")
             socket
         } catch (e: Exception) {

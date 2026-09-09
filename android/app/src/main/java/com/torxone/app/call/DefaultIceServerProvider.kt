@@ -43,9 +43,19 @@ class DefaultIceServerProvider(
             )
         }
 
-        // No Google STUN servers. No third-party STUN telemetry.
-        // srflx candidates (if allowed by policy) are derived from TURN server's
-        // allocate response, which also provides a server-reflexive address.
+        // STUN configuration based on privacy policy:
+        // Documented trade-off: in NORMAL & PRIVACY modes, public STUN servers provide
+        // reliable NAT mapping (srflx candidates) for direct cross-network P2P connections.
+        if (privacyPolicy.allowSrflxCandidates) {
+            servers.add(
+                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
+                    .createIceServer()
+            )
+            servers.add(
+                PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302")
+                    .createIceServer()
+            )
+        }
 
         runCatching {
             Log.d(TAG, "ICE servers configured: ${servers.size} (relay=${privacyPolicy.allowRelayCandidates}, srflx=${privacyPolicy.allowSrflxCandidates}, directP2P=${privacyPolicy.allowDirectP2P})")

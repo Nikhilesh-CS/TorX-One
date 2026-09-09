@@ -94,12 +94,69 @@ class SessionManager(
                 if (!CryptoManager.verify(legacyBody, signatureBytes, senderSigPub)) throw SecurityException("Digital signature verification failed for session message")
             }
         }
-        var session = sessionDao.getSession(normalizedSender)
-        if (session == null || session.sessionId != sessionId) {
-            session = initializeResponderSession(normalizedSender, sessionId, remoteRatchetPubHex, senderEncPubHex, id)
-            Log.d(TAG, "Initialized responder session $sessionId for sender $normalizedSender")
+        // 3. Replay Protection Guard
+        val isFresh = replayProtection.checkAndMark(sessionId, msgNum)
+        if (!isFresh) {
+            throw SecurityException("Replay rejected: Counter #$msgNum in session $sessionId already processed")
         }
-        fun deriveAndDecrypt(current: SessionEntity): Pair<String, SessionEntity> {
+
+        // 4. Retrieve or Initialize Responder Session (Two-Slot in-flight safe arbitration)
+        var session = sessionDao.getSessionById(normalizedSender, sessionId)
+        val activeSession = sessionDao.getSession(normalizedSender)
+
+        if (session == null) {
+            if (activeSession == null) {
+                // First session from this contact
+                session = initializeResponderSession(
+                    contactKey = normalizedSender,
+                    sessionId = sessionId,
+                    remoteRatchetPubHex = remoteRatchetPubHex,
+                    remoteEncPubHex = senderEncPubHex,
+                    localIdentity = id
+                )
+                Log.d(TAG, "[SESSION_RX] Initialized new responder session $sessionId for sender $normalizedSender")
+            } else {
+                val isUnusedLocalSession = (activeSession.sendMsgCount == 0 && activeSession.recvMsgCount == 0)
+                val isSimultaneousInitiation = (activeSession.sendMsgCount > 0 && activeSession.recvMsgCount == 0 && msgNum == 0)
+                val remoteWinsTieBreak = normalizedSender < mySigKeyHex
+
+                if (isUnusedLocalSession || (isSimultaneousInitiation && remoteWinsTieBreak)) {
+                    // Remote session wins tie-break or local was unused
+                    Log.d(TAG, "[SESSION_RX] Remote session $sessionId wins arbitration over ${activeSession.sessionId}")
+                    session = initializeResponderSession(
+                        contactKey = normalizedSender,
+                        sessionId = sessionId,
+                        remoteRatchetPubHex = remoteRatchetPubHex,
+                        remoteEncPubHex = senderEncPubHex,
+                        localIdentity = id
+                    )
+                    // Demote old active session to TRANSITION so in-flight messages can still drain
+                    sessionDao.upsertSession(activeSession.copy(state = "TRANSITION"))
+                } else if (isSimultaneousInitiation && !remoteWinsTieBreak) {
+                    // Local session wins tie-break: decrypt incoming message under incoming sessionId in TRANSITION slot
+                    Log.d(TAG, "[SESSION_RX] Local session ${activeSession.sessionId} wins arbitration over $sessionId; decrypting incoming with temporary responder")
+                    session = initializeResponderSession(
+                        contactKey = normalizedSender,
+                        sessionId = sessionId,
+                        remoteRatchetPubHex = remoteRatchetPubHex,
+                        remoteEncPubHex = senderEncPubHex,
+                        localIdentity = id
+                    ).copy(state = "TRANSITION")
+                } else {
+                    // Established active session rotating to new session generation
+                    Log.d(TAG, "[SESSION_RX] Adopting new session generation $sessionId from $normalizedSender (previous=${activeSession.sessionId})")
+                    session = initializeResponderSession(
+                        contactKey = normalizedSender,
+                        sessionId = sessionId,
+                        remoteRatchetPubHex = remoteRatchetPubHex,
+                        remoteEncPubHex = senderEncPubHex,
+                        localIdentity = id
+                    )
+                    sessionDao.upsertSession(activeSession.copy(state = "TRANSITION"))
+                }
+            }
+        }
+        suspend fun deriveAndDecrypt(current: SessionEntity): Pair<String, SessionEntity> {
             var working = current
             if (working.remoteRatchetPubHex != remoteRatchetPubHex) working = performDhRatchetStep(working, remoteRatchetPubHex)
             val messageKey: ByteArray
@@ -145,8 +202,8 @@ class SessionManager(
             Log.w(TAG, "[$sessionId] Ratchet mismatch for ${normalizedSender.take(12)}; rebuilding responder state: ${firstError.message}")
             sessionDao.deleteSession(normalizedSender)
             skippedKeyDao?.clearSessionSkippedKeys(sessionId)
-            session = initializeResponderSession(normalizedSender, sessionId, remoteRatchetPubHex, senderEncPubHex, id)
-            deriveAndDecrypt(session)
+            val newSession = initializeResponderSession(normalizedSender, sessionId, remoteRatchetPubHex, senderEncPubHex, id)
+            deriveAndDecrypt(newSession)
         }
         if (!replayProtection.checkAndMark(sessionId, msgNum)) throw SecurityException("Replay rejected: Counter #$msgNum in session $sessionId already processed")
         sessionDao.upsertSession(result.second)

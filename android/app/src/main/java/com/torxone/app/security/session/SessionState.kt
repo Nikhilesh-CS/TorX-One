@@ -6,9 +6,13 @@ import androidx.room.*
  * Independent Room entity storing active session state for a contact.
  * Kept completely decoupled from ContactEntity to isolate security state.
  */
-@Entity(tableName = "sessions")
+@Entity(
+    tableName = "sessions",
+    primaryKeys = ["contactKey", "sessionId"],
+    indices = [Index(value = ["contactKey", "lastActiveAt"])]
+)
 data class SessionEntity(
-    @PrimaryKey val contactKey: String, // Contact's signing public key hex
+    val contactKey: String, // Contact's signing public key hex
     val sessionId: String,
     val rootKeyHex: String,
     val sendChainKeyHex: String,
@@ -25,17 +29,26 @@ data class SessionEntity(
 
 @Dao
 interface SessionDao {
-    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey LIMIT 1")
+    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey AND sessionId = :sessionId LIMIT 1")
+    suspend fun getSessionById(contactKey: String, sessionId: String): SessionEntity?
+
+    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey ORDER BY CASE WHEN state = 'ACTIVE' THEN 0 ELSE 1 END, lastActiveAt DESC LIMIT 1")
     suspend fun getSession(contactKey: String): SessionEntity?
 
-    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey LIMIT 1")
+    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey ORDER BY CASE WHEN state = 'ACTIVE' THEN 0 ELSE 1 END, lastActiveAt DESC LIMIT 1")
     fun getSessionSync(contactKey: String): SessionEntity?
+
+    @Query("SELECT * FROM sessions WHERE contactKey = :contactKey")
+    suspend fun getAllSessionsForContact(contactKey: String): List<SessionEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertSession(session: SessionEntity)
 
     @Query("DELETE FROM sessions WHERE contactKey = :contactKey")
     suspend fun deleteSession(contactKey: String)
+
+    @Query("DELETE FROM sessions WHERE contactKey = :contactKey AND sessionId != :keepSessionId")
+    suspend fun pruneOldSessions(contactKey: String, keepSessionId: String)
 
     @Query("SELECT * FROM sessions WHERE state = 'ACTIVE'")
     suspend fun getActiveSessions(): List<SessionEntity>

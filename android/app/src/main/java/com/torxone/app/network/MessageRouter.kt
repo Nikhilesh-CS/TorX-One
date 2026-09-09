@@ -226,11 +226,12 @@ class MessageRouter(
         }
 
         if (result.success) {
-            pendingSessionPayloads.remove(messageId)
+            // Mark transmitted in-transit (1 tick). Outbox keeps cached payload until remote ACK arrives.
             db.messageDao().updateMessageStatus(messageId, "sent", result.transport.name)
-            Log.d(TAG, "[SEND] Message $messageId sent via ${result.transport}")
+            Log.d(TAG, "[SEND] Message $messageId transmitted via ${result.transport} (in-transit, awaiting ACK)")
+            ensureRetryLoopRunning()
         } else {
-            Log.w(TAG, "[SEND] Message $messageId delivery failed: ${result.error}. Will retry.")
+            Log.w(TAG, "[SEND] Message $messageId delivery failed: ${result.error}. Outbox retry active.")
             ensureRetryLoopRunning()
         }
 
@@ -269,10 +270,18 @@ class MessageRouter(
             Log.w(TAG, "[TOR-SESSION] Delivery failed to $onion")
         }
 
-        // 3. Try Nearby relay (flood to all connected peers) as fallback
+        // 3. Try Nearby relay (flood to all connected peers wrapped in TYPE_RELAY envelope) as fallback
         if (connected.isNotEmpty()) {
-            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers")
-            connected.forEach { nearbyManager.sendRaw(it, wireJson) }
+            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers (wrapped in TYPE_RELAY envelope)")
+            val relayWire = MeshProtocol.encodeSessionRelay(
+                dest = contact.signingPublicKey,
+                from = mySigningKeyHex,
+                sessionWireJson = wireJson,
+                ttl = 3,
+                messageId = messageId,
+                senderOnion = myOnionAddress.ifBlank { null }
+            )
+            connected.forEach { nearbyManager.sendRaw(it, relayWire) }
             return SendResult(true, Transport.NEARBY_RELAY)
         }
 
@@ -653,9 +662,9 @@ class MessageRouter(
             }
 
             if (result.success) {
-                pendingSessionPayloads.remove(msg.messageId)
+                // Kept in pendingSessionPayloads until authenticated ACK arrives
                 db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
-                Log.d(TAG, "[RETRY] Message ${msg.messageId} resent successfully via ${result.transport}")
+                Log.d(TAG, "[RETRY] Message ${msg.messageId} retransmitted via ${result.transport} (awaiting ACK)")
             } else {
                 db.messageDao().incrementRetryCount(msg.messageId)
                 val newCount = msg.retryCount + 1
@@ -899,24 +908,48 @@ class MessageRouter(
     // ──────────────────────── RELAY ────────────────────────
 
     private suspend fun handleRelay(fromEndpointId: String?, json: JSONObject) {
-        val dest = json.optString("dest")
+        val dest = json.optString("dest", "").trim().lowercase()
         val ttl = json.optInt("ttl", 0)
-        val payload = MeshProtocol.parseEncrypted(json) ?: return
+        val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
-        val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
-        val fingerprint = "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}"
 
+        // Destination check: If addressed to us, dispatch to proper handler
         if (dest == mySigningKeyHex) {
-            handleEncrypted(json, fromEndpointId, innerType)
+            if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
+                val wireStr = json.optString("sessionWire", "")
+                val sessionJson = if (wireStr.isNotBlank()) JSONObject(wireStr) else json
+                handleSessionMessage(fromEndpointId, sessionJson)
+            } else {
+                handleEncrypted(json, fromEndpointId, innerType)
+            }
             return
         }
 
-        if (ttl <= 1) return
-        if (!rememberRelayFingerprint(fingerprint)) return
+        // Intermediate hop: check TTL and drop if expired
+        if (ttl <= 1) {
+            Log.d(TAG, "[RELAY] TTL expired (ttl=$ttl) for dest=${dest.take(12)} msgId=$messageId")
+            return
+        }
 
-        val wire = MeshProtocol.encodeRelayMessage(payload, ttl - 1, messageId, senderOnion, innerType = innerType)
+        // Loop prevention fingerprint check
+        val fingerprint = if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
+            "relay_session:$dest:$messageId"
+        } else {
+            val payload = MeshProtocol.parseEncrypted(json) ?: return
+            "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}"
+        }
+
+        if (!rememberRelayFingerprint(fingerprint)) {
+            Log.d(TAG, "[RELAY] Dropping duplicate relay frame: $fingerprint")
+            return
+        }
+
+        // Forward unmodified inner payload with decremented TTL
+        json.put("ttl", ttl - 1)
+        val wire = json.toString()
         val connected = nearbyManager.connectedEndpoints.value
+        Log.d(TAG, "[RELAY] Forwarding frame dest=${dest.take(12)} innerType=$innerType ttl=${ttl - 1} to ${connected.size} peers")
         connected.filter { it != fromEndpointId }.forEach { nearbyManager.sendRaw(it, wire) }
     }
 
@@ -928,19 +961,21 @@ class MessageRouter(
         val fromKey = json.optString("from", "").trim().lowercase()
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
+        val sessionId = json.optString("sessionId", "")
+        val msgNum = json.optInt("msgNum", 0)
 
-        Log.d(TAG, "[SESSION] Incoming session message from=${fromKey.take(12)} to=${to.take(12)} (myKey=${mySigningKeyHex.take(12)}) msgId=$messageId viaEndpoint=$viaEndpoint")
+        Log.d(TAG, "[SESSION_RX] Frame received from=${fromKey.take(12)} to=${to.take(12)} (myKey=${mySigningKeyHex.take(12)}) sessionId=$sessionId msgNum=$msgNum msgId=$messageId viaEndpoint=$viaEndpoint")
 
         // 1. If addressed to us, decrypt and dispatch
         if (to == mySigningKeyHex) {
             val sm = sessionManager ?: run {
-                Log.w(TAG, "[SESSION] Received session message but SessionManager is not initialized")
+                Log.w(TAG, "[SESSION_RX] SessionManager is not initialized; cannot decrypt")
                 return
             }
 
             val contact = db.contactDao().getContact(fromKey)
             if (contact == null) {
-                Log.w(TAG, "[SESSION] Received message from unknown contact: ${fromKey.take(16)}")
+                Log.w(TAG, "[SESSION_RX] Received message from unknown contact: ${fromKey.take(16)}")
                 return
             }
 
@@ -949,12 +984,15 @@ class MessageRouter(
                 db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
             }
 
+            Log.d(TAG, "[SESSION_RX] Attempting decrypt for msgId=$messageId from=${contact.name}")
             val decrypted = try {
                 sm.decrypt(fromKey, json)
             } catch (e: Exception) {
-                Log.w(TAG, "[SESSION] Decryption failed from ${contact.name}: ${e.message}")
+                Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}", e)
                 return
             }
+
+            Log.d(TAG, "[SESSION_RX] Decrypt success msgId=$messageId from=${contact.name}")
 
             dispatchDecryptedMessage(
                 contact = contact,
@@ -968,17 +1006,26 @@ class MessageRouter(
             return
         }
 
-        // 2. Mesh relay if not addressed to us and TTL > 1
+        // 2. Mesh relay fallback if raw session message received and not addressed to us
         if (viaEndpoint != null && ttl > 1) {
-            val sessionId = json.optString("sessionId")
-            val msgNum = json.optInt("msgNum", 0)
-            val fingerprint = "session:$sessionId:$msgNum"
-            if (!rememberRelayFingerprint(fingerprint)) return
+            val fingerprint = "relay_session:$to:$messageId"
+            if (!rememberRelayFingerprint(fingerprint)) {
+                Log.d(TAG, "[RELAY-SESSION] Dropping duplicate frame: $fingerprint")
+                return
+            }
 
+            Log.d(TAG, "[RELAY-SESSION] Forwarding raw frame for ${to.take(12)} from $viaEndpoint (ttl=${ttl - 1})")
             json.put("ttl", ttl - 1)
-            val wire = json.toString()
+            val relayWire = MeshProtocol.encodeSessionRelay(
+                dest = to,
+                from = fromKey,
+                sessionWireJson = json.toString(),
+                ttl = ttl - 1,
+                messageId = messageId,
+                senderOnion = senderOnion.ifBlank { null }
+            )
             val connected = nearbyManager.connectedEndpoints.value
-            connected.filter { it != viaEndpoint }.forEach { nearbyManager.sendRaw(it, wire) }
+            connected.filter { it != viaEndpoint }.forEach { nearbyManager.sendRaw(it, relayWire) }
         }
     }
 
