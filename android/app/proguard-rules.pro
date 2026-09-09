@@ -43,3 +43,13 @@
 -dontwarn com.google.errorprone.annotations.CheckReturnValue
 -dontwarn com.google.errorprone.annotations.Immutable
 -dontwarn com.google.errorprone.annotations.RestrictedApi
+
+# WebRTC JNI methods, callbacks, and observers
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**
+
+# Preserve call signaling, networking, crypto, and session models
+-keep class com.torxone.app.call.** { *; }
+-keep class com.torxone.app.network.** { *; }
+-keep class com.torxone.app.security.** { *; }
+-keep class com.torxone.app.crypto.** { *; }

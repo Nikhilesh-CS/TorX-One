@@ -50,9 +50,15 @@ class MessageRouter(
     // ──────────────────────── INCOMING HANDLERS ────────────────────────
 
     fun handleNearbyPayload(endpointId: String, raw: String) {
-        val json = MeshProtocol.parse(raw) ?: return
+        val json = MeshProtocol.parse(raw) ?: run {
+            Log.w(TAG, "[NEARBY] Dropped unparseable payload from $endpointId (len=${raw.length})")
+            return
+        }
 
-        when (json.optString("type")) {
+        val type = json.optString("type")
+        Log.d(TAG, "[NEARBY] Received payload type=$type from $endpointId")
+
+        when (type) {
             MeshProtocol.TYPE_HELLO -> handleHello(endpointId, json.optString("contact"))
             MeshProtocol.TYPE_SESSION_MSG -> scope.launch(Dispatchers.IO) { handleSessionMessage(endpointId, json) }
             MeshProtocol.TYPE_MSG -> scope.launch(Dispatchers.IO) { handleEncrypted(json, endpointId, MeshProtocol.TYPE_MSG) }
@@ -238,21 +244,20 @@ class MessageRouter(
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
 
-        // 1. Try direct Nearby
+        // 1. Try direct Nearby if peer is directly connected
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             Log.d(TAG, "[NEARBY-SESSION] Sending direct to ${contact.endpointId}")
-            nearbyManager.sendRaw(contact.endpointId, wireJson)
-            return SendResult(true, Transport.NEARBY_DIRECT)
+            val ok = try {
+                nearbyManager.sendRaw(contact.endpointId, wireJson)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "[NEARBY-SESSION] Send to ${contact.endpointId} threw: ${e.message}")
+                false
+            }
+            if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
 
-        // 2. Try Nearby relay (flood to all connected peers)
-        if (connected.isNotEmpty()) {
-            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers")
-            connected.forEach { nearbyManager.sendRaw(it, wireJson) }
-            return SendResult(true, Transport.NEARBY_RELAY)
-        }
-
-        // 3. Try Tor
+        // 2. Try Tor (authenticated, direct end-to-end to contact's onion)
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             Log.d(TAG, "[TOR-SESSION] Sending session message to $onion")
@@ -261,8 +266,14 @@ class MessageRouter(
                 Log.d(TAG, "[TOR-SESSION] Message $messageId delivered to $onion")
                 return SendResult(true, Transport.TOR)
             }
-            Log.w(TAG, "[TOR-SESSION] Delivery failed")
-            return SendResult(false, Transport.TOR, "Tor delivery failed")
+            Log.w(TAG, "[TOR-SESSION] Delivery failed to $onion")
+        }
+
+        // 3. Try Nearby relay (flood to all connected peers) as fallback
+        if (connected.isNotEmpty()) {
+            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers")
+            connected.forEach { nearbyManager.sendRaw(it, wireJson) }
+            return SendResult(true, Transport.NEARBY_RELAY)
         }
 
         Log.w(TAG, "[SEND-SESSION] No transport available for ${contact.name}")
@@ -277,14 +288,32 @@ class MessageRouter(
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
 
-        // 1. Try direct Nearby
+        // 1. Try direct Nearby if peer is directly connected
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             Log.d(TAG, "[NEARBY] Sending direct to ${contact.endpointId}")
-            nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
-            return SendResult(true, Transport.NEARBY_DIRECT)
+            val ok = try {
+                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "[NEARBY] Direct send to ${contact.endpointId} failed: ${e.message}")
+                false
+            }
+            if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
 
-        // 2. Try Nearby relay (flood to all connected peers)
+        // 2. Try Tor (authenticated, direct end-to-end)
+        val onion = contact.onionAddress
+        if (onion.isNotBlank() && torManager.isTorReady.value) {
+            Log.d(TAG, "[TOR] Sending message: ${payload.ciphertextHex.take(20)}...")
+            val ok = torManager.sendToOnion(onion, MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType))
+            if (ok) {
+                Log.d(TAG, "[TOR] Message $messageId delivered to $onion")
+                return SendResult(true, Transport.TOR)
+            }
+            Log.w(TAG, "[TOR] Delivery failed to $onion")
+        }
+
+        // 3. Try Nearby relay (flood to all connected peers) as fallback
         if (connected.isNotEmpty()) {
             Log.d(TAG, "[NEARBY] Relaying to ${connected.size} peers")
             val wire = MeshProtocol.encodeRelayMessage(
@@ -296,19 +325,6 @@ class MessageRouter(
             )
             connected.forEach { nearbyManager.sendRaw(it, wire) }
             return SendResult(true, Transport.NEARBY_RELAY)
-        }
-
-        // 3. Try Tor
-        val onion = contact.onionAddress
-        if (onion.isNotBlank() && torManager.isTorReady.value) {
-            Log.d(TAG, "[TOR] Sending message: ${payload.ciphertextHex.take(20)}...")
-            val ok = torManager.sendToOnion(onion, MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType))
-            if (ok) {
-                Log.d(TAG, "[TOR] Message $messageId delivered to $onion")
-                return SendResult(true, Transport.TOR)
-            }
-            Log.w(TAG, "[TOR] Delivery failed")
-            return SendResult(false, Transport.TOR, "Tor delivery failed")
         }
 
         Log.w(TAG, "[SEND] No transport available for ${contact.name}")
@@ -429,12 +445,12 @@ class MessageRouter(
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             return Transport.NEARBY_DIRECT
         }
-        if (connected.isNotEmpty()) {
-            return Transport.NEARBY_RELAY
-        }
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             return Transport.TOR
+        }
+        if (connected.isNotEmpty()) {
+            return Transport.NEARBY_RELAY
         }
         return Transport.FAILED
     }
@@ -718,33 +734,35 @@ class MessageRouter(
         val contact = db.contactDao().getContact(senderKey)
         val connected = nearbyManager.connectedEndpoints.value
 
-        // Send ACK back via the same transport it arrived on
+        // 1. If it arrived via Nearby directly, reply back via that endpoint
+        if (viaEndpoint != null && connected.contains(viaEndpoint)) {
+            nearbyManager.sendRaw(viaEndpoint, ackWire)
+            return
+        }
         if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) {
             nearbyManager.sendRaw(contact.endpointId, ackWire)
-        } else if (viaEndpoint != null) {
-            nearbyManager.sendRaw(viaEndpoint, ackWire)
-        } else if (connected.isNotEmpty()) {
-            connected.forEach { nearbyManager.sendRaw(it, ackWire) }
+            return
+        }
+
+        // 2. Came via Tor or endpoint not directly connected — send ACK back via Tor
+        val onion = if (!senderOnion.isNullOrBlank()) {
+            senderOnion
         } else {
-            // Came via Tor — send ACK back via Tor
+            contact?.onionAddress
+        }
+        if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
             scope.launch(Dispatchers.IO) {
                 try {
-                    // Prefer the senderOnion from the wire (most reliable)
-                    val onion = if (!senderOnion.isNullOrBlank()) {
-                        senderOnion
-                    } else {
-                        contact?.onionAddress
-                    }
-                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                        val ok = torManager.sendToOnion(onion, ackWire)
-                        Log.d(TAG, "[ACK] Tor ACK send result: $ok")
-                    } else {
-                        Log.w(TAG, "[ACK] Cannot send ACK via Tor — no onion address for sender")
-                    }
+                    val ok = torManager.sendToOnion(onion, ackWire)
+                    Log.d(TAG, "[ACK] Tor ACK send result: $ok to $onion")
                 } catch (e: Exception) {
                     Log.e(TAG, "[ACK] Error sending ACK via Tor", e)
                 }
             }
+        } else if (connected.isNotEmpty()) {
+            connected.forEach { nearbyManager.sendRaw(it, ackWire) }
+        } else {
+            Log.w(TAG, "[ACK] Cannot send ACK — no transport available for $senderKey")
         }
     }
 
@@ -788,12 +806,12 @@ class MessageRouter(
                 
                 if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
                     nearbyManager.sendRaw(contact.endpointId, readWire)
-                } else if (connected.isNotEmpty()) {
-                    connected.forEach { nearbyManager.sendRaw(it, readWire) }
                 } else {
                     val onion = contact.onionAddress
                     if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
                         torManager.sendToOnion(onion, readWire)
+                    } else if (connected.isNotEmpty()) {
+                        connected.forEach { nearbyManager.sendRaw(it, readWire) }
                     }
                 }
             } catch (e: Exception) {
@@ -910,6 +928,8 @@ class MessageRouter(
         val fromKey = json.optString("from", "").trim().lowercase()
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
+
+        Log.d(TAG, "[SESSION] Incoming session message from=${fromKey.take(12)} to=${to.take(12)} (myKey=${mySigningKeyHex.take(12)}) msgId=$messageId viaEndpoint=$viaEndpoint")
 
         // 1. If addressed to us, decrypt and dispatch
         if (to == mySigningKeyHex) {

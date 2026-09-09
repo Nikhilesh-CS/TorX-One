@@ -2,35 +2,34 @@ import subprocess
 import os
 import sys
 
-NOTES = """## What's New in TorX One v1.0.27
+NOTES = """## What's New in TorX One v1.0.28
 
-### 🔐 Call Privacy Architecture & Security Hardening (Phase 5)
-- **Strict 3-Tier Call Privacy Policy**:
-  - `NORMAL`: Host + srflx + relay allowed; RFC1918/ULA private LAN IPs (`192.168.x`, `10.x`, `172.16-31.x`) stripped before signaling.
-  - `PRIVACY`: 100% of host candidates blocked to prevent local network topology exposure; only configured privacy STUN and TURN relays permitted.
-  - `STRICT`: Relay-only mode (`IceTransportsType.RELAY`). All host and srflx candidates completely withheld, ensuring media flows exclusively via TURN relay.
-- **Removed Third-Party STUN Telemetry**: Stripped all hardcoded Google STUN servers (`stun.l.google.com:19302`) to prevent third-party IP, ISP, and call timing leakage.
-- **Signaling Security & Collision Defenses**: Enforced 64KB signal payload limit, 64KB SDP ceiling, 4KB ICE candidate limit, strict schema validation, sender public key verification, and busy collision protection returning `"Busy"` when in an active call.
-- **Structured Security Event Logging**: Implemented `CallSecurityLogger` with peer public key redaction (`key.take(12)...`) and zero raw SDP/IP address leakage into system logs.
-- **Notification Privacy**: Set `VISIBILITY_PRIVATE` on ongoing call notifications.
+### 🐛 Critical Bug Fixes & Resilience Overhaul
 
-### 📶 Call Quality, Network Handover & Audio Lifecycle (Phases 1–4)
-- **Real-Time Quality Monitoring**: Periodic WebRTC stats polling (RTT, packet loss %, jitter, bitrate, available bandwidth) with rolling window evaluation (Excellent, Good, Poor, Critical) and real-time In-Call UI status pills.
-- **Seamless Network Handover**: Network interface listener with 1.5s debounce automatically triggers non-disruptive ICE restart renegotiation when transitioning between Wi-Fi and Cellular data, preventing silent call drops.
-- **Dedicated Audio Lifecycle Manager**: Telephony audio focus coordination handling transient losses (voice notes, alarms, transient calls) by ducking or pausing playback without altering user mic mute state, restoring full audio when focus returns.
+#### 1. 🧅 Tor Call Signaling Port Mismatch Resolved (`CallTransportSession.kt`)
+- Corrected Tor call signaling socket port from `8080` to `8765`, aligning with `TorManager.LOCAL_PORT` and `HiddenServicePort 8765 127.0.0.1:8765`.
+- Fixes instant connection refused/timeouts when initiating or receiving WebRTC audio/video calls over Tor hidden services.
 
-### 🧅 Native Embedded Tor v0.4.9.9
-- **Modern 16KB Page Aligned Binaries**: Packaged modern PIE ELF binaries for `arm64-v8a`, `armeabi-v7a`, and `x86_64`, eliminating the 16KB page alignment warning on Android 15+.
-- **Zero Daemon Leaks**: Automated process lifecycle management and socket teardown.
+#### 2. 🛡️ WebRTC Native JNI & ProGuard Obfuscation Rules (`proguard-rules.pro`)
+- Added comprehensive keep rules for `org.webrtc.**`, `com.torxone.app.call.**`, `com.torxone.app.network.**`, `com.torxone.app.security.**`, and `com.torxone.app.crypto.**`.
+- Prevents R8/ProGuard from stripping WebRTC JNI native callbacks, observers, and reflection-based models in release builds.
+- Fixes the issue where calls would connect and ring, but immediately drop upon being answered.
 
-### 🧪 Verification & Hardware Testing
-- **Unit Test Suite**: 73/73 tests passing (100% success rate).
-- **On-Device Hardware Verification**: All 6 on-device hardware privacy tests verified on physical device (Realme RMX5070 - Android 16 / API 36).
+#### 3. 🔄 Multi-Transport Routing & Tor Fallback Priority (`MessageRouter.kt`)
+- **Smart Transport Selection (`getBestTransport`)**: Prioritizes direct `TOR` over blind `NEARBY_RELAY` when the contact is not currently connected via Nearby, preventing remote calls from being wrongly routed to nearby devices.
+- **Reliable Session & Chat Delivery Fallback**: Automatically falls back to Tor if a direct Nearby connection fails or if the recipient is out of Nearby range, ensuring messages never silently disappear into dead relays and get stuck at single-tick.
+- **Bi-Directional Delivery Receipts (ACKs & Read Receipts)**: Enforces that messages delivered via Tor always route their delivery acknowledgments and read receipts back over Tor rather than incorrectly attempting Nearby broadcast.
+
+#### 4. 🔑 Sender Identity & Reverse Routing in Double Ratchet (`SessionManager.kt`)
+- Included `senderOnion` within the encrypted `SessionWirePayload`.
+- Enables the receiving peer to immediately bind and verify the sender's onion address for accurate contact synchronization and bidirectional session routing.
+
+---
 
 ### 📦 Checksums & Artifacts
-- **File**: `TorX-One-v1.0.27-release.apk`
-- **Size**: 43.65 MB (43,650,290 bytes)
-- **SHA-256**: `205A3C52B96232675F0792214952A8E1B4C3BB3E937D15E962209F22BAB171CA`
+- **File**: `TorX-One-v1.0.28-release.apk`
+- **Size**: 43.70 MB (43,698,878 bytes)
+- **SHA-256**: `CC0AD1CE894FB9E6BECA5F8431F2BC73E75E99C06133A535C12D6325117DDA8E`
 """
 
 def get_gh_token():
@@ -50,19 +49,19 @@ def main():
     env = os.environ.copy()
     env["GH_TOKEN"] = token
     
-    notes_file = "release_notes_v1.0.27.md"
+    notes_file = "release_notes_v1.0.28.md"
     with open(notes_file, "w", encoding="utf-8") as f:
         f.write(NOTES)
         
-    apk_path = "TorX-One-v1.0.27-release.apk"
+    apk_path = "TorX-One-v1.0.28-release.apk"
     if not os.path.exists(apk_path):
         print(f"Error: {apk_path} not found")
         sys.exit(1)
         
     cmd = [
-        "gh", "release", "create", "v1.0.27",
+        "gh", "release", "create", "v1.0.28",
         apk_path,
-        "--title", "TorX One v1.0.27 - Call Quality, Reconnection & Privacy Hardening",
+        "--title", "TorX One v1.0.28 - End-to-End Delivery & Tor Call Signaling Fixes",
         "--notes-file", notes_file
     ]
     
@@ -72,7 +71,7 @@ def main():
     print("STDERR:", res.stderr)
     
     if res.returncode == 0:
-        print("Release v1.0.27 created successfully!")
+        print("Release v1.0.28 created successfully!")
     else:
         print("Failed to create release, returncode:", res.returncode)
         sys.exit(res.returncode)

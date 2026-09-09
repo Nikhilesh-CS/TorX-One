@@ -187,7 +187,9 @@ class TorXOneService : Service() {
         nearbyManager.setLocalName(identity.name)
         messageRouter.identity = identity
         messageRouter.mySigningKeyHex = CryptoManager.toHex(identity.signingPublicKey)
-        messageRouter.myOnionAddress = identityManager.loadOnionAddress() ?: ""
+        val onion = identityManager.loadOnionAddress() ?: ""
+        messageRouter.myOnionAddress = onion
+        sessionManager.myOnionAddress = onion
         sessionManager.identity = identity
 
         isConfigured.value = true
@@ -261,6 +263,7 @@ class TorXOneService : Service() {
             torManager.onionAddress.collectLatest { onion ->
                 if (onion.isNotBlank()) {
                     messageRouter.myOnionAddress = onion
+                    sessionManager.myOnionAddress = onion
                     identityManager.saveOnionAddress(onion)
                     Log.d(TAG, "[TOR] Onion address saved: ${onion.take(20)}...")
                     updateNotification("Connected", "Tor: ${onion.take(16)}...")

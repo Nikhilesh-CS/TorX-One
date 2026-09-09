@@ -37,6 +37,7 @@ class SessionManager(
     }
 
     var identity: Identity? = null
+    var myOnionAddress: String = ""
 
     data class SessionWirePayload(
         val wireJsonString: String,
@@ -111,6 +112,9 @@ class SessionManager(
             put("from", mySigKeyHex)
             put("fromEnc", myEncKeyHex)
             put("to", contactKey)
+            if (myOnionAddress.isNotBlank()) {
+                put("senderOnion", myOnionAddress)
+            }
             put("ratchetPub", session.localRatchetPubHex)
             put("ciphertext", encrypted.ciphertextBase64)
             put("iv", encrypted.ivBase64)

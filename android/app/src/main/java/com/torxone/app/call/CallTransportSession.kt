@@ -26,7 +26,7 @@ class CallTransportSession(
         private const val TAG = "CallTransportSession"
         const val CONNECT_TIMEOUT_MS = 8_000
         const val SO_TIMEOUT_MS = 15_000
-        const val LOCAL_PORT = 8080
+        const val LOCAL_PORT = 8765
     }
 
     private val writeMutex = Mutex()

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.28] - 2026-09-09
+### Fixed
+- **Tor Call Signaling Port Mismatch (`CallTransportSession.kt`)**: Fixed persistent Tor signaling socket port from `8080` to `8765`, matching `TorManager.LOCAL_PORT` and `HiddenServicePort 8765 127.0.0.1:8765`. Eliminates instant connection refused/timeouts when signaling WebRTC calls over Tor.
+- **WebRTC Native JNI & Model Obfuscation (`proguard-rules.pro`)**: Added comprehensive ProGuard keep rules for `org.webrtc.**`, `com.torxone.app.call.**`, `com.torxone.app.network.**`, `com.torxone.app.security.**`, and `com.torxone.app.crypto.**`. Resolves stripped JNI observers and reflection failures in release builds that caused calls to drop immediately after accepting.
+- **Transport Routing & Relay Priority (`MessageRouter.kt`)**:
+  - `getBestTransport`: Prioritized direct `TOR` over blind `NEARBY_RELAY` when the contact is not directly connected over Nearby, preventing remote calls from incorrectly routing to Nearby relay.
+  - `attemptDeliverySession` & `attemptDelivery`: Added automatic fallback to Tor when direct Nearby send fails or when the contact is not connected, preventing messages from being lost in Nearby relays and wrongly marked as sent.
+  - `sendAck` & `sendReadReceipt`: Fixed ACK and read-receipt routing so Tor messages always return their ACKs via Tor rather than diverting into Nearby broadcast when `connectedEndpoints` is not empty.
+- **Sender Onion in Double Ratchet Payloads (`SessionManager.kt`)**: Added `senderOnion` to `SessionWirePayload` so recipients can accurately resolve the sender's onion address for reverse ACK routing and contact syncing.
+
 ## [1.0.27] - 2026-09-09
 ### Added
 - **Call Quality Monitoring & Bitrate Tracking (`CallQualityMonitor.kt`)**: Periodic WebRTC stats polling (RTT, packet loss %, jitter, packets sent/received, audio bitrate, available outgoing bandwidth) with rolling window evaluation (Excellent, Good, Poor, Critical) and real-time In-Call UI status pills.
