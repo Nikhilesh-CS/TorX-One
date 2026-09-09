@@ -185,12 +185,12 @@ class MessageRouter(
         replyToSender: String? = null,
         replyToType: String? = null
     ): SendResult = withContext(Dispatchers.IO) {
-        val identity = identity ?: return SendResult(false, Transport.FAILED, "Not logged in")
+        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
         val contact = db.contactDao().getContact(contactKey)
-            ?: return SendResult(false, Transport.FAILED, "Contact not found")
+            ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
 
         if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) {
-            return SendResult(false, Transport.FAILED, "Missing encryption key")
+            return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
         }
 
         val sentAt = System.currentTimeMillis()
@@ -266,7 +266,7 @@ class MessageRouter(
             Log.w(TAG, "[SEND] id=$messageId delivery failed: ${result.error}. Outbox retry active.")
             ensureRetryLoopRunning()
         }
-        return result
+        result
     }
 
     private suspend fun attemptDeliverySession(
