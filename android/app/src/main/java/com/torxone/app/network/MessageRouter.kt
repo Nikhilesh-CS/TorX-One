@@ -8,8 +8,11 @@ import com.torxone.app.data.ContactEntity
 import com.torxone.app.data.MessageEntity
 import com.torxone.app.data.ReactionOutboxEntity
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import org.json.JSONArray
+import java.net.Socket
 import java.util.UUID
 import com.torxone.app.group.GroupCryptoManager
 import com.torxone.app.group.GroupPermission
@@ -21,6 +24,10 @@ data class SendResult(val success: Boolean, val transport: Transport, val error:
 /**
  * Routes messages: Nearby (direct) → Nearby mesh relay → Tor (.onion).
  * Includes ACK-based delivery confirmation and automatic retry for failed sends.
+ *
+ * Important: Double Ratchet state is serialized per contact. Tor chat sockets are
+ * kept alive per onion so consecutive messages do not pay a new SOCKS/onion setup
+ * cost for every frame.
  */
 class MessageRouter(
     private val scope: CoroutineScope,
@@ -31,10 +38,11 @@ class MessageRouter(
 ) {
     companion object {
         private const val TAG = "MessageRouter"
-        private const val RETRY_INTERVAL_MS = 30_000L // 30 seconds
+        private const val RETRY_INTERVAL_MS = 5_000L
         private const val MAX_RETRIES = 40
         private const val RELAY_CACHE_TTL_MS = 10 * 60 * 1000L
         private const val MAX_RELAY_CACHE_SIZE = 512
+        private const val MAX_TOR_CHAT_SOCKETS = 16
     }
 
     var identity: Identity? = null
@@ -46,6 +54,16 @@ class MessageRouter(
     private var retryIntervalMs: Long = RETRY_INTERVAL_MS
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
     private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    // One lock per conversation prevents concurrent Double Ratchet encryptions
+    // from racing the same session's send/chain state.
+    private val sendLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    // Persistent, output-only Tor chat sockets. Each socket is protected by its
+    // own mutex so frames cannot interleave on the TCP stream.
+    private data class TorChatConnection(val socket: Socket, val lock: Mutex)
+    private val torChatConnections = java.util.concurrent.ConcurrentHashMap<String, TorChatConnection>()
+    private val torChatConnectionGuard = Any()
 
     // ──────────────────────── INCOMING HANDLERS ────────────────────────
 
@@ -146,9 +164,7 @@ class MessageRouter(
             if (viaEndpoint != null) {
                 nearbyManager.sendRaw(viaEndpoint, pongWire)
             } else if (fromOnion.isNotBlank()) {
-                scope.launch(Dispatchers.IO) {
-                    torManager.sendToOnion(fromOnion, pongWire)
-                }
+                scope.launch(Dispatchers.IO) { sendTorFrame(fromOnion, pongWire) }
             }
         }
     }
@@ -172,23 +188,38 @@ class MessageRouter(
         replyToSender: String? = null,
         replyToType: String? = null
     ): SendResult = withContext(Dispatchers.IO) {
-        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
+        val lock = sendLocks.computeIfAbsent(contactKey.trim().lowercase()) { Mutex() }
+        lock.withLock {
+            sendMessageLocked(contactKey, text, replyToId, replyToText, replyToSender, replyToType)
+        }
+    }
+
+    private suspend fun sendMessageLocked(
+        contactKey: String,
+        text: String,
+        replyToId: String?,
+        replyToText: String?,
+        replyToSender: String?,
+        replyToType: String?
+    ): SendResult {
+        val identity = identity ?: return SendResult(false, Transport.FAILED, "Not logged in")
         val contact = db.contactDao().getContact(contactKey)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
+            ?: return SendResult(false, Transport.FAILED, "Contact not found")
 
         if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) {
-            return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
+            return SendResult(false, Transport.FAILED, "Missing encryption key")
         }
 
+        val sentAt = System.currentTimeMillis()
         val wireText = encodeChatMessagePayload(
             text = text,
+            sentAt = sentAt,
             replyToId = replyToId,
             replyToText = replyToText,
             replyToSender = replyToSender,
             replyToType = replyToType
         )
 
-        // Try ratcheted session encryption (Double Ratchet + Forward Secrecy)
         val sessionPayload = try {
             sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
         } catch (e: Exception) {
@@ -198,13 +229,12 @@ class MessageRouter(
 
         val messageId = sessionPayload?.messageId ?: UUID.randomUUID().toString()
 
-        // Save the message as PENDING first
         db.messageDao().insertMessage(
             MessageEntity(
                 messageId = messageId,
                 contactKey = contactKey,
                 text = text,
-                timestamp = System.currentTimeMillis(),
+                timestamp = sentAt,
                 direction = "sent",
                 status = "pending",
                 replyToId = replyToId,
@@ -215,27 +245,24 @@ class MessageRouter(
         )
         Log.d(TAG, "[SEND] Message $messageId queued for $contactKey")
 
-        // Try immediate delivery
         val result = if (sessionPayload != null) {
             pendingSessionPayloads[messageId] = sessionPayload.wireJsonString
             attemptDeliverySession(contact, sessionPayload.wireJsonString, messageId)
         } else {
             val payload = buildEncryptedPayload(identity, contact, wireText)
-                ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
+                ?: return SendResult(false, Transport.FAILED, "Encryption failed")
             attemptDelivery(contact, payload, messageId)
         }
 
         if (result.success) {
-            // Mark transmitted in-transit (1 tick). Outbox keeps cached payload until remote ACK arrives.
             db.messageDao().updateMessageStatus(messageId, "sent", result.transport.name)
-            Log.d(TAG, "[SEND] Message $messageId transmitted via ${result.transport} (in-transit, awaiting ACK)")
+            Log.d(TAG, "[SEND] Message $messageId transmitted via ${result.transport} (awaiting ACK)")
             ensureRetryLoopRunning()
         } else {
             Log.w(TAG, "[SEND] Message $messageId delivery failed: ${result.error}. Outbox retry active.")
             ensureRetryLoopRunning()
         }
-
-        result
+        return result
     }
 
     private fun attemptDeliverySession(
@@ -244,35 +271,22 @@ class MessageRouter(
         messageId: String
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
-
-        // 1. Try direct Nearby if peer is directly connected
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             Log.d(TAG, "[NEARBY-SESSION] Sending direct to ${contact.endpointId}")
-            val ok = try {
-                nearbyManager.sendRaw(contact.endpointId, wireJson)
-                true
-            } catch (e: Exception) {
-                Log.w(TAG, "[NEARBY-SESSION] Send to ${contact.endpointId} threw: ${e.message}")
-                false
-            }
+            val ok = try { nearbyManager.sendRaw(contact.endpointId, wireJson); true }
+            catch (e: Exception) { Log.w(TAG, "[NEARBY-SESSION] Send failed: ${e.message}"); false }
             if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
 
-        // 2. Try Tor (authenticated, direct end-to-end to contact's onion)
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             Log.d(TAG, "[TOR-SESSION] Sending session message to $onion")
-            val ok = torManager.sendToOnion(onion, wireJson)
-            if (ok) {
-                Log.d(TAG, "[TOR-SESSION] Message $messageId delivered to $onion")
-                return SendResult(true, Transport.TOR)
-            }
+            val ok = sendTorFrame(onion, wireJson)
+            if (ok) return SendResult(true, Transport.TOR)
             Log.w(TAG, "[TOR-SESSION] Delivery failed to $onion")
         }
 
-        // 3. Try Nearby relay (flood to all connected peers wrapped in TYPE_RELAY envelope) as fallback
         if (connected.isNotEmpty()) {
-            Log.d(TAG, "[NEARBY-SESSION] Relaying to ${connected.size} peers (wrapped in TYPE_RELAY envelope)")
             val relayWire = MeshProtocol.encodeSessionRelay(
                 dest = contact.signingPublicKey,
                 from = mySigningKeyHex,
@@ -281,11 +295,10 @@ class MessageRouter(
                 messageId = messageId,
                 senderOnion = myOnionAddress.ifBlank { null }
             )
-            connected.forEach { nearbyManager.sendRaw(it, relayWire) }
+            connected.forEach { endpoint -> runCatching { nearbyManager.sendRaw(endpoint, relayWire) } }
             return SendResult(true, Transport.NEARBY_RELAY)
         }
 
-        Log.w(TAG, "[SEND-SESSION] No transport available for ${contact.name}")
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
     }
 
@@ -296,35 +309,20 @@ class MessageRouter(
         messageType: String = MeshProtocol.TYPE_MSG
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
-
-        // 1. Try direct Nearby if peer is directly connected
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-            Log.d(TAG, "[NEARBY] Sending direct to ${contact.endpointId}")
             val ok = try {
-                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
-                true
-            } catch (e: Exception) {
-                Log.w(TAG, "[NEARBY] Direct send to ${contact.endpointId} failed: ${e.message}")
-                false
-            }
+                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType)); true
+            } catch (e: Exception) { Log.w(TAG, "[NEARBY] Direct send failed: ${e.message}"); false }
             if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
 
-        // 2. Try Tor (authenticated, direct end-to-end)
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
-            Log.d(TAG, "[TOR] Sending message: ${payload.ciphertextHex.take(20)}...")
-            val ok = torManager.sendToOnion(onion, MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType))
-            if (ok) {
-                Log.d(TAG, "[TOR] Message $messageId delivered to $onion")
-                return SendResult(true, Transport.TOR)
-            }
-            Log.w(TAG, "[TOR] Delivery failed to $onion")
+            val wire = MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
+            if (sendTorFrame(onion, wire)) return SendResult(true, Transport.TOR)
         }
 
-        // 3. Try Nearby relay (flood to all connected peers) as fallback
         if (connected.isNotEmpty()) {
-            Log.d(TAG, "[NEARBY] Relaying to ${connected.size} peers")
             val wire = MeshProtocol.encodeRelayMessage(
                 payload = payload,
                 messageId = messageId,
@@ -332,60 +330,86 @@ class MessageRouter(
                 type = MeshProtocol.TYPE_RELAY,
                 innerType = messageType
             )
-            connected.forEach { nearbyManager.sendRaw(it, wire) }
+            connected.forEach { endpoint -> runCatching { nearbyManager.sendRaw(endpoint, wire) } }
             return SendResult(true, Transport.NEARBY_RELAY)
         }
 
-        Log.w(TAG, "[SEND] No transport available for ${contact.name}")
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
     }
 
+    /** Send a chat/control frame over a reusable Tor socket. */
+    private suspend fun sendTorFrame(onionHost: String, payload: String): Boolean = withContext(Dispatchers.IO) {
+        if (!torManager.isTorReady.value) return@withContext false
+        val connection = getOrCreateTorChatConnection(onionHost) ?: return@withContext false
+        connection.lock.withLock {
+            try {
+                connection.socket.getOutputStream().apply {
+                    write(payload.toByteArray(Charsets.UTF_8))
+                    write('\n'.code)
+                    flush()
+                }
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "[TOR-POOL] Persistent socket failed for $onionHost: ${e.message}")
+                removeTorChatConnection(onionHost, connection)
+                false
+            }
+        }
+    }
+
+    private fun getOrCreateTorChatConnection(onionHost: String): TorChatConnection? {
+        val existing = torChatConnections[onionHost]
+        if (existing != null && !existing.socket.isClosed) return existing
+        synchronized(torChatConnectionGuard) {
+            val current = torChatConnections[onionHost]
+            if (current != null && !current.socket.isClosed) return current
+            if (torChatConnections.size >= MAX_TOR_CHAT_SOCKETS) {
+                val victim = torChatConnections.entries.firstOrNull()
+                if (victim != null) removeTorChatConnection(victim.key, victim.value)
+            }
+            val socket = torManager.createTorSocket(onionHost) ?: return null
+            val connection = TorChatConnection(socket, Mutex())
+            torChatConnections[onionHost] = connection
+            Log.d(TAG, "[TOR-POOL] Opened persistent chat socket to $onionHost")
+            return connection
+        }
+    }
+
+    private fun removeTorChatConnection(onionHost: String, expected: TorChatConnection) {
+        if (torChatConnections.remove(onionHost, expected)) {
+            runCatching { expected.socket.close() }
+            Log.d(TAG, "[TOR-POOL] Closed chat socket to $onionHost")
+        }
+    }
+
+    fun closeTorChatConnections() {
+        torChatConnections.values.forEach { runCatching { it.socket.close() } }
+        torChatConnections.clear()
+    }
 
     suspend fun sendGroupMessage(groupId: String, text: String, replyToId: String? = null): SendResult = withContext(Dispatchers.IO) {
         val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
         val myKey = CryptoManager.toHex(identity.signingPublicKey)
         val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
         val localMembership = db.groupDao().getGroupMember(groupId, myKey)
-        if (!GroupPermission.canSendMessages(group, localMembership)) {
-            return@withContext SendResult(false, Transport.FAILED, "You do not have permission to send in this group")
-        }
-        val messageId = java.util.UUID.randomUUID().toString()
-        val entity = MessageEntity(
-            messageId = messageId,
-            contactKey = groupId,
-            conversationType = "group",
-            senderKey = myKey,
-            direction = "sent",
-            status = "pending",
-            text = text.trim(),
-            timestamp = System.currentTimeMillis(),
-            replyToId = replyToId
-        )
+        if (!GroupPermission.canSendMessages(group, localMembership)) return@withContext SendResult(false, Transport.FAILED, "You do not have permission to send in this group")
+        val messageId = UUID.randomUUID().toString()
+        val entity = MessageEntity(messageId = messageId, contactKey = groupId, conversationType = "group", senderKey = myKey, direction = "sent", status = "pending", text = text.trim(), timestamp = System.currentTimeMillis(), replyToId = replyToId)
         db.messageDao().insertMessage(entity)
 
         var groupKey = db.groupKeyDao().getLatestKey(groupId)
         if (groupKey == null && (group.creatorKey == myKey || group.myRole == "owner")) {
-            val newKey = com.torxone.app.data.GroupKeyEntity(
-                groupId = groupId,
-                keyVersion = maxOf(1, group.currentKeyVersion),
-                aesKeyBase64 = GroupCryptoManager.newKeyBase64(),
-                distributedAt = System.currentTimeMillis()
-            )
+            val newKey = com.torxone.app.data.GroupKeyEntity(groupId = groupId, keyVersion = maxOf(1, group.currentKeyVersion), aesKeyBase64 = GroupCryptoManager.newKeyBase64(), distributedAt = System.currentTimeMillis())
             db.groupKeyDao().insertKey(newKey)
             groupKey = newKey
         }
-
         if (groupKey == null) {
             com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, 1)
             return@withContext SendResult(false, Transport.PENDING, "Waiting for group key distribution")
         }
 
         val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
-        // Group payloads always use an object.  The direct-message encoder returns raw
-        // text when there is no reply, which made JSONObject("hello") crash the sender.
         val innerPayload = JSONObject().apply {
-            // Keep the established chat envelope so the receiver's shared decoder
-            // extracts text and reply metadata rather than rendering this JSON verbatim.
             put("astraType", "chat_message")
             put("version", 1)
             put("type", "TEXT")
@@ -393,19 +417,8 @@ class MessageRouter(
             put("senderKey", myKey)
             put("timestamp", System.currentTimeMillis())
             put("text", text.trim())
-            replyTarget?.let { target ->
-                put(
-                    "reply",
-                    JSONObject()
-                        .put("originalMessageId", target.messageId)
-                        .put("originalSender", target.senderKey ?: "")
-                        .put("originalType", target.messageType ?: "TEXT")
-                        .put("originalPreview", target.text.take(500))
-                )
-            }
-            put("mentions", JSONArray().apply {
-                Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) }
-            })
+            replyTarget?.let { target -> put("reply", JSONObject().put("originalMessageId", target.messageId).put("originalSender", target.senderKey ?: "").put("originalType", target.messageType ?: "TEXT").put("originalPreview", target.text.take(500))) }
+            put("mentions", JSONArray().apply { Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) } })
         }
         val encrypted = GroupCryptoManager.encrypt(groupKey, innerPayload.toString())
         val finalPayload = JSONObject().apply {
@@ -416,66 +429,36 @@ class MessageRouter(
             put("ciphertext", encrypted.ciphertextBase64)
             put("iv", encrypted.ivBase64)
         }
-
         val members = db.groupDao().getGroupMembersSync(groupId)
         var sentToAnyMember = false
         var failedRecipients = 0
         members.filter { it.role != "invited" }.forEach { member ->
             if (member.memberKey != myKey) {
-                val result = runCatching {
-                    sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
-                }.getOrElse { error ->
-                    Log.e(TAG, "[GROUP] Delivery to ${member.memberKey.take(12)} failed", error)
-                    SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed")
-                }
+                val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
                 if (result.success) sentToAnyMember = true else {
                     failedRecipients++
-                    db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(
-                        eventId = messageId,
-                        groupId = groupId,
-                        recipientKey = member.memberKey,
-                        payload = finalPayload.toString(),
-                        eventType = MeshProtocol.TYPE_GROUP_MESSAGE,
-                        createdAt = System.currentTimeMillis(),
-                        nextRetryAt = System.currentTimeMillis() + 30_000L,
-                        expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L
-                    ))
+                    db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(eventId = messageId, groupId = groupId, recipientKey = member.memberKey, payload = finalPayload.toString(), eventType = MeshProtocol.TYPE_GROUP_MESSAGE, createdAt = System.currentTimeMillis(), nextRetryAt = System.currentTimeMillis() + 30_000L, expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L))
                 }
             }
         }
-
         val finalStatus = if (sentToAnyMember || members.count { it.role != "invited" } <= 1) "sent" else "pending"
         db.messageDao().updateMessageStatus(messageId, finalStatus)
-        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(true, Transport.PENDING, "Queued for offline delivery")
-        else SendResult(true, if (failedRecipients > 0) Transport.NEARBY_RELAY else Transport.NEARBY_DIRECT)
+        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(true, Transport.PENDING, "Queued for offline delivery") else SendResult(true, if (failedRecipients > 0) Transport.NEARBY_RELAY else Transport.NEARBY_DIRECT)
     }
+
     fun getBestTransport(contact: ContactEntity): Transport {
         val connected = nearbyManager.connectedEndpoints.value
-        if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-            return Transport.NEARBY_DIRECT
-        }
-        val onion = contact.onionAddress
-        if (onion.isNotBlank() && torManager.isTorReady.value) {
-            return Transport.TOR
-        }
-        if (connected.isNotEmpty()) {
-            return Transport.NEARBY_RELAY
-        }
+        if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) return Transport.NEARBY_DIRECT
+        if (contact.onionAddress.isNotBlank() && torManager.isTorReady.value) return Transport.TOR
+        if (connected.isNotEmpty()) return Transport.NEARBY_RELAY
         return Transport.FAILED
     }
 
     suspend fun sendRawPayload(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): SendResult = withContext(Dispatchers.IO) {
         val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
-        val contact = db.contactDao().getContact(contactKey)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
-
-        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) {
-            return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
-        }
-
-        val payload = buildEncryptedPayload(identity, contact, rawText)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
-
+        val contact = db.contactDao().getContact(contactKey) ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
+        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
+        val payload = buildEncryptedPayload(identity, contact, rawText) ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
         val messageId = UUID.randomUUID().toString()
         attemptDelivery(contact, payload, messageId, messageType)
     }
@@ -489,29 +472,8 @@ class MessageRouter(
         MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
     }
 
-    fun openCallTransportSession(
-        callId: String,
-        contact: ContactEntity,
-        transport: Transport
-    ): com.torxone.app.call.CallTransportSession {
-        return com.torxone.app.call.CallTransportSession(
-            callId = callId,
-            peerKey = contact.signingPublicKey,
-            transport = transport,
-            endpointId = contact.endpointId.takeIf { it.isNotBlank() },
-            onionHost = contact.onionAddress.takeIf { it.isNotBlank() },
-            nearbySender = { endpoint, frame ->
-                try {
-                    nearbyManager.sendRaw(endpoint, frame)
-                    true
-                } catch (e: Exception) {
-                    false
-                }
-            },
-            torSocketFactory = { host, port, timeout ->
-                torManager.createTorSocket(host, port, timeout)
-            }
-        )
+    fun openCallTransportSession(callId: String, contact: ContactEntity, transport: Transport): com.torxone.app.call.CallTransportSession {
+        return com.torxone.app.call.CallTransportSession(callId = callId, peerKey = contact.signingPublicKey, transport = transport, endpointId = contact.endpointId.takeIf { it.isNotBlank() }, onionHost = contact.onionAddress.takeIf { it.isNotBlank() }, nearbySender = { endpoint, frame -> try { nearbyManager.sendRaw(endpoint, frame); true } catch (_: Exception) { false } }, torSocketFactory = { host, port, timeout -> torManager.createTorSocket(host, port, timeout) })
     }
 
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
@@ -523,34 +485,17 @@ class MessageRouter(
             applyReactionToMessage(targetMessageId, actor, emoji, action)
             return@withContext sendGroupAction(contactKey, "REACTION", JSONObject().put("targetMessageId", targetMessageId).put("emoji", emoji).put("reactionAction", action))
         }
-        val actorKey = mySigningKeyHex.ifBlank {
-            identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty()
-        }
+        val actorKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
         if (actorKey.isBlank()) return@withContext SendResult(false, Transport.FAILED, "Not logged in")
         if (emoji.isBlank()) return@withContext SendResult(false, Transport.FAILED, "Reaction is blank")
-
-        val target = db.messageDao().getMessageById(targetMessageId)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
-
+        val target = db.messageDao().getMessageById(targetMessageId) ?: return@withContext SendResult(false, Transport.FAILED, "Message not found")
         val current = parseReactionMap(target.reactionsJson)
         val mine = current[actorKey]?.firstOrNull()
         val action = if (mine == emoji) "remove" else "set"
         applyReactionToMessage(targetMessageId, actorKey, emoji, action)
-
-        val reaction = ReactionOutboxEntity(
-            reactionId = UUID.randomUUID().toString(),
-            contactKey = contactKey,
-            targetMessageId = targetMessageId,
-            emoji = emoji,
-            action = action,
-            createdAt = System.currentTimeMillis()
-        )
-
+        val reaction = ReactionOutboxEntity(reactionId = UUID.randomUUID().toString(), contactKey = contactKey, targetMessageId = targetMessageId, emoji = emoji, action = action, createdAt = System.currentTimeMillis())
         val result = sendReactionPacket(reaction)
-        if (!result.success) {
-            db.reactionOutboxDao().insertReaction(reaction)
-            ensureRetryLoopRunning()
-        }
+        if (!result.success) { db.reactionOutboxDao().insertReaction(reaction); ensureRetryLoopRunning() }
         result
     }
 
@@ -571,17 +516,9 @@ class MessageRouter(
         sendGroupAction(groupId, "DELETE", JSONObject().put("targetMessageId", messageId))
     }
 
-    suspend fun sendGroupPoll(groupId: String, question: String, options: List<String>, multipleChoice: Boolean = false): SendResult =
-        sendGroupAction(groupId, "POLL", JSONObject().put("question", question.trim()).put("options", JSONArray().apply { options.forEach { put(it.trim()) } }).put("multipleChoice", multipleChoice))
-
-    suspend fun sendGroupPollVote(groupId: String, targetMessageId: String, optionIndex: Int): SendResult {
-        val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
-        applyPollVote(targetMessageId, actor, optionIndex)
-        return sendGroupAction(groupId, "POLL_VOTE", JSONObject().put("targetMessageId", targetMessageId).put("optionIndex", optionIndex))
-    }
-
-    suspend fun sendGroupReadReceipt(groupId: String, messageId: String): SendResult =
-        sendGroupAction(groupId, "READ", JSONObject().put("targetMessageId", messageId))
+    suspend fun sendGroupPoll(groupId: String, question: String, options: List<String>, multipleChoice: Boolean = false): SendResult = sendGroupAction(groupId, "POLL", JSONObject().put("question", question.trim()).put("options", JSONArray().apply { options.forEach { put(it.trim()) } }).put("multipleChoice", multipleChoice))
+    suspend fun sendGroupPollVote(groupId: String, targetMessageId: String, optionIndex: Int): SendResult { val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }; applyPollVote(targetMessageId, actor, optionIndex); return sendGroupAction(groupId, "POLL_VOTE", JSONObject().put("targetMessageId", targetMessageId).put("optionIndex", optionIndex)) }
+    suspend fun sendGroupReadReceipt(groupId: String, messageId: String): SendResult = sendGroupAction(groupId, "READ", JSONObject().put("targetMessageId", messageId))
 
     private suspend fun sendGroupAction(groupId: String, action: String, body: JSONObject): SendResult = withContext(Dispatchers.IO) {
         val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
@@ -591,10 +528,7 @@ class MessageRouter(
         val key = db.groupKeyDao().getLatestKey(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group key unavailable")
         val id = UUID.randomUUID().toString()
         val inner = body.put("action", action).put("messageId", id).put("senderKey", actor).put("timestamp", System.currentTimeMillis())
-        if (action == "POLL") {
-            val poll = JSONObject().put("type", "poll").put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice"))
-            db.messageDao().insertMessage(MessageEntity(messageId = id, contactKey = groupId, conversationType = "group", senderKey = actor, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "sent", status = "pending"))
-        }
+        if (action == "POLL") { val poll = JSONObject().put("type", "poll").put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice")); db.messageDao().insertMessage(MessageEntity(messageId = id, contactKey = groupId, conversationType = "group", senderKey = actor, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "sent", status = "pending")) }
         val encrypted = GroupCryptoManager.encrypt(key, inner.toString())
         val wire = JSONObject().put("type", MeshProtocol.TYPE_GROUP_MESSAGE).put("schemaVersion", 2).put("groupId", groupId).put("keyVersion", key.keyVersion).put("ciphertext", encrypted.ciphertextBase64).put("iv", encrypted.ivBase64).toString()
         var delivered = false
@@ -608,13 +542,12 @@ class MessageRouter(
         if (retryJob?.isActive == true) return
         retryJob = scope.launch(Dispatchers.IO) {
             Log.d(TAG, "[RETRY] Starting retry loop")
+            var currentDelay = 1_000L
             while (isActive) {
-                delay(retryIntervalMs)
-                try {
-                    retryPendingMessages()
-                } catch (e: Exception) {
-                    Log.e(TAG, "[RETRY] Error in retry loop", e)
-                }
+                try { retryPendingMessages() } catch (e: Exception) { Log.e(TAG, "[RETRY] Error in retry loop", e) }
+                if (!isActive) break
+                delay(currentDelay)
+                currentDelay = (currentDelay * 2).coerceAtMost(retryIntervalMs)
             }
         }
     }
@@ -622,210 +555,97 @@ class MessageRouter(
     private suspend fun retryPendingMessages() {
         val pending = db.messageDao().getPendingMessages()
         val pendingReactions = db.reactionOutboxDao().getPendingReactions()
-        if (pending.isEmpty() && pendingReactions.isEmpty()) {
-            Log.d(TAG, "[RETRY] No pending messages, stopping retry loop")
-            retryJob?.cancel()
-            return
-        }
-
+        if (pending.isEmpty() && pendingReactions.isEmpty()) { retryJob?.cancel(); return }
         retryPendingReactions(pendingReactions)
 
-        Log.d(TAG, "[RETRY] Retrying ${pending.size} pending messages")
         for (msg in pending) {
             val identity = identity ?: continue
             val contact = db.contactDao().getContact(msg.contactKey) ?: continue
-
-            val wireText = encodeChatMessagePayload(
-                text = msg.text,
-                replyToId = msg.replyToId,
-                replyToText = msg.replyToText,
-                replyToSender = msg.replyToSender,
-                replyToType = msg.replyToType
-            )
-
-            val cachedWire = pendingSessionPayloads[msg.messageId]
-            val result = if (cachedWire != null) {
-                attemptDeliverySession(contact, cachedWire, msg.messageId)
-            } else {
-                val sessionPayload = try {
-                    sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
-                } catch (e: Exception) {
-                    null
-                }
-                if (sessionPayload != null) {
-                    pendingSessionPayloads[msg.messageId] = sessionPayload.wireJsonString
-                    attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId)
+            val lock = sendLocks.computeIfAbsent(msg.contactKey.trim().lowercase()) { Mutex() }
+            lock.withLock {
+                val wireText = encodeChatMessagePayload(text = msg.text, sentAt = msg.timestamp, replyToId = msg.replyToId, replyToText = msg.replyToText, replyToSender = msg.replyToSender, replyToType = msg.replyToType)
+                val cachedWire = pendingSessionPayloads[msg.messageId]
+                val result = if (cachedWire != null) {
+                    attemptDeliverySession(contact, cachedWire, msg.messageId)
                 } else {
-                    val payload = buildEncryptedPayload(identity, contact, wireText) ?: continue
-                    attemptDelivery(contact, payload, msg.messageId)
+                    val sessionPayload = try { sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG) } catch (_: Exception) { null }
+                    if (sessionPayload != null) { pendingSessionPayloads[msg.messageId] = sessionPayload.wireJsonString; attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId) }
+                    else { val payload = buildEncryptedPayload(identity, contact, wireText) ?: return@withLock; attemptDelivery(contact, payload, msg.messageId) }
                 }
-            }
-
-            if (result.success) {
-                // Kept in pendingSessionPayloads until authenticated ACK arrives
-                db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
-                Log.d(TAG, "[RETRY] Message ${msg.messageId} retransmitted via ${result.transport} (awaiting ACK)")
-            } else {
-                db.messageDao().incrementRetryCount(msg.messageId)
-                val newCount = msg.retryCount + 1
-                Log.w(TAG, "[RETRY] Message ${msg.messageId} retry #$newCount failed")
-                if (newCount >= MAX_RETRIES) {
-                    pendingSessionPayloads.remove(msg.messageId)
-                    db.messageDao().updateMessageStatus(msg.messageId, "failed")
-                    Log.e(TAG, "[RETRY] Message ${msg.messageId} permanently failed after $MAX_RETRIES retries")
+                if (result.success) {
+                    db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
+                } else {
+                    db.messageDao().incrementRetryCount(msg.messageId)
+                    val newCount = msg.retryCount + 1
+                    if (newCount >= MAX_RETRIES) { pendingSessionPayloads.remove(msg.messageId); db.messageDao().updateMessageStatus(msg.messageId, "failed") }
                 }
             }
         }
     }
 
-    fun setBackgroundRetryInterval(intervalMs: Long) {
-        retryIntervalMs = intervalMs.coerceIn(10_000L, 120_000L)
-    }
-
-    fun retryPendingNow() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                retryPendingMessages()
-            } catch (e: Exception) {
-                Log.e(TAG, "[RETRY] Immediate retry failed", e)
-            }
-        }
-    }
+    fun setBackgroundRetryInterval(intervalMs: Long) { retryIntervalMs = intervalMs.coerceIn(2_000L, 120_000L) }
+    fun retryPendingNow() { scope.launch(Dispatchers.IO) { runCatching { retryPendingMessages() }.onFailure { Log.e(TAG, "[RETRY] Immediate retry failed", it) } } }
 
     private suspend fun retryPendingReactions(pending: List<ReactionOutboxEntity>) {
-        if (pending.isEmpty()) return
-        Log.d(TAG, "[RETRY] Retrying ${pending.size} pending reactions")
-        pending.forEach { reaction ->
-            val result = sendReactionPacket(reaction)
-            if (result.success) {
-                db.reactionOutboxDao().deleteReaction(reaction.reactionId)
-            } else {
-                db.reactionOutboxDao().incrementRetry(reaction.reactionId)
-            }
-        }
+        pending.forEach { reaction -> val result = sendReactionPacket(reaction); if (result.success) db.reactionOutboxDao().deleteReaction(reaction.reactionId) else db.reactionOutboxDao().incrementRetry(reaction.reactionId) }
     }
 
     // ──────────────────────── ACK HANDLING ────────────────────────
 
     private suspend fun handleAck(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
-
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
-        if (messageId.isBlank()) return
-        if (senderKey.isBlank()) return
-
+        if (messageId.isBlank() || senderKey.isBlank()) return
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
-            Log.w(TAG, "[ACK] Ignoring receipt from non-recipient for message $messageId")
-            return
-        }
-
-        Log.d(TAG, "[TOR] ACK received for message $messageId")
-        Log.d(TAG, "[TOR] Delivery complete")
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) return
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "delivered")
         pendingSessionPayloads.remove(messageId)
-
-        // Update sender's onion if provided in the ACK
         val senderOnion = json.optString("senderOnion", "")
-        if (senderKey.isNotBlank() && senderOnion.isNotBlank()) {
+        if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)
-            if (contact != null && contact.onionAddress != senderOnion) {
-                Log.d(TAG, "[ACK] Updating sender's onion address to ${senderOnion.take(20)}...")
-                db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
-            }
+            if (contact != null && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
         }
     }
 
     private fun sendAck(messageId: String, senderKey: String, viaEndpoint: String?, senderOnion: String? = null) {
         if (messageId.isBlank()) return
         val ackWire = MeshProtocol.encodeAck(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        Log.d(TAG, "[ACK] Sending ACK for $messageId to $senderKey (viaEndpoint=$viaEndpoint, senderOnion=${senderOnion?.take(20)})")
         val contact = db.contactDao().getContact(senderKey)
         val connected = nearbyManager.connectedEndpoints.value
-
-        // 1. If it arrived via Nearby directly, reply back via that endpoint
-        if (viaEndpoint != null && connected.contains(viaEndpoint)) {
-            nearbyManager.sendRaw(viaEndpoint, ackWire)
-            return
-        }
-        if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) {
-            nearbyManager.sendRaw(contact.endpointId, ackWire)
-            return
-        }
-
-        // 2. Came via Tor or endpoint not directly connected — send ACK back via Tor
-        val onion = if (!senderOnion.isNullOrBlank()) {
-            senderOnion
-        } else {
-            contact?.onionAddress
-        }
+        if (viaEndpoint != null && connected.contains(viaEndpoint)) { nearbyManager.sendRaw(viaEndpoint, ackWire); return }
+        if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) { nearbyManager.sendRaw(contact.endpointId, ackWire); return }
+        val onion = if (!senderOnion.isNullOrBlank()) senderOnion else contact?.onionAddress
         if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-            scope.launch(Dispatchers.IO) {
-                try {
-                    val ok = torManager.sendToOnion(onion, ackWire)
-                    Log.d(TAG, "[ACK] Tor ACK send result: $ok to $onion")
-                } catch (e: Exception) {
-                    Log.e(TAG, "[ACK] Error sending ACK via Tor", e)
-                }
-            }
-        } else if (connected.isNotEmpty()) {
-            connected.forEach { nearbyManager.sendRaw(it, ackWire) }
-        } else {
-            Log.w(TAG, "[ACK] Cannot send ACK — no transport available for $senderKey")
-        }
+            scope.launch(Dispatchers.IO) { sendTorFrame(onion, ackWire) }
+        } else if (connected.isNotEmpty()) connected.forEach { runCatching { nearbyManager.sendRaw(it, ackWire) } }
     }
 
     private suspend fun handleRead(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
-
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
-        if (messageId.isBlank()) return
-        if (senderKey.isBlank()) return
-
+        if (messageId.isBlank() || senderKey.isBlank()) return
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
-            Log.w(TAG, "[READ] Ignoring receipt from non-recipient for message $messageId")
-            return
-        }
-
-        Log.d(TAG, "[READ] Received read receipt for message $messageId")
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) return
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "read")
-
-        // Update sender's onion if provided in the READ receipt
         val senderOnion = json.optString("senderOnion", "")
-        if (senderKey.isNotBlank() && senderOnion.isNotBlank()) {
+        if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)
-            if (contact != null && contact.onionAddress != senderOnion) {
-                Log.d(TAG, "[READ] Updating sender's onion address to ${senderOnion.take(20)}...")
-                db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
-            }
+            if (contact != null && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
         }
     }
 
     fun sendReadReceipt(messageId: String, senderKey: String) {
         if (messageId.isBlank()) return
         val readWire = MeshProtocol.encodeRead(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        Log.d(TAG, "[READ] Sending READ receipt for $messageId to $senderKey")
-
         scope.launch(Dispatchers.IO) {
-            try {
-                val contact = db.contactDao().getContact(senderKey) ?: return@launch
+            runCatching {
+                val contact = db.contactDao().getContact(senderKey) ?: return@runCatching
                 val connected = nearbyManager.connectedEndpoints.value
-                
-                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-                    nearbyManager.sendRaw(contact.endpointId, readWire)
-                } else {
-                    val onion = contact.onionAddress
-                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                        torManager.sendToOnion(onion, readWire)
-                    } else if (connected.isNotEmpty()) {
-                        connected.forEach { nearbyManager.sendRaw(it, readWire) }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "[READ] Error sending READ receipt", e)
+                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) nearbyManager.sendRaw(contact.endpointId, readWire)
+                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) sendTorFrame(contact.onionAddress, readWire)
+                else if (connected.isNotEmpty()) connected.forEach { nearbyManager.sendRaw(it, readWire) }
             }
         }
     }
@@ -833,39 +653,22 @@ class MessageRouter(
     private fun forwardReceiptIfNeeded(json: JSONObject, viaEndpoint: String?): Boolean {
         val destination = json.optString("to", "").trim().lowercase()
         if (destination.isBlank() || destination == mySigningKeyHex) return false
-
         val ttl = json.optInt("ttl", MeshProtocol.DEFAULT_TTL)
         if (ttl <= 1) return true
-
-        val forwarded = JSONObject(json.toString())
-            .put("ttl", ttl - 1)
-            .toString()
-        nearbyManager.connectedEndpoints.value
-            .filter { it != viaEndpoint }
-            .forEach { nearbyManager.sendRaw(it, forwarded) }
+        val forwarded = JSONObject(json.toString()).put("ttl", ttl - 1).toString()
+        nearbyManager.connectedEndpoints.value.filter { it != viaEndpoint }.forEach { runCatching { nearbyManager.sendRaw(it, forwarded) } }
         return true
     }
 
     fun sendMediaAck(messageId: String, senderKey: String) {
         if (messageId.isBlank()) return
         val ackWire = MeshProtocol.encodeAck(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        Log.d(TAG, "[MEDIA_ACK] Sending ACK for $messageId to $senderKey")
-
         scope.launch(Dispatchers.IO) {
-            try {
-                val contact = db.contactDao().getContact(senderKey) ?: return@launch
+            runCatching {
+                val contact = db.contactDao().getContact(senderKey) ?: return@runCatching
                 val connected = nearbyManager.connectedEndpoints.value
-                
-                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-                    nearbyManager.sendRaw(contact.endpointId, ackWire)
-                } else {
-                    val onion = contact.onionAddress
-                    if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-                        torManager.sendToOnion(onion, ackWire)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "[MEDIA_ACK] Error sending MEDIA ACK", e)
+                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) nearbyManager.sendRaw(contact.endpointId, ackWire)
+                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) sendTorFrame(contact.onionAddress, ackWire)
             }
         }
     }
@@ -876,33 +679,14 @@ class MessageRouter(
         val identity = identity ?: return
         val contactString = CryptoManager.createContactString(identity, myOnionAddress.ifBlank { null })
         nearbyManager.sendRaw(endpointId, MeshProtocol.encodeHello(contactString))
-        Log.d(TAG, "[HELLO] Sent hello to $endpointId with onion=${myOnionAddress.take(20)}...")
     }
 
     private fun handleHello(endpointId: String, contactString: String) {
         if (contactString.isBlank()) return
         val parsed = CryptoManager.parseContactString(contactString) ?: return
-
-        Log.d(TAG, "[HELLO] Received hello from ${parsed.name} (onion=${parsed.onionAddress?.take(20) ?: "none"})")
-        if (!parsed.onionAddress.isNullOrBlank()) {
-            Log.d(TAG, "[TOR] Received peer onion: ${parsed.onionAddress}")
-        }
-
         scope.launch(Dispatchers.IO) {
-            db.contactDao().insertContact(
-                ContactEntity(
-                    signingPublicKey = CryptoManager.toHex(parsed.signingPublicKey),
-                    encryptionPublicKey = CryptoManager.toHex(parsed.encryptionPublicKey),
-                    name = parsed.name,
-                    endpointId = endpointId,
-                    onionAddress = parsed.onionAddress ?: "",
-                    isConnected = true
-                )
-            )
-            
-            // Broadcast our profile to the newly connected peer
-            val service = com.torxone.app.service.TorXOneService.getInstance()
-            service?.profileSyncManager?.broadcastLocalProfile(CryptoManager.toHex(parsed.signingPublicKey))
+            db.contactDao().insertContact(ContactEntity(signingPublicKey = CryptoManager.toHex(parsed.signingPublicKey), encryptionPublicKey = CryptoManager.toHex(parsed.encryptionPublicKey), name = parsed.name, endpointId = endpointId, onionAddress = parsed.onionAddress ?: "", isConnected = true))
+            com.torxone.app.service.TorXOneService.getInstance()?.profileSyncManager?.broadcastLocalProfile(CryptoManager.toHex(parsed.signingPublicKey))
         }
     }
 
@@ -914,44 +698,19 @@ class MessageRouter(
         val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
-
-        // Destination check: If addressed to us, dispatch to proper handler
         if (dest == mySigningKeyHex) {
             if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
                 val wireStr = json.optString("sessionWire", "")
-                val sessionJson = if (wireStr.isNotBlank()) JSONObject(wireStr) else json
-                handleSessionMessage(fromEndpointId, sessionJson)
-            } else {
-                handleEncrypted(json, fromEndpointId, innerType)
-            }
+                handleSessionMessage(fromEndpointId, if (wireStr.isNotBlank()) JSONObject(wireStr) else json)
+            } else handleEncrypted(json, fromEndpointId, innerType)
             return
         }
-
-        // Intermediate hop: check TTL and drop if expired
-        if (ttl <= 1) {
-            Log.d(TAG, "[RELAY] TTL expired (ttl=$ttl) for dest=${dest.take(12)} msgId=$messageId")
-            return
-        }
-
-        // Loop prevention fingerprint check
-        val fingerprint = if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
-            "relay_session:$dest:$messageId"
-        } else {
-            val payload = MeshProtocol.parseEncrypted(json) ?: return
-            "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}"
-        }
-
-        if (!rememberRelayFingerprint(fingerprint)) {
-            Log.d(TAG, "[RELAY] Dropping duplicate relay frame: $fingerprint")
-            return
-        }
-
-        // Forward unmodified inner payload with decremented TTL
+        if (ttl <= 1) return
+        val fingerprint = if (innerType == MeshProtocol.TYPE_SESSION_MSG) "relay_session:$dest:$messageId" else { val payload = MeshProtocol.parseEncrypted(json) ?: return; "${payload.fromSigningKey}:${payload.toSigningKey}:${payload.nonceHex}:${payload.signatureHex}" }
+        if (!rememberRelayFingerprint(fingerprint)) return
         json.put("ttl", ttl - 1)
         val wire = json.toString()
-        val connected = nearbyManager.connectedEndpoints.value
-        Log.d(TAG, "[RELAY] Forwarding frame dest=${dest.take(12)} innerType=$innerType ttl=${ttl - 1} to ${connected.size} peers")
-        connected.filter { it != fromEndpointId }.forEach { nearbyManager.sendRaw(it, wire) }
+        nearbyManager.connectedEndpoints.value.filter { it != fromEndpointId }.forEach { runCatching { nearbyManager.sendRaw(it, wire) } }
     }
 
     // ──────────────────────── DECRYPTION ────────────────────────
@@ -962,71 +721,20 @@ class MessageRouter(
         val fromKey = json.optString("from", "").trim().lowercase()
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
-        val sessionId = json.optString("sessionId", "")
-        val msgNum = json.optInt("msgNum", 0)
-
-        Log.d(TAG, "[SESSION_RX] Frame received from=${fromKey.take(12)} to=${to.take(12)} (myKey=${mySigningKeyHex.take(12)}) sessionId=$sessionId msgNum=$msgNum msgId=$messageId viaEndpoint=$viaEndpoint")
-
-        // 1. If addressed to us, decrypt and dispatch
         if (to == mySigningKeyHex) {
-            val sm = sessionManager ?: run {
-                Log.w(TAG, "[SESSION_RX] SessionManager is not initialized; cannot decrypt")
-                return
-            }
-
-            val contact = db.contactDao().getContact(fromKey)
-            if (contact == null) {
-                Log.w(TAG, "[SESSION_RX] Received message from unknown contact: ${fromKey.take(16)}")
-                return
-            }
-
-            // Update sender's onion address if received
-            if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) {
-                db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
-            }
-
-            Log.d(TAG, "[SESSION_RX] Attempting decrypt for msgId=$messageId from=${contact.name}")
-            val decrypted = try {
-                sm.decrypt(fromKey, json)
-            } catch (e: Exception) {
-                Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}", e)
-                return
-            }
-
-            Log.d(TAG, "[SESSION_RX] Decrypt success msgId=$messageId from=${contact.name}")
-
-            dispatchDecryptedMessage(
-                contact = contact,
-                senderKey = fromKey,
-                plaintext = decrypted.plaintext,
-                messageType = decrypted.messageType,
-                messageId = messageId,
-                viaEndpoint = viaEndpoint,
-                senderOnion = senderOnion
-            )
+            val sm = sessionManager ?: return
+            val contact = db.contactDao().getContact(fromKey) ?: return
+            if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
+            val decrypted = try { sm.decrypt(fromKey, json) } catch (e: Exception) { Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}"); return }
+            dispatchDecryptedMessage(contact, fromKey, decrypted.plaintext, decrypted.messageType, messageId, viaEndpoint, senderOnion)
             return
         }
-
-        // 2. Mesh relay fallback if raw session message received and not addressed to us
         if (viaEndpoint != null && ttl > 1) {
             val fingerprint = "relay_session:$to:$messageId"
-            if (!rememberRelayFingerprint(fingerprint)) {
-                Log.d(TAG, "[RELAY-SESSION] Dropping duplicate frame: $fingerprint")
-                return
-            }
-
-            Log.d(TAG, "[RELAY-SESSION] Forwarding raw frame for ${to.take(12)} from $viaEndpoint (ttl=${ttl - 1})")
+            if (!rememberRelayFingerprint(fingerprint)) return
             json.put("ttl", ttl - 1)
-            val relayWire = MeshProtocol.encodeSessionRelay(
-                dest = to,
-                from = fromKey,
-                sessionWireJson = json.toString(),
-                ttl = ttl - 1,
-                messageId = messageId,
-                senderOnion = senderOnion.ifBlank { null }
-            )
-            val connected = nearbyManager.connectedEndpoints.value
-            connected.filter { it != viaEndpoint }.forEach { nearbyManager.sendRaw(it, relayWire) }
+            val relayWire = MeshProtocol.encodeSessionRelay(dest = to, from = fromKey, sessionWireJson = json.toString(), ttl = ttl - 1, messageId = messageId, senderOnion = senderOnion.ifBlank { null })
+            nearbyManager.connectedEndpoints.value.filter { it != viaEndpoint }.forEach { runCatching { nearbyManager.sendRaw(it, relayWire) } }
         }
     }
 
@@ -1035,613 +743,153 @@ class MessageRouter(
         val identity = identity ?: return
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
-
-        if (payload.toSigningKey != mySigningKeyHex) {
-            Log.w(TAG, "[RECV] Ignoring message addressed to another identity")
-            return
-        }
-
+        if (payload.toSigningKey != mySigningKeyHex || payload.fromSigningKey == mySigningKeyHex) return
         val senderKey = payload.fromSigningKey
-        if (senderKey == mySigningKeyHex) {
-            Log.w(TAG, "[RECV] Ignoring message that claims to be from this identity")
-            return
-        }
-
-        val contact = db.contactDao().getContact(senderKey) ?: run {
-            Log.w(TAG, "[RECV] Unknown sender: ${senderKey.take(20)}...")
-            return
-        }
-
-        // Update the contact's onion address if we received it and it's new
-        if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) {
-            Log.d(TAG, "[RECV] Updating sender's onion address to ${senderOnion.take(20)}...")
-            db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
-        }
-
-        // Downgrade protection: reject legacy static-key TYPE_MSG if an active Double Ratchet session exists
+        val contact = db.contactDao().getContact(senderKey) ?: return
+        if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
         if (messageType == MeshProtocol.TYPE_MSG) {
             val existingSession = db.sessionDao().getSession(senderKey)
-            if (existingSession != null && existingSession.state == "ACTIVE") {
-                Log.w(TAG, "[DOWNGRADE_GUARD] Rejected legacy unratcheted TYPE_MSG from ${contact.name} because active Double Ratchet session exists")
-                return
-            }
+            if (existingSession != null && existingSession.state == "ACTIVE") return
         }
-
         if (contact.encryptionPublicKey.isBlank()) return
-
         val ciphertext = CryptoManager.fromHexOrNull(payload.ciphertextHex) ?: return
         val nonce = CryptoManager.fromHexOrNull(payload.nonceHex, 24) ?: return
         val signature = CryptoManager.fromHexOrNull(payload.signatureHex, 64) ?: return
         val senderSigPub = CryptoManager.fromHexOrNull(senderKey, 32) ?: return
         val senderEncPub = CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) ?: return
-
-        if (!CryptoManager.verify(ciphertext + nonce, signature, senderSigPub)) {
-            Log.w(TAG, "[RECV] Signature verification failed from ${contact.name}")
-            return
-        }
-
+        if (!CryptoManager.verify(ciphertext + nonce, signature, senderSigPub)) return
         if (identity.encryptionSecretKey.isEmpty()) {
-            Log.d(TAG, "[DEFERRED] App is locked. Saving raw payload for deferred decryption.")
-            db.pendingEncryptedPayloadDao().insert(
-                com.torxone.app.data.PendingEncryptedPayload(
-                    messageId = if (messageId.isNotBlank()) messageId else java.util.UUID.randomUUID().toString(),
-                    fromSigningKey = senderKey,
-                    rawJson = json.toString(),
-                    receivedAt = System.currentTimeMillis()
-                )
-            )
-            // Send ACK immediately so the sender knows it was delivered
-            if (messageId.isNotBlank()) {
-                sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-            }
-            com.torxone.app.service.NotificationHelper.showDeferredMessageNotification(
-                com.torxone.app.service.TorXOneService.getInstance()!!,
-                contact
-            )
+            db.pendingEncryptedPayloadDao().insert(com.torxone.app.data.PendingEncryptedPayload(messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(), fromSigningKey = senderKey, rawJson = json.toString(), receivedAt = System.currentTimeMillis()))
+            if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            com.torxone.app.service.NotificationHelper.showDeferredMessageNotification(com.torxone.app.service.TorXOneService.getInstance()!!, contact)
             return
         }
-
-        val plaintext = try {
-            CryptoManager.decryptMessage(ciphertext, nonce, senderEncPub, identity.encryptionSecretKey)
-        } catch (e: Exception) {
-            Log.w(TAG, "[RECV] Decryption failed from ${contact.name}", e)
-            return
-        }
-
-        dispatchDecryptedMessage(
-            contact = contact,
-            senderKey = senderKey,
-            plaintext = plaintext,
-            messageType = messageType,
-            messageId = messageId,
-            viaEndpoint = viaEndpoint,
-            senderOnion = senderOnion
-        )
+        val plaintext = try { CryptoManager.decryptMessage(ciphertext, nonce, senderEncPub, identity.encryptionSecretKey) } catch (e: Exception) { return }
+        dispatchDecryptedMessage(contact, senderKey, plaintext, messageType, messageId, viaEndpoint, senderOnion)
     }
 
-    private suspend fun dispatchDecryptedMessage(
-        contact: ContactEntity,
-        senderKey: String,
-        plaintext: String,
-        messageType: String,
-        messageId: String,
-        viaEndpoint: String?,
-        senderOnion: String?
-    ) {
+    private suspend fun dispatchDecryptedMessage(contact: ContactEntity, senderKey: String, plaintext: String, messageType: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
         val service = com.torxone.app.service.TorXOneService.getInstance()
-        if (messageType != MeshProtocol.TYPE_PROFILE_UPDATE &&
-            messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO &&
-            messageType != MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) {
-            service?.profileSyncManager?.syncWithContactSoon(senderKey)
-        }
-
-        if (messageType == MeshProtocol.TYPE_MEDIA_CHUNK || 
-            messageType == MeshProtocol.TYPE_MEDIA_OFFER || 
-            messageType == MeshProtocol.TYPE_MEDIA_ACK ||
-            messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) {
-            service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_CALL_OFFER ||
-            messageType == MeshProtocol.TYPE_CALL_ANSWER ||
-            messageType == MeshProtocol.TYPE_ICE_CANDIDATE ||
-            messageType == MeshProtocol.TYPE_CALL_END) {
-            service?.callManager?.handleSignal(messageType, plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_PROFILE_UPDATE ||
-            messageType == MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO ||
-            messageType == MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) {
-            service?.profileSyncManager?.handleProfilePacket(messageType, plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_REACTION) {
-            handleReactionPacket(plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_POLL_VOTE) {
-            handlePollVotePacket(plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_PRESENCE) {
-            service?.presenceManager?.handlePresencePacket(plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_MUSIC_NOTE) {
-            service?.musicNoteManager?.handleMusicNotePacket(plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_MUSIC_SYNC) {
-            service?.listenTogetherManager?.handleSyncPacket(plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_GROUP_INVITE ||
-            messageType == MeshProtocol.TYPE_GROUP_JOIN ||
-            messageType == MeshProtocol.TYPE_GROUP_UPDATE ||
-            messageType == MeshProtocol.TYPE_GROUP_LEAVE ||
-            messageType == MeshProtocol.TYPE_GROUP_KEY ||
-            messageType == MeshProtocol.TYPE_GROUP_SYNC_REQUEST ||
-            messageType == MeshProtocol.TYPE_GROUP_SYNC_RESPONSE ||
-            messageType == MeshProtocol.TYPE_GROUP_KEY_REQUEST) {
-            service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey)
-            return
-        }
-
-        if (messageType == MeshProtocol.TYPE_GROUP_MESSAGE) {
-            handleGroupMessage(plaintext, senderKey, messageId, viaEndpoint, senderOnion)
-            return
-        }
+        if (messageType != MeshProtocol.TYPE_PROFILE_UPDATE && messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO && messageType != MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) service?.profileSyncManager?.syncWithContactSoon(senderKey)
+        if (messageType == MeshProtocol.TYPE_MEDIA_CHUNK || messageType == MeshProtocol.TYPE_MEDIA_OFFER || messageType == MeshProtocol.TYPE_MEDIA_ACK || messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) { service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_CALL_OFFER || messageType == MeshProtocol.TYPE_CALL_ANSWER || messageType == MeshProtocol.TYPE_ICE_CANDIDATE || messageType == MeshProtocol.TYPE_CALL_END) { service?.callManager?.handleSignal(messageType, plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_PROFILE_UPDATE || messageType == MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO || messageType == MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) { service?.profileSyncManager?.handleProfilePacket(messageType, plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_REACTION) { handleReactionPacket(plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_POLL_VOTE) { handlePollVotePacket(plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_PRESENCE) { service?.presenceManager?.handlePresencePacket(plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_MUSIC_NOTE) { service?.musicNoteManager?.handleMusicNotePacket(plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_MUSIC_SYNC) { service?.listenTogetherManager?.handleSyncPacket(plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_GROUP_INVITE || messageType == MeshProtocol.TYPE_GROUP_JOIN || messageType == MeshProtocol.TYPE_GROUP_UPDATE || messageType == MeshProtocol.TYPE_GROUP_LEAVE || messageType == MeshProtocol.TYPE_GROUP_KEY || messageType == MeshProtocol.TYPE_GROUP_SYNC_REQUEST || messageType == MeshProtocol.TYPE_GROUP_SYNC_RESPONSE || messageType == MeshProtocol.TYPE_GROUP_KEY_REQUEST) { service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey); return }
+        if (messageType == MeshProtocol.TYPE_GROUP_MESSAGE) { handleGroupMessage(plaintext, senderKey, messageId, viaEndpoint, senderOnion); return }
 
         val chatPayload = decodeChatMessagePayload(plaintext)
-
-        Log.d(TAG, "[RECV] Message from ${contact.name} (${chatPayload.text.length} chars)")
-
-        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
-            Log.d(TAG, "[RECV] Duplicate message ignored: $messageId")
-            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-            return
-        }
-
+        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) { sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
         val isActiveConversation = com.torxone.app.service.ActiveConversationTracker.isActive(senderKey)
-
-        db.messageDao().insertMessage(
-            MessageEntity(
-                messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(),
-                contactKey = senderKey,
-                text = chatPayload.text,
-                timestamp = System.currentTimeMillis(),
-                direction = "received",
-                status = "delivered",
-                replyToId = chatPayload.replyToId,
-                replyToText = chatPayload.replyToText,
-                replyToSender = chatPayload.replyToSender,
-                replyToType = chatPayload.replyToType
-            )
-        )
-
+        db.messageDao().insertMessage(MessageEntity(messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(), contactKey = senderKey, text = chatPayload.text, timestamp = chatPayload.sentAt ?: System.currentTimeMillis(), direction = "received", status = "delivered", replyToId = chatPayload.replyToId, replyToText = chatPayload.replyToText, replyToSender = chatPayload.replyToSender, replyToType = chatPayload.replyToType))
         if (service != null) {
             val isMuted = contact.muteUntil == -1L || (contact.muteUntil > 0L && System.currentTimeMillis() < contact.muteUntil)
-            if (isActiveConversation) {
-                com.torxone.app.service.NotificationHelper.clearContactNotifications(service, senderKey)
-            } else if (!isMuted) {
-                val unreadMsgs = db.messageDao().getUnreadMessagesSync(senderKey)
-                com.torxone.app.service.NotificationHelper.showMessageNotification(service, contact, unreadMsgs)
-            }
+            if (isActiveConversation) com.torxone.app.service.NotificationHelper.clearContactNotifications(service, senderKey)
+            else if (!isMuted) { val unreadMsgs = db.messageDao().getUnreadMessagesSync(senderKey); com.torxone.app.service.NotificationHelper.showMessageNotification(service, contact, unreadMsgs) }
         }
-
-        // Send ACK back to sender
-        if (messageId.isNotBlank()) {
-            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-        }
+        if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
     }
 
-    // ──────────────────────── GROUP MESSAGING ────────────────────────
-
     private suspend fun handleGroupMessage(jsonStr: String, senderKey: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
-        val json = org.json.JSONObject(jsonStr)
-        // Phase 3 is strict: never accept the old Phase 2 plaintext group payload.
-        if (json.optInt("schemaVersion", 0) != 2) {
-            Log.w(TAG, "[GROUP] Rejected legacy plaintext group message")
-            return
-        }
+        val json = JSONObject(jsonStr)
+        if (json.optInt("schemaVersion", 0) != 2) return
         val groupId = json.optString("groupId")
         val keyVersion = json.optInt("keyVersion", 0)
         val ciphertext = json.optString("ciphertext")
         val iv = json.optString("iv")
         if (groupId.isBlank() || keyVersion <= 0 || ciphertext.isBlank() || iv.isBlank()) return
-
-        val group = db.groupDao().getGroup(groupId)
-        if (group == null) {
-            Log.w(TAG, "[GROUP] Rejected message: group $groupId does not exist locally")
-            return
-        }
-
+        val group = db.groupDao().getGroup(groupId) ?: return
         val myKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
-        val receiverMember = db.groupDao().getGroupMember(groupId, myKey)
-        if (receiverMember == null) {
-            Log.w(TAG, "[GROUP] Rejected message: I am not a member of group $groupId")
-            return
-        }
-
+        if (db.groupDao().getGroupMember(groupId, myKey) == null) return
         val senderMember = db.groupDao().getGroupMember(groupId, senderKey)
-        if (senderMember == null || senderMember.role == "invited") {
-            Log.w(TAG, "[GROUP] Rejected message: sender $senderKey is not an active member of group $groupId")
-            return
-        }
-
-        val key = db.groupKeyDao().getKey(groupId, keyVersion)
-        if (key == null) {
-            Log.w(TAG, "[GROUP] Missing key version $keyVersion for $groupId; dropping ciphertext")
-            com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, keyVersion)
-            return
-        }
-        if (db.groupKeyDao().getLatestKey(groupId)?.keyVersion != keyVersion) {
-            Log.w(TAG, "[GROUP] Rejected stale key version $keyVersion for $groupId")
-            return
-        }
-        val inner = try {
-            JSONObject(GroupCryptoManager.decrypt(key, ciphertext, iv))
-        } catch (error: Exception) {
-            Log.w(TAG, "[GROUP] Ciphertext authentication/decryption failed", error)
-            return
-        }
+        if (senderMember == null || senderMember.role == "invited") return
+        val key = db.groupKeyDao().getKey(groupId, keyVersion) ?: run { com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, keyVersion); return }
+        if (db.groupKeyDao().getLatestKey(groupId)?.keyVersion != keyVersion) return
+        val inner = try { JSONObject(GroupCryptoManager.decrypt(key, ciphertext, iv)) } catch (_: Exception) { return }
         val innerSenderKey = inner.optString("senderKey")
         val innerMessageId = inner.optString("messageId")
-        if (innerSenderKey != senderKey || innerMessageId.isBlank()) {
-            Log.w(TAG, "[GROUP] Rejected sender-mismatched or replay-unsafe payload")
-            return
-        }
-
+        if (innerSenderKey != senderKey || innerMessageId.isBlank()) return
         when (inner.optString("action")) {
-            "REACTION" -> {
-                val target = inner.optString("targetMessageId")
-                val emoji = inner.optString("emoji")
-                if (target.isNotBlank() && emoji.isNotBlank()) applyReactionToMessage(target, innerSenderKey, emoji, inner.optString("reactionAction", "set"))
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
-            "EDIT" -> {
-                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
-                if (target != null && target.conversationType == "group" && target.senderKey == innerSenderKey) db.messageDao().updateMessageText(target.messageId, inner.optString("text"))
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
-            "DELETE" -> {
-                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
-                if (target != null && target.conversationType == "group" && (target.senderKey == innerSenderKey || group.creatorKey == innerSenderKey)) db.messageDao().deleteMessage(target.messageId)
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
-            "POLL" -> {
-                val poll = JSONObject().put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice"))
-                db.messageDao().insertMessage(MessageEntity(messageId = innerMessageId, contactKey = groupId, conversationType = "group", senderKey = innerSenderKey, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "received", status = "delivered"))
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
-            "POLL_VOTE" -> {
-                val target = inner.optString("targetMessageId")
-                if (target.isNotBlank()) applyPollVote(target, innerSenderKey, inner.optInt("optionIndex", -1))
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
-            "READ" -> {
-                val target = db.messageDao().getMessageById(inner.optString("targetMessageId"))
-                if (target != null && target.conversationType == "group") db.messageDao().markMessageRead(target.messageId)
-                if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-                return
-            }
+            "REACTION" -> { val target = inner.optString("targetMessageId"); val emoji = inner.optString("emoji"); if (target.isNotBlank() && emoji.isNotBlank()) applyReactionToMessage(target, innerSenderKey, emoji, inner.optString("reactionAction", "set")); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+            "EDIT" -> { val target = db.messageDao().getMessageById(inner.optString("targetMessageId")); if (target != null && target.conversationType == "group" && target.senderKey == innerSenderKey) db.messageDao().updateMessageText(target.messageId, inner.optString("text")); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+            "DELETE" -> { val target = db.messageDao().getMessageById(inner.optString("targetMessageId")); if (target != null && target.conversationType == "group" && (target.senderKey == innerSenderKey || group.creatorKey == innerSenderKey)) db.messageDao().deleteMessage(target.messageId); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+            "POLL" -> { val poll = JSONObject().put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice")); db.messageDao().insertMessage(MessageEntity(messageId = innerMessageId, contactKey = groupId, conversationType = "group", senderKey = innerSenderKey, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = inner.optLong("timestamp", System.currentTimeMillis()), direction = "received", status = "delivered")); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+            "POLL_VOTE" -> { val target = inner.optString("targetMessageId"); if (target.isNotBlank()) applyPollVote(target, innerSenderKey, inner.optInt("optionIndex", -1)); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+            "READ" -> { val target = db.messageDao().getMessageById(inner.optString("targetMessageId")); if (target != null && target.conversationType == "group") db.messageDao().markMessageRead(target.messageId); if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
         }
-
         val chatPayload = decodeChatMessagePayload(inner.toString())
-
-        if (db.messageDao().getMessageById(innerMessageId) != null) {
-            Log.d(TAG, "[RECV] Duplicate group message ignored: $innerMessageId")
-            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-            return
-        }
-
-        db.messageDao().insertMessage(
-            MessageEntity(
-                messageId = innerMessageId,
-                contactKey = groupId,
-                conversationType = "group",
-                senderKey = innerSenderKey,
-                text = chatPayload.text,
-                timestamp = System.currentTimeMillis(),
-                direction = "received",
-                status = "delivered",
-                replyToId = chatPayload.replyToId,
-                replyToText = chatPayload.replyToText,
-                replyToSender = chatPayload.replyToSender,
-                replyToType = chatPayload.replyToType
-            )
-        )
-
+        if (db.messageDao().getMessageById(innerMessageId) != null) { sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+        db.messageDao().insertMessage(MessageEntity(messageId = innerMessageId, contactKey = groupId, conversationType = "group", senderKey = innerSenderKey, text = chatPayload.text, timestamp = chatPayload.sentAt ?: inner.optLong("timestamp", System.currentTimeMillis()), direction = "received", status = "delivered", replyToId = chatPayload.replyToId, replyToText = chatPayload.replyToText, replyToSender = chatPayload.replyToSender, replyToType = chatPayload.replyToType))
         val service = com.torxone.app.service.TorXOneService.getInstance()
         if (service != null) {
             val isActive = com.torxone.app.service.ActiveConversationTracker.isActive(groupId)
-            if (isActive) {
-                com.torxone.app.service.NotificationHelper.clearContactNotifications(service, groupId)
-            } else {
-                val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group")
-                val group = db.groupDao().getGroup(groupId)
-                val isMuted = group?.muteUntil == -1L || (group?.muteUntil ?: 0L) > System.currentTimeMillis()
-                if (group != null && !isMuted) {
-                    com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = group.name), unreadMsgs, "group")
-                }
-            }
+            if (isActive) com.torxone.app.service.NotificationHelper.clearContactNotifications(service, groupId)
+            else { val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group"); val grp = db.groupDao().getGroup(groupId); val isMuted = grp?.muteUntil == -1L || (grp?.muteUntil ?: 0L) > System.currentTimeMillis(); if (grp != null && !isMuted) com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = grp.name), unreadMsgs, "group") }
         }
-
-        if (messageId.isNotBlank()) {
-            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
-        }
+        if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
     }
 
     // ──────────────────────── ENCRYPTION ────────────────────────
 
-    private fun buildEncryptedPayload(
-        identity: Identity,
-        contact: ContactEntity,
-        text: String
-    ): MeshProtocol.EncryptedPayload? {
+    private fun buildEncryptedPayload(identity: Identity, contact: ContactEntity, text: String): MeshProtocol.EncryptedPayload? {
         return try {
             if (contact.encryptionPublicKey.isBlank()) return null
             val encPub = CryptoManager.fromHex(contact.encryptionPublicKey)
-            val (ciphertext, nonce) = CryptoManager.encryptMessage(
-                text, encPub, identity.encryptionSecretKey
-            )
+            val (ciphertext, nonce) = CryptoManager.encryptMessage(text, encPub, identity.encryptionSecretKey)
             val signature = CryptoManager.sign(ciphertext + nonce, identity.signingSecretKey)
-            MeshProtocol.EncryptedPayload(
-                fromSigningKey = mySigningKeyHex,
-                toSigningKey = contact.signingPublicKey,
-                ciphertextHex = CryptoManager.toHex(ciphertext),
-                nonceHex = CryptoManager.toHex(nonce),
-                signatureHex = CryptoManager.toHex(signature)
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "[CRYPTO] buildEncryptedPayload failed", e)
-            null
-        }
+            MeshProtocol.EncryptedPayload(fromSigningKey = mySigningKeyHex, toSigningKey = contact.signingPublicKey, ciphertextHex = CryptoManager.toHex(ciphertext), nonceHex = CryptoManager.toHex(nonce), signatureHex = CryptoManager.toHex(signature))
+        } catch (e: Exception) { Log.e(TAG, "[CRYPTO] buildEncryptedPayload failed", e); null }
     }
 
     private suspend fun sendReactionPacket(reaction: ReactionOutboxEntity): SendResult {
-        val actorKey = mySigningKeyHex.ifBlank {
-            identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty()
-        }
-        val payload = JSONObject()
-            .put("astraType", "reaction")
-            .put("version", 1)
-            .put("reactionId", reaction.reactionId)
-            .put("targetMessageId", reaction.targetMessageId)
-            .put("emoji", reaction.emoji)
-            .put("action", reaction.action)
-            .put("actorKey", actorKey)
-            .put("createdAt", reaction.createdAt)
-            .toString()
+        val actorKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
+        val payload = JSONObject().put("astraType", "reaction").put("version", 1).put("reactionId", reaction.reactionId).put("targetMessageId", reaction.targetMessageId).put("emoji", reaction.emoji).put("action", reaction.action).put("actorKey", actorKey).put("createdAt", reaction.createdAt).toString()
         return sendRawPayload(reaction.contactKey, payload, MeshProtocol.TYPE_REACTION)
     }
+    private fun handleReactionPacket(raw: String, senderKey: String) { runCatching { val json = JSONObject(raw); applyReactionToMessage(json.getString("targetMessageId"), senderKey, json.getString("emoji"), json.optString("action", "add")) }.onFailure { Log.w(TAG, "Invalid reaction packet", it) } }
+    private fun applyReactionToMessage(messageId: String, actorKey: String, emoji: String, action: String) { if (messageId.isBlank() || actorKey.isBlank() || emoji.isBlank()) return; val message = db.messageDao().getMessageById(messageId) ?: return; val reactions = parseReactionMap(message.reactionsJson); val actorReactions = reactions[actorKey]?.toMutableSet() ?: linkedSetOf(); when (action) { "remove" -> actorReactions.remove(emoji); "set" -> { actorReactions.clear(); actorReactions.add(emoji) }; else -> { actorReactions.clear(); actorReactions.add(emoji) } }; if (actorReactions.isEmpty()) reactions.remove(actorKey) else reactions[actorKey] = actorReactions.toList(); db.messageDao().updateReactions(messageId, encodeReactionMap(reactions)) }
+    private fun parseReactionMap(raw: String?): MutableMap<String, List<String>> { val result = linkedMapOf<String, List<String>>(); if (raw.isNullOrBlank()) return result; return runCatching { val json = JSONObject(raw); json.keys().forEach { actor -> val value = json.get(actor); result[actor] = when (value) { is JSONArray -> List(value.length()) { index -> value.optString(index) }.filter { it.isNotBlank() }; is String -> listOf(value).filter { it.isNotBlank() }; else -> emptyList() } }; result }.getOrElse { result } }
+    private fun encodeReactionMap(reactions: Map<String, List<String>>): String? { if (reactions.isEmpty()) return null; val json = JSONObject(); reactions.forEach { (actor, emojis) -> val array = JSONArray(); emojis.distinct().filter { it.isNotBlank() }.forEach { array.put(it) }; if (array.length() > 0) json.put(actor, array) }; return if (json.length() == 0) null else json.toString() }
 
-    private fun handleReactionPacket(raw: String, senderKey: String) {
-        runCatching {
-            val json = JSONObject(raw)
-            val targetMessageId = json.getString("targetMessageId")
-            val emoji = json.getString("emoji")
-            val action = json.optString("action", "add")
-            applyReactionToMessage(targetMessageId, senderKey, emoji, action)
-        }.onFailure { e ->
-            Log.w(TAG, "Invalid reaction packet", e)
-        }
-    }
+    private fun handlePollVotePacket(raw: String, senderKey: String) { runCatching { val json = JSONObject(raw); applyPollVote(json.getString("targetMessageId"), senderKey, json.getInt("optionIndex")) }.onFailure { Log.w(TAG, "Invalid poll vote packet", it) } }
+    private fun applyPollVote(messageId: String, voterKey: String, optionIndex: Int) { val message = db.messageDao().getMessageById(messageId) ?: return; val votes = parseReactionMap(message.reactionsJson); votes[voterKey] = listOf(optionIndex.toString()); db.messageDao().updateReactions(messageId, encodeReactionMap(votes)) }
+    suspend fun sendPollVote(contactKey: String, targetMessageId: String, optionIndex: Int): SendResult { val actorKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }; if (actorKey.isBlank()) return SendResult(false, Transport.FAILED, "Not logged in"); applyPollVote(targetMessageId, actorKey, optionIndex); val payload = JSONObject().put("astraType", "poll_vote").put("targetMessageId", targetMessageId).put("optionIndex", optionIndex).put("voterKey", actorKey).toString(); return sendRawPayload(contactKey, payload, MeshProtocol.TYPE_POLL_VOTE) }
 
-    private fun applyReactionToMessage(messageId: String, actorKey: String, emoji: String, action: String) {
-        if (messageId.isBlank() || actorKey.isBlank() || emoji.isBlank()) return
-        val message = db.messageDao().getMessageById(messageId) ?: return
-        val reactions = parseReactionMap(message.reactionsJson)
-        val actorReactions = reactions[actorKey]?.toMutableSet() ?: linkedSetOf()
-        when (action) {
-            "remove" -> actorReactions.remove(emoji)
-            "set" -> {
-                actorReactions.clear()
-                actorReactions.add(emoji)
-            }
-            else -> {
-                actorReactions.clear()
-                actorReactions.add(emoji)
-            }
-        }
+    private data class ChatMessagePayload(val text: String, val sentAt: Long? = null, val replyToId: String? = null, val replyToText: String? = null, val replyToSender: String? = null, val replyToType: String? = null)
 
-        if (actorReactions.isEmpty()) {
-            reactions.remove(actorKey)
-        } else {
-            reactions[actorKey] = actorReactions.toList()
-        }
-        db.messageDao().updateReactions(messageId, encodeReactionMap(reactions))
-    }
-
-    private fun parseReactionMap(raw: String?): MutableMap<String, List<String>> {
-        val result = linkedMapOf<String, List<String>>()
-        if (raw.isNullOrBlank()) return result
-        return runCatching {
-            val json = JSONObject(raw)
-            json.keys().forEach { actor ->
-                val value = json.get(actor)
-                result[actor] = when (value) {
-                    is org.json.JSONArray -> List(value.length()) { index -> value.optString(index) }
-                        .filter { it.isNotBlank() }
-                    is String -> listOf(value).filter { it.isNotBlank() }
-                    else -> emptyList()
-                }
-            }
-            result
-        }.getOrElse { result }
-    }
-
-    private fun encodeReactionMap(reactions: Map<String, List<String>>): String? {
-        if (reactions.isEmpty()) return null
-        val json = JSONObject()
-        reactions.forEach { (actor, emojis) ->
-            val array = org.json.JSONArray()
-            emojis.distinct().filter { it.isNotBlank() }.forEach { array.put(it) }
-            if (array.length() > 0) json.put(actor, array)
-        }
-        return if (json.length() == 0) null else json.toString()
-    }
-
-    // ──────────────────────── POLL VOTES ────────────────────────
-
-    private fun handlePollVotePacket(raw: String, senderKey: String) {
-        runCatching {
-            val json = JSONObject(raw)
-            val targetMessageId = json.getString("targetMessageId")
-            val optionIndex = json.getInt("optionIndex")
-            applyPollVote(targetMessageId, senderKey, optionIndex)
-        }.onFailure { e ->
-            Log.w(TAG, "Invalid poll vote packet", e)
-        }
-    }
-
-    private fun applyPollVote(messageId: String, voterKey: String, optionIndex: Int) {
-        val message = db.messageDao().getMessageById(messageId) ?: return
-        // Poll votes are stored in reactionsJson as: { "voterKey": ["optionIndex"] }
-        val votes = parseReactionMap(message.reactionsJson)
-        votes[voterKey] = listOf(optionIndex.toString())
-        db.messageDao().updateReactions(messageId, encodeReactionMap(votes))
-    }
-
-    suspend fun sendPollVote(contactKey: String, targetMessageId: String, optionIndex: Int): SendResult {
-        val actorKey = mySigningKeyHex.ifBlank {
-            identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty()
-        }
-        if (actorKey.isBlank()) return SendResult(false, Transport.FAILED, "Not logged in")
-
-        // Apply locally first
-        applyPollVote(targetMessageId, actorKey, optionIndex)
-
-        // Send to peer
-        val payload = JSONObject()
-            .put("astraType", "poll_vote")
-            .put("targetMessageId", targetMessageId)
-            .put("optionIndex", optionIndex)
-            .put("voterKey", actorKey)
-            .toString()
-        return sendRawPayload(contactKey, payload, MeshProtocol.TYPE_POLL_VOTE)
-    }
-
-    private data class ChatMessagePayload(
-        val text: String,
-        val replyToId: String? = null,
-        val replyToText: String? = null,
-        val replyToSender: String? = null,
-        val replyToType: String? = null
-    )
-
-    private fun encodeChatMessagePayload(
-        text: String,
-        replyToId: String?,
-        replyToText: String?,
-        replyToSender: String?,
-        replyToType: String?
-    ): String {
-        if (replyToId.isNullOrBlank()) return text
-        return JSONObject()
-            .put("astraType", "chat_message")
-            .put("version", 1)
-            .put("text", text)
-            .put(
-                "reply",
-                JSONObject()
-                    .put("originalMessageId", replyToId)
-                    .put("originalSender", replyToSender ?: "")
-                    .put("originalType", replyToType ?: "TEXT")
-                    .put("originalPreview", replyToText ?: "")
-            )
-            .toString()
+    private fun encodeChatMessagePayload(text: String, sentAt: Long, replyToId: String?, replyToText: String?, replyToSender: String?, replyToType: String?): String {
+        return JSONObject().apply {
+            put("astraType", "chat_message")
+            put("version", 2)
+            put("sentAt", sentAt)
+            put("text", text)
+            replyToId?.takeIf { it.isNotBlank() }?.let { put("reply", JSONObject().put("originalMessageId", it).put("originalSender", replyToSender ?: "").put("originalType", replyToType ?: "TEXT").put("originalPreview", replyToText ?: "")) }
+        }.toString()
     }
 
     private fun decodeChatMessagePayload(raw: String): ChatMessagePayload {
         return runCatching {
             val json = JSONObject(raw)
-            if (json.optString("astraType") != "chat_message") {
-                return@runCatching ChatMessagePayload(raw)
-            }
+            if (json.optString("astraType") != "chat_message") return@runCatching ChatMessagePayload(raw)
             val reply = json.optJSONObject("reply")
-            ChatMessagePayload(
-                text = json.optString("text", ""),
-                replyToId = reply?.optString("originalMessageId")?.takeIf { it.isNotBlank() },
-                replyToSender = reply?.optString("originalSender")?.takeIf { it.isNotBlank() },
-                replyToType = reply?.optString("originalType")?.takeIf { it.isNotBlank() },
-                replyToText = reply?.optString("originalPreview")?.takeIf { it.isNotBlank() }
-            )
-        }.getOrElse {
-            ChatMessagePayload(raw)
-        }
+            ChatMessagePayload(text = json.optString("text", ""), sentAt = json.optLong("sentAt", 0L).takeIf { it > 0L }, replyToId = reply?.optString("originalMessageId")?.takeIf { it.isNotBlank() }, replyToSender = reply?.optString("originalSender")?.takeIf { it.isNotBlank() }, replyToType = reply?.optString("originalType")?.takeIf { it.isNotBlank() }, replyToText = reply?.optString("originalPreview")?.takeIf { it.isNotBlank() })
+        }.getOrElse { ChatMessagePayload(raw) }
     }
 
-    private fun rememberRelayFingerprint(fingerprint: String): Boolean {
-        val now = System.currentTimeMillis()
-        val iterator = recentRelayFingerprints.iterator()
-        while (iterator.hasNext()) {
-            val entry = iterator.next()
-            if (now - entry.value > RELAY_CACHE_TTL_MS) iterator.remove()
-        }
-
-        if (recentRelayFingerprints.containsKey(fingerprint)) return false
-
-        recentRelayFingerprints[fingerprint] = now
-        while (recentRelayFingerprints.size > MAX_RELAY_CACHE_SIZE) {
-            val firstKey = recentRelayFingerprints.keys.firstOrNull() ?: break
-            recentRelayFingerprints.remove(firstKey)
-        }
-        return true
-    }
+    private fun rememberRelayFingerprint(fingerprint: String): Boolean { val now = System.currentTimeMillis(); val iterator = recentRelayFingerprints.iterator(); while (iterator.hasNext()) { val entry = iterator.next(); if (now - entry.value > RELAY_CACHE_TTL_MS) iterator.remove() }; if (recentRelayFingerprints.containsKey(fingerprint)) return false; recentRelayFingerprints[fingerprint] = now; while (recentRelayFingerprints.size > MAX_RELAY_CACHE_SIZE) { val firstKey = recentRelayFingerprints.keys.firstOrNull() ?: break; recentRelayFingerprints.remove(firstKey) }; return true }
 
     suspend fun processEncryptedBacklog() {
-        val identity = identity
-        if (identity == null || identity.encryptionSecretKey.isEmpty()) return
-
+        val identity = identity ?: return
+        if (identity.encryptionSecretKey.isEmpty()) return
         val pending = db.pendingEncryptedPayloadDao().getAll()
         if (pending.isEmpty()) return
-
-        Log.d(TAG, "[DEFERRED] Processing ${pending.size} pending encrypted payloads")
-
         for (payloadRow in pending) {
-            try {
-                val json = JSONObject(payloadRow.rawJson)
-                val type = json.optString("type", MeshProtocol.TYPE_MSG)
-                
-                // If it was a relay, the inner type might be different. 
-                // handleEncrypted parses MeshProtocol.TYPE_MSG by default unless we pass innerType.
-                val innerType = if (type == MeshProtocol.TYPE_RELAY) {
-                    json.optString("innerType", MeshProtocol.TYPE_MSG)
-                } else {
-                    type
-                }
-
-                // Since handleEncrypted sends ACKs, but we ALREADY sent an ACK when we deferred it,
-                // we should suppress ACKs during backlog processing to avoid spamming ACKs.
-                // However, handleEncrypted only sends ACKs if the message is a duplicate or if it's a specific type.
-                // Wait, handleEncrypted does NOT send ACKs natively for normal TYPE_MSG, `handleAck` does!
-                // Ah, handleEncrypted ONLY sends ACKs if `messageId.isNotBlank() && duplicate`!
-                // So it's safe to just call handleEncrypted.
-                
-                handleEncrypted(json, null, innerType)
-
-                // Remove from backlog on success or handled duplicate
-                db.pendingEncryptedPayloadDao().delete(payloadRow.messageId)
-            } catch (e: Exception) {
-                Log.e(TAG, "[DEFERRED] Failed to process payload ${payloadRow.messageId}", e)
-                // We'll leave it in the database and try again next time? Or delete it if it's unrecoverable?
-                // Let's delete it if it's unrecoverable so it doesn't block forever.
-                db.pendingEncryptedPayloadDao().delete(payloadRow.messageId)
-            }
+            try { val json = JSONObject(payloadRow.rawJson); val type = json.optString("type", MeshProtocol.TYPE_MSG); val innerType = if (type == MeshProtocol.TYPE_RELAY) json.optString("innerType", MeshProtocol.TYPE_MSG) else type; handleEncrypted(json, null, innerType); db.pendingEncryptedPayloadDao().delete(payloadRow.messageId) }
+            catch (e: Exception) { Log.e(TAG, "[DEFERRED] Failed to process payload ${payloadRow.messageId}", e); db.pendingEncryptedPayloadDao().delete(payloadRow.messageId) }
         }
     }
 }
