@@ -78,9 +78,9 @@ class CallManagerDuplicateOfferTest {
 
         override fun isAvailable(context: CallRouteContext): Boolean = true
         override suspend fun startOutgoing(callId: String, contact: ContactEntity, context: CallRouteContext): CallStartResult =
-            CallStartResult.Started(CallMode.AUDIO)
+            CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
         override suspend fun acceptIncoming(callId: String, contact: ContactEntity, offer: AstraSessionDescription): CallStartResult =
-            CallStartResult.Started(CallMode.AUDIO)
+            CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
         override fun handleRemoteDescription(description: AstraSessionDescription) = Unit
         override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) = Unit
         override fun handleIceCandidate(candidate: AstraIceCandidate) = Unit

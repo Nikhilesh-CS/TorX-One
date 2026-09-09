@@ -434,8 +434,7 @@ class TorManager(private val context: Context) {
                 try {
                     socket.getOutputStream().apply {
                         write(payload.toByteArray(Charsets.UTF_8))
-                        write('
-'.code)
+                        write('\n'.code)
                         flush()
                     }
                     addTorLog("[TOR] Packet sent to $onionHost${if (attempt > 0) " after reconnect" else ""}")

@@ -38,6 +38,7 @@ class SessionManager(
     }
 
     private suspend fun encryptLocked(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {
+        val contactKey = contact.signingPublicKey.trim().lowercase()
         val id = identity ?: throw IllegalStateException("Identity not available")
         val mySigKeyHex = CryptoManager.toHex(id.signingPublicKey)
         val myEncKeyHex = CryptoManager.toHex(id.encryptionPublicKey)

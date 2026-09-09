@@ -266,7 +266,7 @@ class MessageRouter(
         return result
     }
 
-    private fun attemptDeliverySession(
+    private suspend fun attemptDeliverySession(
         contact: ContactEntity,
         wireJson: String,
         messageId: String
@@ -303,7 +303,7 @@ class MessageRouter(
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
     }
 
-    private fun attemptDelivery(
+    private suspend fun attemptDelivery(
         contact: ContactEntity,
         payload: MeshProtocol.EncryptedPayload,
         messageId: String,
