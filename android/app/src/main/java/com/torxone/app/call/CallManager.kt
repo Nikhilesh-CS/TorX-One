@@ -8,6 +8,7 @@ import android.util.Log
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.network.MessageRouter
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -144,6 +145,10 @@ class CallManager(
                     generator.startTone(ToneGenerator.TONE_SUP_RINGTONE, 2000)
                     delay(4000)
                 }
+            } catch (e: CancellationException) {
+                // Stopping ringback when an answer arrives is normal control
+                // flow; do not report coroutine cancellation as an audio error.
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Failed playing ringback tone", e)
             }
