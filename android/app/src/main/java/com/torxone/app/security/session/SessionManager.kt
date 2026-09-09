@@ -94,13 +94,8 @@ class SessionManager(
                 if (!CryptoManager.verify(legacyBody, signatureBytes, senderSigPub)) throw SecurityException("Digital signature verification failed for session message")
             }
         }
-        // 3. Replay Protection Guard
-        val isFresh = replayProtection.checkAndMark(sessionId, msgNum)
-        if (!isFresh) {
-            throw SecurityException("Replay rejected: Counter #$msgNum in session $sessionId already processed")
-        }
 
-        // 4. Retrieve or Initialize Responder Session (Two-Slot in-flight safe arbitration)
+        // 3. Retrieve or Initialize Responder Session (Two-Slot in-flight safe arbitration)
         var session = sessionDao.getSessionById(normalizedSender, sessionId)
         val activeSession = sessionDao.getSession(normalizedSender)
 

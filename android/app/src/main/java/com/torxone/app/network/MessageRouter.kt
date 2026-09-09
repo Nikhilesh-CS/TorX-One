@@ -716,14 +716,15 @@ class MessageRouter(
         if (senderKey.isBlank()) return
 
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey != senderKey) {
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
             Log.w(TAG, "[ACK] Ignoring receipt from non-recipient for message $messageId")
             return
         }
 
         Log.d(TAG, "[TOR] ACK received for message $messageId")
         Log.d(TAG, "[TOR] Delivery complete")
-        db.messageDao().updateSentMessageStatus(messageId, senderKey, "delivered")
+        db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "delivered")
+        pendingSessionPayloads.remove(messageId)
 
         // Update sender's onion if provided in the ACK
         val senderOnion = json.optString("senderOnion", "")
@@ -784,13 +785,13 @@ class MessageRouter(
         if (senderKey.isBlank()) return
 
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey != senderKey) {
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
             Log.w(TAG, "[READ] Ignoring receipt from non-recipient for message $messageId")
             return
         }
 
         Log.d(TAG, "[READ] Received read receipt for message $messageId")
-        db.messageDao().updateSentMessageStatus(messageId, senderKey, "read")
+        db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "read")
 
         // Update sender's onion if provided in the READ receipt
         val senderOnion = json.optString("senderOnion", "")

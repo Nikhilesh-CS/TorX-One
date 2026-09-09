@@ -230,4 +230,38 @@ class SessionSecurityTest {
         val winningKey = if (keyAlice < keyBob) keyAlice else keyBob
         assertEquals(keyAlice, winningKey)
     }
+
+    @Test
+    fun testReplayProtectionContract() = kotlinx.coroutines.runBlocking {
+        val seen = mutableSetOf<Pair<String, Int>>()
+        val mockDao = object : SessionReplayDao {
+            override suspend fun isProcessed(sessionId: String, msgNum: Int): Int =
+                if (seen.contains(Pair(sessionId, msgNum))) 1 else 0
+
+            override suspend fun markProcessed(replay: SessionReplayEntity): Long {
+                val pair = Pair(replay.sessionId, replay.msgNum)
+                return if (seen.add(pair)) 1L else -1L
+            }
+
+            override suspend fun pruneOldRecords(cutoffMs: Long) {}
+            override suspend fun clearSessionReplays(sessionId: String) {
+                seen.removeIf { it.first == sessionId }
+            }
+        }
+
+        val replayProtection = ReplayProtection(mockDao)
+        val sessionId = "session-test-replay-1"
+
+        // 1. Initial message 0 must be accepted
+        assertTrue(replayProtection.checkAndMark(sessionId, 0))
+
+        // 2. Duplicate message 0 must be rejected as replay
+        assertFalse(replayProtection.checkAndMark(sessionId, 0))
+
+        // 3. New message 1 must be accepted
+        assertTrue(replayProtection.checkAndMark(sessionId, 1))
+
+        // 4. Duplicate message 1 must be rejected
+        assertFalse(replayProtection.checkAndMark(sessionId, 1))
+    }
 }
