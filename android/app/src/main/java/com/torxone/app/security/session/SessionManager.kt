@@ -19,6 +19,7 @@ class SessionManager(
     private val skippedKeyDao: SkippedMessageKeyDao? = null
 ) {
     private val encryptLocks = ConcurrentHashMap<String, Mutex>()
+    private val decryptLocks = ConcurrentHashMap<String, Mutex>()
     companion object {
         private const val TAG = "SessionManager"
         private const val SCHEMA_VERSION = 1
@@ -78,9 +79,15 @@ class SessionManager(
         return SessionWirePayload(wireJson.toString(), session.sessionId, messageId)
     }
     suspend fun decrypt(senderKey: String, json: JSONObject): DecryptedResult {
+        val normalizedSender = senderKey.trim().lowercase()
+        return decryptLocks.computeIfAbsent(normalizedSender) { Mutex() }.withLock {
+            decryptLocked(normalizedSender, json)
+        }
+    }
+
+    private suspend fun decryptLocked(normalizedSender: String, json: JSONObject): DecryptedResult {
         val id = identity ?: throw IllegalStateException("Identity not available")
         val mySigKeyHex = CryptoManager.toHex(id.signingPublicKey)
-        val normalizedSender = senderKey.trim().lowercase()
         val to = json.optString("to", "").trim().lowercase()
         if (to != mySigKeyHex) throw SecurityException("Message addressed to another identity ($to)")
         val sessionId = json.getString("sessionId")
@@ -112,7 +119,9 @@ class SessionManager(
 
         if (session == null) {
             if (activeSession == null) {
-                // First session from this contact
+                // First session from this contact (or local session state was cleared)
+                replayProtection.clearSession(sessionId)
+                skippedKeyDao?.clearSessionSkippedKeys(sessionId)
                 session = initializeResponderSession(
                     contactKey = normalizedSender,
                     sessionId = sessionId,
@@ -129,6 +138,8 @@ class SessionManager(
                 if (isUnusedLocalSession || (isSimultaneousInitiation && remoteWinsTieBreak)) {
                     // Remote session wins tie-break or local was unused
                     Log.d(TAG, "[SESSION_RX] Remote session $sessionId wins arbitration over ${activeSession.sessionId}")
+                    replayProtection.clearSession(sessionId)
+                    skippedKeyDao?.clearSessionSkippedKeys(sessionId)
                     session = initializeResponderSession(
                         contactKey = normalizedSender,
                         sessionId = sessionId,
@@ -141,6 +152,8 @@ class SessionManager(
                 } else if (isSimultaneousInitiation && !remoteWinsTieBreak) {
                     // Local session wins tie-break: decrypt incoming message under incoming sessionId in TRANSITION slot
                     Log.d(TAG, "[SESSION_RX] Local session ${activeSession.sessionId} wins arbitration over $sessionId; decrypting incoming with temporary responder")
+                    replayProtection.clearSession(sessionId)
+                    skippedKeyDao?.clearSessionSkippedKeys(sessionId)
                     session = initializeResponderSession(
                         contactKey = normalizedSender,
                         sessionId = sessionId,
@@ -151,6 +164,8 @@ class SessionManager(
                 } else {
                     // Established active session rotating to new session generation
                     Log.d(TAG, "[SESSION_RX] Adopting new session generation $sessionId from $normalizedSender (previous=${activeSession.sessionId})")
+                    replayProtection.clearSession(sessionId)
+                    skippedKeyDao?.clearSessionSkippedKeys(sessionId)
                     session = initializeResponderSession(
                         contactKey = normalizedSender,
                         sessionId = sessionId,
@@ -208,6 +223,7 @@ class SessionManager(
             Log.w(TAG, "[$sessionId] Ratchet mismatch for ${normalizedSender.take(12)}; rebuilding responder state: ${firstError.message}")
             sessionDao.deleteSession(normalizedSender)
             skippedKeyDao?.clearSessionSkippedKeys(sessionId)
+            replayProtection.clearSession(sessionId)
             val newSession = initializeResponderSession(normalizedSender, sessionId, remoteRatchetPubHex, senderEncPubHex, id)
             deriveAndDecrypt(newSession)
         }
@@ -220,7 +236,10 @@ class SessionManager(
         val normalized = contactKey.trim().lowercase()
         val existing = sessionDao.getSession(normalized)
         sessionDao.deleteSession(normalized)
-        existing?.let { skippedKeyDao?.clearSessionSkippedKeys(it.sessionId) }
+        existing?.let { 
+            skippedKeyDao?.clearSessionSkippedKeys(it.sessionId)
+            replayProtection.clearSession(it.sessionId)
+        }
         Log.w(TAG, "Reset ratchet session for ${normalized.take(12)}")
     }
     private fun initializeInitiatorSession(contactKey: String, contactEncPubHex: String, localIdentity: Identity): SessionEntity {

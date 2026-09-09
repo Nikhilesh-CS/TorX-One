@@ -727,7 +727,23 @@ class MessageRouter(
             val sm = sessionManager ?: return
             val contact = db.contactDao().getContact(fromKey) ?: return
             if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
-            val decrypted = try { sm.decrypt(fromKey, json) } catch (e: Exception) { Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}"); return }
+
+            // Fast deduplication: If message is already in DB, resend ACK and skip decryption
+            if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
+                Log.d(TAG, "[SESSION_RX] Duplicate message $messageId already in DB from ${contact.name}; sending ACK")
+                sendAck(messageId, fromKey, viaEndpoint, senderOnion)
+                return
+            }
+
+            val decrypted = try { 
+                sm.decrypt(fromKey, json) 
+            } catch (e: Exception) { 
+                Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}")
+                if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
+                    sendAck(messageId, fromKey, viaEndpoint, senderOnion)
+                }
+                return 
+            }
             dispatchDecryptedMessage(contact, fromKey, decrypted.plaintext, decrypted.messageType, messageId, viaEndpoint, senderOnion)
             return
         }

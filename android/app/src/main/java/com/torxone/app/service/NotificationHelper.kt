@@ -81,8 +81,8 @@ object NotificationHelper {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Incoming TorX One calls"
-                enableVibration(true)
-                setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE), null)
+                enableVibration(false)
+                setSound(null, null)
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
 

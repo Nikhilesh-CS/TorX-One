@@ -81,6 +81,9 @@ interface SessionReplayDao {
 
     @Query("DELETE FROM session_replays WHERE sessionId = :sessionId")
     suspend fun clearSessionReplays(sessionId: String)
+
+    @Query("DELETE FROM session_replays WHERE sessionId NOT IN (SELECT sessionId FROM sessions)")
+    suspend fun clearOrphanedReplays()
 }
 
 /**

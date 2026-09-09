@@ -62,6 +62,8 @@ class WebRtcCallEngine(
     private var isMediaReceived = false
     /** True only after ICE + remote media have established a real call. */
     private var hasEstablishedCall = false
+    /** True after call has been accepted (startOutgoing/startIncoming completed). */
+    private var hasAcceptedCall = false
     private var isCleaningUp = false
 
     override fun isAvailable(context: CallRouteContext): Boolean = true
@@ -74,6 +76,7 @@ class WebRtcCallEngine(
         return withContext(Dispatchers.IO) {
             try {
                 activeCallId = callId
+                hasAcceptedCall = true
                 activePeerKey = contact.signingPublicKey
                 activePeerName = contact.name
                 activeMode = CallMode.AUDIO
@@ -109,6 +112,7 @@ class WebRtcCallEngine(
         return withContext(Dispatchers.IO) {
             try {
                 activeCallId = callId
+                hasAcceptedCall = true
                 activePeerKey = contact.signingPublicKey
                 activePeerName = contact.name
                 activeMode = CallMode.AUDIO
@@ -148,7 +152,7 @@ class WebRtcCallEngine(
         Log.d(TAG, "Processing renegotiation offer for call $callId")
         diagnostics?.record("RENEGOTIATION_PROCESSING")
         try {
-            rtcClient.setRemoteDescription(offer)
+            rtcClient.setRemoteDescriptionSuspend(offer)
             val answer = rtcClient.createAnswer()
             signaling.sendAnswer(peerKey, callId, activeMode, answer)
             Log.d(TAG, "Renegotiation answer dispatched for call $callId")
@@ -177,6 +181,7 @@ class WebRtcCallEngine(
         isIceConnected = false
         isMediaReceived = false
         hasEstablishedCall = false
+        hasAcceptedCall = false
         iceRestartInProgress.set(false)
 
         val rtcClient = WebRtcClient(
@@ -255,8 +260,8 @@ class WebRtcCallEngine(
 
     private fun startStagedRecovery(reason: String) {
         if (isCleaningUp) return
-        if (!hasEstablishedCall) {
-            Log.d(TAG, "Ignoring ICE recovery before call is fully established: $reason")
+        if (!hasAcceptedCall) {
+            Log.d(TAG, "Ignoring ICE recovery before call is accepted: $reason")
             return
         }
         val callId = activeCallId ?: return
@@ -399,6 +404,7 @@ class WebRtcCallEngine(
         qualityMonitor = null
         iceRestartInProgress.set(false)
         hasEstablishedCall = false
+        hasAcceptedCall = false
         engineScope?.cancel()
         engineScope = null
         reconnectJob?.cancel()

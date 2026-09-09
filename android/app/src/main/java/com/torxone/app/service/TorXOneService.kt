@@ -145,6 +145,9 @@ class TorXOneService : Service() {
         nearbyManager = NearbyConnectionManager(this)
         torManager = TorManager(this)
         val replayProtection = com.torxone.app.security.session.ReplayProtection(db.sessionReplayDao())
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching { replayProtection.clearOrphanedReplays() }
+        }
         sessionManager = com.torxone.app.security.session.SessionManager(db.sessionDao(), replayProtection, db.contactDao(), db.skippedMessageKeyDao())
         messageRouter = MessageRouter(serviceScope, db, nearbyManager, torManager, sessionManager)
         realtimeEngineManager = com.torxone.app.realtime.RealtimeEngineManager(this, messageRouter)

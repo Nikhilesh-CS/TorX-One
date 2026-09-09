@@ -360,13 +360,18 @@ class CallManager(
             }
 
             val currentState = stateStore.state.value
-            val canRenegotiate = currentState is CallUiState.Connected &&
+            val canRenegotiate = (currentState is CallUiState.Connected ||
+                currentState is CallUiState.Reconnecting ||
+                currentState is CallUiState.IceConnecting ||
+                currentState is CallUiState.MediaConnecting ||
+                currentState is CallUiState.Accepted) &&
                 activeEngine != null &&
                 offer.description != pendingOffer?.description
 
             if (canRenegotiate) {
-                Log.d(TAG, "Received renegotiation offer for connected call: ${signal.callId}")
+                Log.d(TAG, "Received renegotiation offer for active call: ${signal.callId}")
                 activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
+                pendingOffer = offer
                 activeEngine?.handleRenegotiationOffer(offer, normalizedSenderKey, signal.callId)
             } else {
                 Log.d(TAG, "Dropping duplicate CALL_OFFER for active call ${signal.callId}; state=${currentState::class.simpleName}")

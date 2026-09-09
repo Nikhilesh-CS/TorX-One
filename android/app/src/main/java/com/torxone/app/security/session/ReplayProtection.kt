@@ -47,4 +47,19 @@ class ReplayProtection(private val replayDao: SessionReplayDao) {
         val cutoff = System.currentTimeMillis() - RETENTION_WINDOW_MS
         replayDao.pruneOldRecords(cutoff)
     }
+
+    /**
+     * Clears all replay tracking records for a specific session ID.
+     */
+    suspend fun clearSession(sessionId: String) {
+        replayDao.clearSessionReplays(sessionId)
+    }
+
+    /**
+     * Purges orphaned replay records that belong to sessions no longer in the active sessions table.
+     */
+    suspend fun clearOrphanedReplays() {
+        replayDao.clearOrphanedReplays()
+    }
 }
+

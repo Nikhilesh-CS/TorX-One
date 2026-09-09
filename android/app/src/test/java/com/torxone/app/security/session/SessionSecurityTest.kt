@@ -247,6 +247,9 @@ class SessionSecurityTest {
             override suspend fun clearSessionReplays(sessionId: String) {
                 seen.removeIf { it.first == sessionId }
             }
+            override suspend fun clearOrphanedReplays() {
+                seen.clear()
+            }
         }
 
         val replayProtection = ReplayProtection(mockDao)
