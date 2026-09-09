@@ -153,6 +153,8 @@ import com.torxone.app.transfer.MediaTransferManager
 import com.torxone.app.ui.components.AstraAvatar
 import com.torxone.app.ui.components.ConnectionStatusPill
 import com.torxone.app.ui.components.MediaContent
+import com.torxone.app.ui.components.MessageDeliveryStatusView
+import com.torxone.app.ui.components.toDeliveryState
 import com.torxone.app.ui.components.TransportType
 import com.torxone.app.ui.screens.chat.ChatViewModel
 import com.torxone.app.ui.screens.chat.SmartScrollEngine
@@ -1371,7 +1373,7 @@ private fun MessageBubble(
                             style = MaterialTheme.typography.labelSmall,
                             color = TextMuted
                         )
-                        if (isMine) MessageStatusIcon(message.lifecycleState, TorXPrimary)
+                        if (isMine) MessageDeliveryStatusView(state = message.deliveryState, tint = TorXPrimary, size = 14.dp)
                     }
                 }
             }
@@ -1502,35 +1504,11 @@ private fun String.replyTypeLabel(): String {
 
 @Composable
 private fun MessageStatusIcon(state: MessageLifecycleState, tint: Color) {
-    val text = when (state) {
-        MessageLifecycleState.DRAFT,
-        MessageLifecycleState.QUEUED,
-        MessageLifecycleState.ENCRYPTING,
-        MessageLifecycleState.SENDING,
-        MessageLifecycleState.TRANSPORT_SELECTED,
-        MessageLifecycleState.RETRYING -> "\u2026"
-        MessageLifecycleState.IN_TRANSIT -> "\u2713"
-        MessageLifecycleState.DELIVERED -> "\u2713\u2713"
-        MessageLifecycleState.READ -> "\u2713\u2713"
-        MessageLifecycleState.FAILED,
-        MessageLifecycleState.CANCELLED,
-        MessageLifecycleState.EXPIRED -> "!"
-        MessageLifecycleState.ARCHIVED -> "\u2713"
-    }
-    Crossfade(targetState = text, label = "status") { label ->
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = when (state) {
-                MessageLifecycleState.FAILED,
-                MessageLifecycleState.CANCELLED,
-                MessageLifecycleState.EXPIRED -> MaterialTheme.colorScheme.error
-                MessageLifecycleState.READ -> MaterialTheme.colorScheme.primary
-                else -> tint
-            },
-            fontWeight = FontWeight.Bold
-        )
-    }
+    MessageDeliveryStatusView(
+        state = state.toDeliveryState(),
+        tint = tint,
+        size = 14.dp
+    )
 }
 
 @Composable

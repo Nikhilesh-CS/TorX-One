@@ -91,45 +91,13 @@ fun AstraMessageBubbleFoundation(
                 
                 if (isMine) {
                     Spacer(modifier = Modifier.width(AstraTheme.spacing.tiny))
-                    LifecycleStateIcon(
-                        state = lifecycleState,
-                        color = onBubbleColor.copy(alpha = 0.7f)
+                    MessageDeliveryStatusView(
+                        state = lifecycleState.toDeliveryState(),
+                        tint = onBubbleColor.copy(alpha = 0.7f),
+                        size = AstraTheme.iconSizes.tiny
                     )
                 }
             }
         }
     }
-}
-
-@Composable
-private fun LifecycleStateIcon(state: MessageLifecycleState, color: Color) {
-    val icon = when (state) {
-        MessageLifecycleState.DRAFT, MessageLifecycleState.QUEUED, MessageLifecycleState.ENCRYPTING, 
-        MessageLifecycleState.SENDING, MessageLifecycleState.TRANSPORT_SELECTED,
-        MessageLifecycleState.RETRYING ->
-            Icons.Default.Schedule
-        MessageLifecycleState.IN_TRANSIT, MessageLifecycleState.ARCHIVED ->
-            Icons.Default.Check
-        MessageLifecycleState.DELIVERED ->
-            Icons.Default.DoneAll
-        MessageLifecycleState.READ -> 
-            Icons.Default.DoneAll
-        MessageLifecycleState.FAILED,
-        MessageLifecycleState.CANCELLED, MessageLifecycleState.EXPIRED -> 
-            Icons.Default.Error
-    }
-    
-    val tint = when (state) {
-        MessageLifecycleState.READ -> InfoBlue
-        MessageLifecycleState.FAILED, MessageLifecycleState.EXPIRED -> ErrorRed
-        MessageLifecycleState.RETRYING -> Color(0xFFF59E0B) // Amber
-        else -> color
-    }
-
-    Icon(
-        imageVector = icon,
-        contentDescription = state.name,
-        tint = tint,
-        modifier = Modifier.size(AstraTheme.iconSizes.tiny)
-    )
 }

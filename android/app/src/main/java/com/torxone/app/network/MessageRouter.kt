@@ -229,6 +229,11 @@ class MessageRouter(
         }
 
         val messageId = sessionPayload?.messageId ?: UUID.randomUUID().toString()
+        val wireJson = sessionPayload?.wireJsonString ?: run {
+            val payload = buildEncryptedPayload(identity, contact, wireText)
+                ?: return SendResult(false, Transport.FAILED, "Encryption failed")
+            MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, MeshProtocol.TYPE_MSG)
+        }
 
         db.messageDao().insertMessage(
             MessageEntity(
@@ -237,14 +242,26 @@ class MessageRouter(
                 text = text,
                 timestamp = sentAt,
                 direction = "sent",
-                status = "pending",
+                status = "sending",
                 replyToId = replyToId,
                 replyToText = replyToText,
                 replyToSender = replyToSender,
                 replyToType = replyToType
             )
         )
-        Log.d(TAG, "[SEND] Message $messageId queued for $contactKey")
+        Log.i(TAG, "[MSG] id=$messageId state=SENDING")
+
+        // Persist exact wire frame into MessageOutboxEntity BEFORE transmission
+        db.messageOutboxDao().insertOutbox(
+            com.torxone.app.data.MessageOutboxEntity(
+                messageId = messageId,
+                contactKey = contactKey,
+                wireJson = wireJson,
+                createdAt = sentAt,
+                retryCount = 0,
+                nextRetryAt = sentAt + 3_000L
+            )
+        )
 
         val result = if (sessionPayload != null) {
             pendingSessionPayloads[messageId] = sessionPayload.wireJsonString
@@ -256,11 +273,11 @@ class MessageRouter(
         }
 
         if (result.success) {
-            db.messageDao().updateMessageStatus(messageId, "sent", result.transport.name)
-            Log.d(TAG, "[SEND] Message $messageId transmitted via ${result.transport} (awaiting ACK)")
+            db.messageDao().updateSentMessageStatus(messageId, contactKey, "sent", result.transport.name)
+            Log.i(TAG, "[SEND] id=$messageId transport=${result.transport} state=SENT awaitingAck=true")
             ensureRetryLoopRunning()
         } else {
-            Log.w(TAG, "[SEND] Message $messageId delivery failed: ${result.error}. Outbox retry active.")
+            Log.w(TAG, "[SEND] id=$messageId delivery failed: ${result.error}. Outbox retry active.")
             ensureRetryLoopRunning()
         }
         return result
@@ -555,31 +572,81 @@ class MessageRouter(
     }
 
     private suspend fun retryPendingMessages() {
-        val pending = db.messageDao().getPendingMessages()
+        drainReceiptOutbox()
+
+        val now = System.currentTimeMillis()
+        val pendingOutbox = db.messageOutboxDao().getPendingOutboxMessages(now, limit = 50)
         val pendingReactions = db.reactionOutboxDao().getPendingReactions()
-        if (pending.isEmpty() && pendingReactions.isEmpty()) { retryJob?.cancel(); return }
+        val pendingReceipts = db.receiptOutboxDao().getPendingReceipts(now, limit = 10)
+
+        if (pendingOutbox.isEmpty() && pendingReactions.isEmpty() && pendingReceipts.isEmpty()) {
+            retryJob?.cancel()
+            return
+        }
         retryPendingReactions(pendingReactions)
 
-        for (msg in pending) {
-            val identity = identity ?: continue
-            val contact = db.contactDao().getContact(msg.contactKey) ?: continue
-            val lock = sendLocks.computeIfAbsent(msg.contactKey.trim().lowercase()) { Mutex() }
+        for (outboxMsg in pendingOutbox) {
+            val localMsg = db.messageDao().getMessageById(outboxMsg.messageId)
+            // If already confirmed delivered or read or deleted, clean up outbox
+            if (localMsg == null || localMsg.status == "delivered" || localMsg.status == "read") {
+                db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
+                continue
+            }
+
+            if (outboxMsg.retryCount >= MAX_RETRIES) {
+                db.messageDao().updateMessageStatus(outboxMsg.messageId, "failed")
+                db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
+                Log.w(TAG, "[MSG] id=${outboxMsg.messageId} state=FAILED")
+                continue
+            }
+
+            val contact = db.contactDao().getContact(outboxMsg.contactKey)
+            if (contact == null) {
+                continue
+            }
+
+            val lock = sendLocks.computeIfAbsent(outboxMsg.contactKey.trim().lowercase()) { Mutex() }
             lock.withLock {
-                val wireText = encodeChatMessagePayload(text = msg.text, sentAt = msg.timestamp, replyToId = msg.replyToId, replyToText = msg.replyToText, replyToSender = msg.replyToSender, replyToType = msg.replyToType)
-                val cachedWire = pendingSessionPayloads[msg.messageId]
-                val result = if (cachedWire != null) {
-                    attemptDeliverySession(contact, cachedWire, msg.messageId)
-                } else {
-                    val sessionPayload = try { sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG) } catch (_: Exception) { null }
-                    if (sessionPayload != null) { pendingSessionPayloads[msg.messageId] = sessionPayload.wireJsonString; attemptDeliverySession(contact, sessionPayload.wireJsonString, msg.messageId) }
-                    else { val payload = buildEncryptedPayload(identity, contact, wireText) ?: return@withLock; attemptDelivery(contact, payload, msg.messageId) }
+                // Re-verify in lock
+                val current = db.messageDao().getMessageById(outboxMsg.messageId)
+                if (current == null || current.status == "delivered" || current.status == "read") {
+                    db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
+                    return@withLock
                 }
+
+                // Transmit EXACT stored wireJson - NEVER RE-ENCRYPT
+                val result = attemptDeliverySession(contact, outboxMsg.wireJson, outboxMsg.messageId)
+                val newAttempt = outboxMsg.retryCount + 1
+                val backoff = (3_000L * (1L shl outboxMsg.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
+                db.messageOutboxDao().updateRetry(outboxMsg.messageId, now + backoff)
+
                 if (result.success) {
-                    db.messageDao().updateMessageStatus(msg.messageId, "sent", result.transport.name)
+                    db.messageDao().updateSentMessageStatus(outboxMsg.messageId, outboxMsg.contactKey, "sent", result.transport.name)
+                    Log.i(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=success")
                 } else {
-                    db.messageDao().incrementRetryCount(msg.messageId)
-                    val newCount = msg.retryCount + 1
-                    if (newCount >= MAX_RETRIES) { pendingSessionPayloads.remove(msg.messageId); db.messageDao().updateMessageStatus(msg.messageId, "failed") }
+                    db.messageDao().incrementRetryCount(outboxMsg.messageId)
+                    Log.w(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=failed (${result.error})")
+                }
+            }
+        }
+    }
+
+    private suspend fun drainReceiptOutbox() {
+        val now = System.currentTimeMillis()
+        val pending = db.receiptOutboxDao().getPendingReceipts(now, limit = 50)
+        if (pending.isEmpty()) return
+        for (receipt in pending) {
+            val contact = db.contactDao().getContact(receipt.recipientKey)
+            val ok = dispatchReceipt(receipt, null, contact?.onionAddress)
+            if (ok) {
+                db.receiptOutboxDao().deleteReceipt(receipt.id)
+            } else {
+                val newCount = receipt.retryCount + 1
+                if (newCount >= MAX_RETRIES) {
+                    db.receiptOutboxDao().deleteReceipt(receipt.id)
+                } else {
+                    val backoff = (3_000L * (1L shl receipt.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
+                    db.receiptOutboxDao().updateRetry(receipt.id, now + backoff)
                 }
             }
         }
@@ -592,17 +659,113 @@ class MessageRouter(
         pending.forEach { reaction -> val result = sendReactionPacket(reaction); if (result.success) db.reactionOutboxDao().deleteReaction(reaction.reactionId) else db.reactionOutboxDao().incrementRetry(reaction.reactionId) }
     }
 
+    // ──────────────────────── RECEIPT DISPATCH & OUTBOX ────────────────────────
+
+    fun queueAndDispatchReceipt(
+        messageId: String,
+        recipientKey: String,
+        type: String, // "ack" or "read"
+        viaEndpoint: String? = null,
+        senderOnion: String? = null
+    ) {
+        if (messageId.isBlank() || recipientKey.isBlank()) return
+        scope.launch(Dispatchers.IO) {
+            val existing = db.receiptOutboxDao().getPendingReceiptsForRecipient(recipientKey)
+                .firstOrNull { it.messageId == messageId && it.type == type }
+            val receipt = existing ?: com.torxone.app.data.ReceiptOutboxEntity(
+                id = UUID.randomUUID().toString(),
+                messageId = messageId,
+                recipientKey = recipientKey,
+                type = type,
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                nextRetryAt = System.currentTimeMillis()
+            ).also {
+                db.receiptOutboxDao().insertReceipt(it)
+                if (type == "ack") {
+                    Log.i(TAG, "[ACK] id=$messageId queued=true")
+                } else {
+                    Log.i(TAG, "[READ] id=$messageId queued=true")
+                }
+            }
+
+            val delivered = dispatchReceipt(receipt, viaEndpoint, senderOnion)
+            if (delivered) {
+                db.receiptOutboxDao().deleteReceipt(receipt.id)
+            } else {
+                ensureRetryLoopRunning()
+            }
+        }
+    }
+
+    private suspend fun dispatchReceipt(
+        receipt: com.torxone.app.data.ReceiptOutboxEntity,
+        viaEndpoint: String? = null,
+        senderOnion: String? = null
+    ): Boolean {
+        val wire = if (receipt.type == "read") {
+            MeshProtocol.encodeRead(receipt.messageId, mySigningKeyHex, receipt.recipientKey, myOnionAddress)
+        } else {
+            MeshProtocol.encodeAck(receipt.messageId, mySigningKeyHex, receipt.recipientKey, myOnionAddress)
+        }
+        val contact = db.contactDao().getContact(receipt.recipientKey)
+        val connected = nearbyManager.connectedEndpoints.value
+
+        // 1. Direct Nearby to recipient
+        if (viaEndpoint != null && connected.contains(viaEndpoint) && contact?.endpointId == viaEndpoint) {
+            val ok = runCatching { nearbyManager.sendRaw(viaEndpoint, wire); true }.getOrDefault(false)
+            if (ok) return true
+        }
+        if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) {
+            val ok = runCatching { nearbyManager.sendRaw(contact.endpointId, wire); true }.getOrDefault(false)
+            if (ok) return true
+        }
+
+        // 2. Tor
+        val onion = if (!senderOnion.isNullOrBlank()) senderOnion else contact?.onionAddress
+        if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
+            val ok = sendTorFrame(onion, wire)
+            if (ok) return true
+        }
+
+        // 3. Mesh relay broadcast to any connected endpoints
+        if (connected.isNotEmpty()) {
+            var anySent = false
+            connected.forEach { endpoint ->
+                if (runCatching { nearbyManager.sendRaw(endpoint, wire); true }.getOrDefault(false)) {
+                    anySent = true
+                }
+            }
+            if (anySent) return true
+        }
+
+        return false
+    }
+
     // ──────────────────────── ACK HANDLING ────────────────────────
 
     private suspend fun handleAck(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
+        val toKey = json.optString("to", "").trim().lowercase()
         if (messageId.isBlank() || senderKey.isBlank()) return
+        if (toKey.isNotBlank() && toKey != mySigningKeyHex) {
+            Log.w(TAG, "[ACK] Dropped ACK addressed to $toKey (my key=$mySigningKeyHex)")
+            return
+        }
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) return
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
+            Log.w(TAG, "[ACK] Dropped ACK from wrong contact ($senderKey vs ${existing.contactKey})")
+            return
+        }
+
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "delivered")
+        db.messageOutboxDao().deleteOutbox(messageId)
         pendingSessionPayloads.remove(messageId)
+        Log.i(TAG, "[ACK] id=$messageId received=true")
+        Log.i(TAG, "[MSG] id=$messageId state=DELIVERED")
+
         val senderOnion = json.optString("senderOnion", "")
         if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)
@@ -611,26 +774,31 @@ class MessageRouter(
     }
 
     private fun sendAck(messageId: String, senderKey: String, viaEndpoint: String?, senderOnion: String? = null) {
-        if (messageId.isBlank()) return
-        val ackWire = MeshProtocol.encodeAck(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        val contact = db.contactDao().getContact(senderKey)
-        val connected = nearbyManager.connectedEndpoints.value
-        if (viaEndpoint != null && connected.contains(viaEndpoint)) { nearbyManager.sendRaw(viaEndpoint, ackWire); return }
-        if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) { nearbyManager.sendRaw(contact.endpointId, ackWire); return }
-        val onion = if (!senderOnion.isNullOrBlank()) senderOnion else contact?.onionAddress
-        if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-            scope.launch(Dispatchers.IO) { sendTorFrame(onion, ackWire) }
-        } else if (connected.isNotEmpty()) connected.forEach { runCatching { nearbyManager.sendRaw(it, ackWire) } }
+        queueAndDispatchReceipt(messageId, senderKey, "ack", viaEndpoint, senderOnion)
     }
 
     private suspend fun handleRead(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
+        val toKey = json.optString("to", "").trim().lowercase()
         if (messageId.isBlank() || senderKey.isBlank()) return
+        if (toKey.isNotBlank() && toKey != mySigningKeyHex) {
+            Log.w(TAG, "[READ] Dropped READ addressed to $toKey (my key=$mySigningKeyHex)")
+            return
+        }
         val existing = db.messageDao().getMessageById(messageId) ?: return
-        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) return
+        if (existing.direction != "sent" || existing.contactKey.trim().lowercase() != senderKey) {
+            Log.w(TAG, "[READ] Dropped READ from wrong contact ($senderKey vs ${existing.contactKey})")
+            return
+        }
+
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "read")
+        db.messageOutboxDao().deleteOutbox(messageId)
+        pendingSessionPayloads.remove(messageId)
+        Log.i(TAG, "[READ] id=$messageId received=true")
+        Log.i(TAG, "[MSG] id=$messageId state=SEEN")
+
         val senderOnion = json.optString("senderOnion", "")
         if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)
@@ -639,17 +807,7 @@ class MessageRouter(
     }
 
     fun sendReadReceipt(messageId: String, senderKey: String) {
-        if (messageId.isBlank()) return
-        val readWire = MeshProtocol.encodeRead(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                val contact = db.contactDao().getContact(senderKey) ?: return@runCatching
-                val connected = nearbyManager.connectedEndpoints.value
-                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) nearbyManager.sendRaw(contact.endpointId, readWire)
-                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) sendTorFrame(contact.onionAddress, readWire)
-                else if (connected.isNotEmpty()) connected.forEach { nearbyManager.sendRaw(it, readWire) }
-            }
-        }
+        queueAndDispatchReceipt(messageId, senderKey, "read")
     }
 
     private fun forwardReceiptIfNeeded(json: JSONObject, viaEndpoint: String?): Boolean {
@@ -744,6 +902,7 @@ class MessageRouter(
                 }
                 return 
             }
+            Log.i(TAG, "[RX] id=$messageId decrypted=true")
             dispatchDecryptedMessage(contact, fromKey, decrypted.plaintext, decrypted.messageType, messageId, viaEndpoint, senderOnion)
             return
         }
@@ -783,6 +942,7 @@ class MessageRouter(
             return
         }
         val plaintext = try { CryptoManager.decryptMessage(ciphertext, nonce, senderEncPub, identity.encryptionSecretKey) } catch (e: Exception) { return }
+        Log.i(TAG, "[RX] id=$messageId decrypted=true")
         dispatchDecryptedMessage(contact, senderKey, plaintext, messageType, messageId, viaEndpoint, senderOnion)
     }
 
@@ -801,15 +961,40 @@ class MessageRouter(
         if (messageType == MeshProtocol.TYPE_GROUP_MESSAGE) { handleGroupMessage(plaintext, senderKey, messageId, viaEndpoint, senderOnion); return }
 
         val chatPayload = decodeChatMessagePayload(plaintext)
-        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) { sendAck(messageId, senderKey, viaEndpoint, senderOnion); return }
+        if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
+            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            return
+        }
         val isActiveConversation = com.torxone.app.service.ActiveConversationTracker.isActive(senderKey)
-        db.messageDao().insertMessage(MessageEntity(messageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString(), contactKey = senderKey, text = chatPayload.text, timestamp = chatPayload.sentAt ?: System.currentTimeMillis(), direction = "received", status = "delivered", replyToId = chatPayload.replyToId, replyToText = chatPayload.replyToText, replyToSender = chatPayload.replyToSender, replyToType = chatPayload.replyToType))
+        val initialStatus = if (isActiveConversation) "read" else "delivered"
+        val effectiveMessageId = if (messageId.isNotBlank()) messageId else UUID.randomUUID().toString()
+        db.messageDao().insertMessage(
+            MessageEntity(
+                messageId = effectiveMessageId,
+                contactKey = senderKey,
+                text = chatPayload.text,
+                timestamp = chatPayload.sentAt ?: System.currentTimeMillis(),
+                direction = "received",
+                status = initialStatus,
+                replyToId = chatPayload.replyToId,
+                replyToText = chatPayload.replyToText,
+                replyToSender = chatPayload.replyToSender,
+                replyToType = chatPayload.replyToType
+            )
+        )
+        Log.i(TAG, "[RX] id=$effectiveMessageId persisted=true")
         if (service != null) {
             val isMuted = contact.muteUntil == -1L || (contact.muteUntil > 0L && System.currentTimeMillis() < contact.muteUntil)
             if (isActiveConversation) com.torxone.app.service.NotificationHelper.clearContactNotifications(service, senderKey)
             else if (!isMuted) { val unreadMsgs = db.messageDao().getUnreadMessagesSync(senderKey); com.torxone.app.service.NotificationHelper.showMessageNotification(service, contact, unreadMsgs) }
         }
-        if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+        // ONLY AFTER DB persistence: emit ACK (and READ if currently active)
+        if (messageId.isNotBlank()) {
+            sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            if (isActiveConversation) {
+                sendReadReceipt(messageId, senderKey)
+            }
+        }
     }
 
     private suspend fun handleGroupMessage(jsonStr: String, senderKey: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {

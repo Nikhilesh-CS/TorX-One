@@ -100,6 +100,7 @@ object MeshProtocol {
             .put("msgId", messageId)
             .put("from", fromKey)
             .put("ttl", ttl)
+            .put("timestamp", System.currentTimeMillis())
         if (!toKey.isNullOrBlank()) json.put("to", toKey)
         if (!senderOnion.isNullOrBlank()) json.put("senderOnion", senderOnion)
         return json.toString()
@@ -111,9 +112,22 @@ object MeshProtocol {
             .put("msgId", messageId)
             .put("from", fromKey)
             .put("ttl", ttl)
+            .put("timestamp", System.currentTimeMillis())
         if (!toKey.isNullOrBlank()) json.put("to", toKey)
         if (!senderOnion.isNullOrBlank()) json.put("senderOnion", senderOnion)
         return json.toString()
+    }
+
+    fun decodeAck(raw: String): String? {
+        val json = parse(raw) ?: return null
+        if (json.optString("type") != TYPE_ACK) return null
+        return json.optString("msgId").takeIf { it.isNotBlank() }
+    }
+
+    fun decodeRead(raw: String): String? {
+        val json = parse(raw) ?: return null
+        if (json.optString("type") != TYPE_READ) return null
+        return json.optString("msgId").takeIf { it.isNotBlank() }
     }
 
     fun encodePing(timestamp: Long, fromOnion: String): String {

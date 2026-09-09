@@ -21,6 +21,27 @@ enum class MessageLifecycleState {
     EXPIRED
 }
 
+enum class MessageDeliveryState {
+    SENDING,
+    SENT,
+    DELIVERED,
+    SEEN,
+    FAILED;
+
+    companion object {
+        fun fromDbStatus(status: String): MessageDeliveryState {
+            return when (status.lowercase()) {
+                "sending", "pending", "queued", "draft", "encrypting" -> SENDING
+                "sent", "in_transit", "transport_selected" -> SENT
+                "delivered" -> DELIVERED
+                "read", "seen" -> SEEN
+                "failed", "cancelled", "expired" -> FAILED
+                else -> SENDING
+            }
+        }
+    }
+}
+
 enum class TransportType {
     BLUETOOTH, WIFI_DIRECT, TOR, AUTO, NONE
 }
@@ -32,6 +53,7 @@ data class MessagePayload(
     val text: String = "",
     val timestamp: Long = System.currentTimeMillis(),
     val lifecycleState: MessageLifecycleState = MessageLifecycleState.QUEUED,
+    val deliveryState: MessageDeliveryState = MessageDeliveryState.fromDbStatus(lifecycleState.name),
     val transportType: TransportType = TransportType.NONE,
     val isEncrypted: Boolean = true,
     val retryCount: Int = 0,

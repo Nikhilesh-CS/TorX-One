@@ -141,6 +141,7 @@ class ChatViewModel(
                         text = entity.text,
                         timestamp = entity.timestamp,
                         lifecycleState = lifecycle,
+                        deliveryState = MessageDeliveryState.fromDbStatus(entity.status),
                         transportType = transport,
                         replyToId = entity.replyToId,
                         replyToText = entity.replyToText,

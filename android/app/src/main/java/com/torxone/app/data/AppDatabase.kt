@@ -390,8 +390,8 @@ interface MessageDao {
         SET status = CASE
             WHEN status = 'read' THEN status
             WHEN :status = 'read' THEN 'read'
-            WHEN status = 'delivered' AND :status IN ('pending', 'sent') THEN status
-            WHEN status = 'sent' AND :status = 'pending' THEN status
+            WHEN status = 'delivered' AND :status IN ('pending', 'sent', 'sending') THEN status
+            WHEN status = 'sent' AND :status IN ('pending', 'sending') THEN status
             ELSE :status
         END,
         transport = COALESCE(:transport, transport)
@@ -480,6 +480,84 @@ data class ReactionOutboxEntity(
     val retryCount: Int = 0
 )
 
+@Dao
+interface ReceiptOutboxDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertReceipt(receipt: ReceiptOutboxEntity)
+
+    @Query("SELECT * FROM receipt_outbox WHERE nextRetryAt <= :now ORDER BY createdAt ASC LIMIT :limit")
+    fun getPendingReceipts(now: Long = System.currentTimeMillis(), limit: Int = 50): List<ReceiptOutboxEntity>
+
+    @Query("SELECT * FROM receipt_outbox WHERE recipientKey = :recipientKey AND nextRetryAt <= :now ORDER BY createdAt ASC")
+    fun getPendingReceiptsForRecipient(recipientKey: String, now: Long = System.currentTimeMillis()): List<ReceiptOutboxEntity>
+
+    @Query("DELETE FROM receipt_outbox WHERE id = :id")
+    fun deleteReceipt(id: String)
+
+    @Query("DELETE FROM receipt_outbox WHERE messageId = :messageId AND type = :type")
+    fun deleteReceiptForMessage(messageId: String, type: String)
+
+    @Query("UPDATE receipt_outbox SET retryCount = retryCount + 1, nextRetryAt = :nextRetryAt WHERE id = :id")
+    fun updateRetry(id: String, nextRetryAt: Long)
+
+    @Query("DELETE FROM receipt_outbox WHERE retryCount >= :maxRetries")
+    fun purgeFailed(maxRetries: Int = 40)
+}
+
+@Entity(
+    tableName = "receipt_outbox",
+    indices = [
+        androidx.room.Index(value = ["recipientKey"]),
+        androidx.room.Index(value = ["nextRetryAt"])
+    ]
+)
+data class ReceiptOutboxEntity(
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val messageId: String,
+    val recipientKey: String,
+    val type: String, // "ack" or "read"
+    val createdAt: Long = System.currentTimeMillis(),
+    val retryCount: Int = 0,
+    val nextRetryAt: Long = 0L
+)
+
+@Dao
+interface MessageOutboxDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun insertOutbox(outbox: MessageOutboxEntity)
+
+    @Query("SELECT * FROM message_outbox WHERE messageId = :messageId LIMIT 1")
+    fun getOutboxMessage(messageId: String): MessageOutboxEntity?
+
+    @Query("SELECT * FROM message_outbox WHERE nextRetryAt <= :now ORDER BY createdAt ASC LIMIT :limit")
+    fun getPendingOutboxMessages(now: Long = System.currentTimeMillis(), limit: Int = 50): List<MessageOutboxEntity>
+
+    @Query("DELETE FROM message_outbox WHERE messageId = :messageId")
+    fun deleteOutbox(messageId: String)
+
+    @Query("UPDATE message_outbox SET retryCount = retryCount + 1, nextRetryAt = :nextRetryAt WHERE messageId = :messageId")
+    fun updateRetry(messageId: String, nextRetryAt: Long)
+
+    @Query("DELETE FROM message_outbox WHERE retryCount >= :maxRetries")
+    fun purgeFailed(maxRetries: Int = 40)
+}
+
+@Entity(
+    tableName = "message_outbox",
+    indices = [
+        androidx.room.Index(value = ["contactKey"]),
+        androidx.room.Index(value = ["nextRetryAt"])
+    ]
+)
+data class MessageOutboxEntity(
+    @PrimaryKey val messageId: String,
+    val contactKey: String,
+    val wireJson: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val retryCount: Int = 0,
+    val nextRetryAt: Long = 0L
+)
+
 @Entity(tableName = "music_notes")
 data class MusicNoteEntity(
     @PrimaryKey val noteId: String = UUID.randomUUID().toString(),
@@ -523,8 +601,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class],
-    version = 23,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class],
+    version = 24,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -546,6 +624,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun sessionDao(): SessionDao
     abstract fun sessionReplayDao(): SessionReplayDao
     abstract fun skippedMessageKeyDao(): SkippedMessageKeyDao
+    abstract fun receiptOutboxDao(): ReceiptOutboxDao
+    abstract fun messageOutboxDao(): MessageOutboxDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -879,6 +959,39 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("DROP TABLE `sessions`")
                 db.execSQL("ALTER TABLE `sessions_new` RENAME TO `sessions`")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_sessions_contactKey_lastActiveAt` ON `sessions` (`contactKey`, `lastActiveAt`)")
+            }
+        }
+
+        val MIGRATION_23_24 = object : androidx.room.migration.Migration(23, 24) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `receipt_outbox` (
+                        `id` TEXT NOT NULL,
+                        `messageId` TEXT NOT NULL,
+                        `recipientKey` TEXT NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `retryCount` INTEGER NOT NULL DEFAULT 0,
+                        `nextRetryAt` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_receipt_outbox_recipientKey` ON `receipt_outbox` (`recipientKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_receipt_outbox_nextRetryAt` ON `receipt_outbox` (`nextRetryAt`)")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `message_outbox` (
+                        `messageId` TEXT NOT NULL,
+                        `contactKey` TEXT NOT NULL,
+                        `wireJson` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `retryCount` INTEGER NOT NULL DEFAULT 0,
+                        `nextRetryAt` INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(`messageId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_outbox_contactKey` ON `message_outbox` (`contactKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_message_outbox_nextRetryAt` ON `message_outbox` (`nextRetryAt`)")
             }
         }
     }

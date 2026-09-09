@@ -11,9 +11,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.torxone.app.engine.MessageLifecycleState
+import com.torxone.app.ui.components.MessageDeliveryStatusView
+import com.torxone.app.ui.components.toDeliveryState
 import com.torxone.app.ui.theme.AstraTheme
-import com.torxone.app.ui.theme.ErrorRed
-import com.torxone.app.ui.theme.InfoBlue
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -48,43 +48,11 @@ fun ChatStatusRow(
         )
 
         if (isMine) {
-            LifecycleStateIcon(
-                state = lifecycleState,
-                color = onBubbleColor.copy(alpha = 0.7f)
+            MessageDeliveryStatusView(
+                state = lifecycleState.toDeliveryState(),
+                tint = onBubbleColor.copy(alpha = 0.7f),
+                size = AstraTheme.iconSizes.tiny
             )
         }
     }
-}
-
-@Composable
-private fun LifecycleStateIcon(state: MessageLifecycleState, color: Color) {
-    val icon = when (state) {
-        MessageLifecycleState.DRAFT, MessageLifecycleState.QUEUED, MessageLifecycleState.ENCRYPTING,
-        MessageLifecycleState.SENDING, MessageLifecycleState.TRANSPORT_SELECTED,
-        MessageLifecycleState.RETRYING ->
-            Icons.Default.Schedule
-        MessageLifecycleState.IN_TRANSIT, MessageLifecycleState.ARCHIVED ->
-            Icons.Default.Check
-        MessageLifecycleState.DELIVERED ->
-            Icons.Default.DoneAll
-        MessageLifecycleState.READ ->
-            Icons.Default.DoneAll
-        MessageLifecycleState.FAILED,
-        MessageLifecycleState.CANCELLED, MessageLifecycleState.EXPIRED ->
-            Icons.Default.Error
-    }
-
-    val tint = when (state) {
-        MessageLifecycleState.READ -> InfoBlue
-        MessageLifecycleState.FAILED, MessageLifecycleState.EXPIRED -> ErrorRed
-        MessageLifecycleState.RETRYING -> Color(0xFFF59E0B) // Amber
-        else -> color
-    }
-
-    Icon(
-        imageVector = icon,
-        contentDescription = state.name,
-        tint = tint,
-        modifier = Modifier.size(AstraTheme.iconSizes.tiny)
-    )
 }
