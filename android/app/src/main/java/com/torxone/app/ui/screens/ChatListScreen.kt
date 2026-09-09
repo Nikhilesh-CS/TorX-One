@@ -154,7 +154,7 @@ fun ChatListScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 "TorX One",
                                 style = MaterialTheme.typography.headlineSmall,
@@ -167,19 +167,29 @@ fun ChatListScreen(
                                 color = SecondaryText
                             )
                         }
-                        IconButton(
-                            onClick = { navController.navigate("scan_qr") },
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(SurfaceCard)
-                                .border(1.dp, BorderColor, CircleShape)
-                        ) {
-                            Icon(androidx.compose.material.icons.Icons.Rounded.QrCodeScanner, contentDescription = "Scan QR", tint = TorXPrimary, modifier = Modifier.size(20.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            IconButton(
+                                onClick = { navController.navigate("scan_qr") },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(SurfaceCard)
+                                    .border(1.dp, BorderColor, CircleShape)
+                            ) {
+                                Icon(Icons.Rounded.QrCodeScanner, contentDescription = "Scan QR", tint = TorXPrimary, modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(
+                                onClick = { showAddContact = true },
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(TorXPrimary)
+                            ) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = "Add Contact", tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
                         }
                     }
                     Spacer(Modifier.height(12.dp))
-                    // Clean full-width status card
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -256,11 +266,7 @@ fun ChatListScreen(
                             onClick = { navController.navigate("create_group") },
                             modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(
-                                Icons.Rounded.Groups,
-                                contentDescription = "Create Group",
-                                tint = TorXPrimary
-                            )
+                            Icon(Icons.Rounded.Groups, contentDescription = "Create Group", tint = TorXPrimary)
                         }
                     }
                 )
@@ -277,7 +283,13 @@ fun ChatListScreen(
                 item {
                     com.torxone.app.ui.components.AstraEmptyState(
                         title = "No conversations yet",
-                        message = "Add a contact key for Tor, or connect to someone nearby"
+                        message = "Add a contact key for Tor, or connect to someone nearby",
+                        action = {
+                            com.torxone.app.ui.components.AstraPrimaryButton(
+                                text = "Add Contact",
+                                onClick = { showAddContact = true }
+                            )
+                        }
                     )
                 }
             } else {
@@ -293,19 +305,12 @@ fun ChatListScreen(
                         conversation.onionAddress.isNotBlank() -> "Tor route offline"
                         else -> "Secure route standby"
                     }
-                    
                     val lastMessage by db.messageDao().getLastMessageForConversation(conversation.id, conversation.type).collectAsStateWithLifecycle(initialValue = null)
                     val unreadCount by db.messageDao().getUnreadCountForConversation(conversation.id, conversation.type).collectAsStateWithLifecycle(initialValue = 0)
                     val profile by db.profileDao().getProfile(conversation.id).collectAsStateWithLifecycle(initialValue = null)
-                    
                     val lastMessageText = lastMessage?.text ?: "Tap to chat..."
                     val lastMessageTime = lastMessage?.timestamp
 
-                    // Use ContactRow for both types for Phase 1. 
-                    // ContactRow takes ContactEntity in the signature, we might need to modify ContactRow or map it back
-                    // Actually ContactRow uses ContactEntity for name/signingPublicKey.
-                    // Wait, I need to map UnifiedConversation to a ContactEntity temporarily or change ContactRow.
-                    // Let's modify ContactRow call to use conversation properties
                     ContactRow(
                         contact = ContactEntity(conversation.id, "", conversation.name, conversation.endpointId, conversation.onionAddress, false, 0L),
                         avatarModel = conversation.avatarUri ?: profile?.avatarLocalPath,
@@ -314,13 +319,7 @@ fun ChatListScreen(
                         lastMessageText = lastMessageText,
                         lastMessageTime = lastMessageTime,
                         unreadCount = unreadCount,
-                        onClick = {
-                            if (conversation.type == "group") {
-                                navController.navigate("chat/${conversation.type}/${conversation.id}")
-                            } else {
-                                navController.navigate("chat/${conversation.type}/${conversation.id}")
-                            }
-                        },
+                        onClick = { navController.navigate("chat/${conversation.type}/${conversation.id}") },
                         onLongClick = {
                             if (conversation.type == "direct") {
                                 contactToDelete = ContactEntity(conversation.id, "", conversation.name, conversation.endpointId, conversation.onionAddress, false, 0L)
@@ -370,11 +369,7 @@ fun ChatListScreen(
             title = { Text("Your Contact Key", color = PrimaryText, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
-                    Text(
-                        "Share this with distant contacts.",
-                        fontSize = AstraTheme.typography.bodySmall.fontSize,
-                        color = SecondaryText
-                    )
+                    Text("Share this with distant contacts.", fontSize = AstraTheme.typography.bodySmall.fontSize, color = SecondaryText)
                     Spacer(modifier = Modifier.height(AstraTheme.spacing.medium))
                     Box(
                         modifier = Modifier
@@ -384,11 +379,7 @@ fun ChatListScreen(
                             .border(1.dp, BorderColor, RoundedCornerShape(12.dp))
                             .padding(12.dp)
                     ) {
-                        Text(
-                            myContactString,
-                            fontSize = AstraTheme.typography.labelSmall.fontSize,
-                            color = TorXPrimary
-                        )
+                        Text(myContactString, fontSize = AstraTheme.typography.labelSmall.fontSize, color = TorXPrimary)
                     }
                 }
             },
@@ -398,24 +389,14 @@ fun ChatListScreen(
                     clipboard.setPrimaryClip(ClipData.newPlainText("TorX Contact", myContactString))
                     Toast.makeText(context, "Copied!", Toast.LENGTH_SHORT).show()
                     showShareContact = false
-                }) {
-                    Text("Copy", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
-                }
+                }) { Text("Copy", color = TorXPrimary, fontWeight = FontWeight.SemiBold) }
             },
-            dismissButton = {
-                TextButton(onClick = { showShareContact = false }) {
-                    Text("Close", color = SecondaryText)
-                }
-            }
+            dismissButton = { TextButton(onClick = { showShareContact = false }) { Text("Close", color = SecondaryText) } }
         )
     }
 
     if (showDiagnostics) {
-        DiagnosticsDialog(
-            torManager = torManager,
-            nearbyManager = nearbyManager,
-            onDismiss = { showDiagnostics = false }
-        )
+        DiagnosticsDialog(torManager = torManager, nearbyManager = nearbyManager, onDismiss = { showDiagnostics = false })
     }
 
     if (showCreateMusicNote) {
@@ -448,9 +429,7 @@ fun ChatListScreen(
                 selectedMusicNote = null
                 Toast.makeText(context, "Music Note deleted", Toast.LENGTH_SHORT).show()
             },
-            onListenTogether = {
-                listenTogetherNote = note
-            }
+            onListenTogether = { listenTogetherNote = note }
         )
     }
 
@@ -496,15 +475,9 @@ fun ChatListScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary),
                     shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Accept", color = Color.White, fontWeight = FontWeight.SemiBold)
-                }
+                ) { Text("Accept", color = Color.White, fontWeight = FontWeight.SemiBold) }
             },
-            dismissButton = {
-                TextButton(onClick = { listenTogetherManager?.rejectIncomingInvite() }) {
-                    Text("Reject", color = SecondaryText)
-                }
-            }
+            dismissButton = { TextButton(onClick = { listenTogetherManager?.rejectIncomingInvite() }) { Text("Reject", color = SecondaryText) } }
         )
     }
 
@@ -525,9 +498,7 @@ fun ChatListScreen(
                 val state = listenTogetherState
                 listenTogetherManager?.sendEvent(state.peerKey, state.noteId, state.sessionId, com.torxone.app.music.ListenTogetherEventType.POSITION_SYNC, state.lastEvent?.positionMs ?: 0L)
             },
-            onEnd = {
-                listenTogetherManager?.endSession()
-            }
+            onEnd = { listenTogetherManager?.endSession() }
         )
     }
 
@@ -538,9 +509,7 @@ fun ChatListScreen(
             shape = RoundedCornerShape(20.dp),
             tonalElevation = 2.dp,
             title = { Text("Delete ${contact.name}?", color = PrimaryText, fontWeight = FontWeight.Bold) },
-            text = {
-                Text("This removes the person, chat history, profile cache, and transfer records from this phone.", color = SecondaryText)
-            },
+            text = { Text("This removes the person, chat history, profile cache, and transfer records from this phone.", color = SecondaryText) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -563,81 +532,45 @@ fun ChatListScreen(
                     Text("Delete")
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { contactToDelete = null }) {
-                    Text("Cancel", color = SecondaryText)
-                }
-            }
+            dismissButton = { TextButton(onClick = { contactToDelete = null }) { Text("Cancel", color = SecondaryText) } }
         )
     }
 }
 
 @Composable
-private fun PremiumSectionHeader(
-    title: String,
-    accent: Color = TorXPrimary,
-    action: @Composable (() -> Unit)? = null
-) {
+private fun PremiumSectionHeader(title: String, accent: Color = TorXPrimary, action: @Composable (() -> Unit)? = null) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = PrimaryText,
-            maxLines = 1
-        )
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PrimaryText, maxLines = 1)
         action?.invoke()
     }
 }
 
 @Composable
-private fun ListenTogetherContactPicker(
-    contacts: List<ContactEntity>,
-    onDismiss: () -> Unit,
-    onSelect: (ContactEntity) -> Unit
-) {
+private fun ListenTogetherContactPicker(contacts: List<ContactEntity>, onDismiss: () -> Unit, onSelect: (ContactEntity) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Listen Together") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    "Choose who should receive the listening invite.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("Choose who should receive the listening invite.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (contacts.isEmpty()) {
                     Text("No contacts available.", color = MaterialTheme.colorScheme.error)
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 320.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(contacts, key = { it.signingPublicKey }) { contact ->
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(18.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f))
-                                    .clickable { onSelect(contact) }
-                                    .padding(12.dp),
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)).clickable { onSelect(contact) }.padding(12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 AstraAvatar(name = contact.name, size = 42.dp)
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(contact.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        if (contact.onionAddress.isNotBlank()) "Tor route available" else "Nearby/contact route",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1
-                                    )
+                                    Text(if (contact.onionAddress.isNotBlank()) "Tor route available" else "Nearby/contact route", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                 }
                             }
                         }
@@ -646,32 +579,18 @@ private fun ListenTogetherContactPicker(
             }
         },
         confirmButton = { },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 @Composable
-private fun ListenTogetherSessionDialog(
-    state: com.torxone.app.music.ListenTogetherState,
-    peerName: String,
-    onDismiss: () -> Unit,
-    onPlay: () -> Unit,
-    onPause: () -> Unit,
-    onSync: () -> Unit,
-    onEnd: () -> Unit
-) {
+private fun ListenTogetherSessionDialog(state: com.torxone.app.music.ListenTogetherState, peerName: String, onDismiss: () -> Unit, onPlay: () -> Unit, onPause: () -> Unit, onSync: () -> Unit, onEnd: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (state.awaitingResponse) "Waiting for $peerName" else "Listening with $peerName") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    if (state.awaitingResponse) "Invite sent. Waiting for accept or reject."
-                    else "Playback events are synchronized as encrypted metadata. Audio stays inside each music app.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(if (state.awaitingResponse) "Invite sent. Waiting for accept or reject." else "Playback events are synchronized as encrypted metadata. Audio stays inside each music app.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.lastEvent?.track?.let { track ->
                     Text(track.trackName, fontWeight = FontWeight.Bold)
                     Text(track.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -687,89 +606,39 @@ private fun ListenTogetherSessionDialog(
                 }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onEnd) {
-                Text(if (state.awaitingResponse) "Cancel" else "End")
-            }
-        }
+        dismissButton = { TextButton(onClick = onEnd) { Text(if (state.awaitingResponse) "Cancel" else "End") } }
     )
 }
 
 @Composable
-private fun AstraMusicNotesRow(
-    db: AppDatabase,
-    notes: List<MusicNoteEntity>,
-    mySigningKey: String,
-    onCreate: () -> Unit,
-    onOpen: (MusicNoteEntity) -> Unit
-) {
+private fun AstraMusicNotesRow(db: AppDatabase, notes: List<MusicNoteEntity>, mySigningKey: String, onCreate: () -> Unit, onOpen: (MusicNoteEntity) -> Unit) {
     val localProfile by db.profileDao().getProfile("LOCAL_USER").collectAsStateWithLifecycle(initialValue = null)
     val myNote = notes.firstOrNull { it.authorPublicKey == mySigningKey }
     val contactNotes = notes.filterNot { it.authorPublicKey == mySigningKey }
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = SurfaceCard),
         border = BorderStroke(1.dp, BorderColor)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
-                    Text(
-                        "TorX One Music",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = PrimaryText
-                    )
-                    Text(
-                        "Music notes without sharing audio",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = SecondaryText
-                    )
+                    Text("TorX One Music", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PrimaryText)
+                    Text("Music notes without sharing audio", style = MaterialTheme.typography.labelSmall, color = SecondaryText)
                 }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(TorXPrimarySoft)
-                        .border(1.dp, Color(0xFFBFDBFE), RoundedCornerShape(999.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        "Metadata only",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Medium,
-                        color = TorXPrimary
-                    )
+                Box(modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(TorXPrimarySoft).border(1.dp, Color(0xFFBFDBFE), RoundedCornerShape(999.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                    Text("Metadata only", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Medium, color = TorXPrimary)
                 }
             }
             Spacer(Modifier.height(14.dp))
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 item {
-                    MusicNoteAvatarCard(
-                        title = "Your Note",
-                        subtitle = myNote?.trackName ?: "Share music",
-                        avatarUri = localProfile?.avatarLocalPath,
-                        albumArtUri = myNote?.albumArtUri,
-                        onClick = { myNote?.let(onOpen) ?: onCreate() }
-                    )
+                    MusicNoteAvatarCard(title = "Your Note", subtitle = myNote?.trackName ?: "Share music", avatarUri = localProfile?.avatarLocalPath, albumArtUri = myNote?.albumArtUri, onClick = { myNote?.let(onOpen) ?: onCreate() })
                 }
                 items(contactNotes, key = { it.noteId }) { note ->
                     val profile by db.profileDao().getProfile(note.authorPublicKey).collectAsStateWithLifecycle(initialValue = null)
-                    MusicNoteAvatarCard(
-                        title = note.authorName,
-                        subtitle = note.trackName,
-                        avatarUri = profile?.avatarLocalPath,
-                        albumArtUri = note.albumArtUri,
-                        onClick = { onOpen(note) }
-                    )
+                    MusicNoteAvatarCard(title = note.authorName, subtitle = note.trackName, avatarUri = profile?.avatarLocalPath, albumArtUri = note.albumArtUri, onClick = { onOpen(note) })
                 }
             }
         }
@@ -777,78 +646,25 @@ private fun AstraMusicNotesRow(
 }
 
 @Composable
-private fun MusicNoteAvatarCard(
-    title: String,
-    subtitle: String,
-    avatarUri: String?,
-    albumArtUri: String?,
-    onClick: () -> Unit
-) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .width(96.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(SurfaceSecondary)
-            .border(1.dp, BorderColor, RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 10.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(54.dp)
-                .clip(CircleShape)
-                .background(SurfaceCard)
-                .border(1.dp, BorderColor, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
+private fun MusicNoteAvatarCard(title: String, subtitle: String, avatarUri: String?, albumArtUri: String?, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).background(SurfaceSecondary).border(1.dp, BorderColor, RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 10.dp)) {
+        Box(modifier = Modifier.size(54.dp).clip(CircleShape).background(SurfaceCard).border(1.dp, BorderColor, CircleShape), contentAlignment = Alignment.Center) {
             if (avatarUri != null) {
-                AsyncImage(
-                    model = avatarUri,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
+                AsyncImage(model = avatarUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
             } else if (albumArtUri != null) {
-                AsyncImage(
-                    model = albumArtUri,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
+                AsyncImage(model = albumArtUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
             } else {
-                Icon(
-                    Icons.Rounded.MusicNote,
-                    contentDescription = null,
-                    tint = TorXPrimary,
-                    modifier = Modifier.size(24.dp)
-                )
+                Icon(Icons.Rounded.MusicNote, contentDescription = null, tint = TorXPrimary, modifier = Modifier.size(24.dp))
             }
         }
         Spacer(Modifier.height(6.dp))
-        Text(
-            title,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelMedium,
-            color = PrimaryText,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            subtitle,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelSmall,
-            color = SecondaryText
-        )
+        Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, color = PrimaryText, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = SecondaryText)
     }
 }
 
 @Composable
-private fun CreateMusicNoteDialog(
-    onDismiss: () -> Unit,
-    onPublish: (DetectedMusicTrack, String, MusicNoteVisibility, Int) -> Unit
-) {
+private fun CreateMusicNoteDialog(onDismiss: () -> Unit, onPublish: (DetectedMusicTrack, String, MusicNoteVisibility, Int) -> Unit) {
     var noteText by remember { mutableStateOf("") }
     var durationHours by remember { mutableStateOf(24) }
     var visibility by remember { mutableStateOf(MusicNoteVisibility.CONTACTS) }
@@ -861,124 +677,45 @@ private fun CreateMusicNoteDialog(
         title = { Text("Create Music Note") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Enter the song manually. This release does not request Android notification access, so Play Protect will not see TorX One Music as a sensitive-data feature.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = manualTitle,
-                    onValueChange = { manualTitle = it.take(80) },
-                    label = { Text("Song name") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = manualArtist,
-                    onValueChange = { manualArtist = it.take(80) },
-                    label = { Text("Artist") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = manualProvider,
-                    onValueChange = { manualProvider = it.take(40) },
-                    label = { Text("Music app") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = noteText,
-                    onValueChange = { noteText = it.take(60) },
-                    label = { Text("Optional note") },
-                    singleLine = true,
-                    supportingText = { Text("${noteText.length}/60") }
-                )
-                SelectorRow(
-                    label = "Duration",
-                    options = listOf(6, 12, 24, 48).map { it to "${it}h" },
-                    selected = durationHours,
-                    onSelected = { durationHours = it }
-                )
-                SelectorRow(
-                    label = "Privacy",
-                    options = listOf(
-                        MusicNoteVisibility.ONLY_ME to "Only Me",
-                        MusicNoteVisibility.FAVORITES to "Favorites",
-                        MusicNoteVisibility.CONTACTS to "Contacts",
-                        MusicNoteVisibility.EVERYONE to "Everyone"
-                    ),
-                    selected = visibility,
-                    onSelected = { visibility = it }
-                )
+                Text("Enter the song manually. This release does not request Android notification access, so Play Protect will not see TorX One Music as a sensitive-data feature.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = manualTitle, onValueChange = { manualTitle = it.take(80) }, label = { Text("Song name") }, singleLine = true)
+                OutlinedTextField(value = manualArtist, onValueChange = { manualArtist = it.take(80) }, label = { Text("Artist") }, singleLine = true)
+                OutlinedTextField(value = manualProvider, onValueChange = { manualProvider = it.take(40) }, label = { Text("Music app") }, singleLine = true)
+                OutlinedTextField(value = noteText, onValueChange = { noteText = it.take(60) }, label = { Text("Optional note") }, singleLine = true, supportingText = { Text("${noteText.length}/60") })
+                SelectorRow(label = "Duration", options = listOf(6, 12, 24, 48).map { it to "${it}h" }, selected = durationHours, onSelected = { durationHours = it })
+                SelectorRow(label = "Privacy", options = listOf(MusicNoteVisibility.ONLY_ME to "Only Me", MusicNoteVisibility.FAVORITES to "Favorites", MusicNoteVisibility.CONTACTS to "Contacts", MusicNoteVisibility.EVERYONE to "Everyone"), selected = visibility, onSelected = { visibility = it })
             }
         },
         confirmButton = {
             val publishTrack = manualMusicTrack(manualTitle, manualArtist, manualProvider)
-            Button(
-                enabled = publishTrack != null,
-                onClick = { publishTrack?.let { onPublish(it, noteText, visibility, durationHours) } }
-            ) {
-                Text("Publish")
-            }
+            Button(enabled = publishTrack != null, onClick = { publishTrack?.let { onPublish(it, noteText, visibility, durationHours) } }) { Text("Publish") }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 @Composable
-private fun <T> SelectorRow(
-    label: String,
-    options: List<Pair<T, String>>,
-    selected: T,
-    onSelected: (T) -> Unit
-) {
+private fun <T> SelectorRow(label: String, options: List<Pair<T, String>>, selected: T, onSelected: (T) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             options.forEach { (value, text) ->
-                FilterChip(
-                    selected = selected == value,
-                    onClick = { onSelected(value) },
-                    label = { Text(text) }
-                )
+                FilterChip(selected = selected == value, onClick = { onSelected(value) }, label = { Text(text) })
             }
         }
     }
 }
 
 @Composable
-private fun MusicNoteViewerDialog(
-    note: MusicNoteEntity,
-    isOwnNote: Boolean,
-    onDismiss: () -> Unit,
-    onListen: () -> Unit,
-    onDelete: () -> Unit,
-    onListenTogether: () -> Unit
-) {
+private fun MusicNoteViewerDialog(note: MusicNoteEntity, isOwnNote: Boolean, onDismiss: () -> Unit, onListen: () -> Unit, onDelete: () -> Unit, onListenTogether: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(note.authorName, color = PrimaryText, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    modifier = Modifier
-                        .size(160.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(TorXPrimarySoft)
-                        .border(1.dp, BorderColor, RoundedCornerShape(20.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (note.albumArtUri != null) {
-                        AsyncImage(
-                            model = note.albumArtUri,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                        )
-                    } else {
-                        Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(52.dp), tint = TorXPrimary)
-                    }
+                Box(modifier = Modifier.size(160.dp).clip(RoundedCornerShape(20.dp)).background(TorXPrimarySoft).border(1.dp, BorderColor, RoundedCornerShape(20.dp)), contentAlignment = Alignment.Center) {
+                    if (note.albumArtUri != null) AsyncImage(model = note.albumArtUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    else Icon(Icons.Rounded.MusicNote, contentDescription = null, modifier = Modifier.size(52.dp), tint = TorXPrimary)
                 }
                 if (note.text.isNotBlank()) Text(note.text, fontWeight = FontWeight.SemiBold, color = PrimaryText)
                 Text(note.trackName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = PrimaryText)
@@ -994,101 +731,40 @@ private fun MusicNoteViewerDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = onListen,
-                colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary, contentColor = Color.White)
-            ) {
+            Button(onClick = onListen, colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary, contentColor = Color.White)) {
                 Icon(Icons.Rounded.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("Listen")
             }
         },
-        dismissButton = {
-            TextButton(onClick = onListenTogether) {
-                Text("Listen Together", color = TorXPrimary)
-            }
-        },
+        dismissButton = { TextButton(onClick = onListenTogether) { Text("Listen Together", color = TorXPrimary) } },
         containerColor = SurfaceCard,
         shape = RoundedCornerShape(20.dp)
     )
 }
 
-private fun MusicNoteEntity.toDetectedTrack(): DetectedMusicTrack {
-    return DetectedMusicTrack(
-        trackId = trackId,
-        trackName = trackName,
-        artist = artist,
-        album = album,
-        albumArtUri = albumArtUri,
-        provider = provider,
-        playbackPositionMs = playbackPositionMs
-    )
-}
-
-private fun providerLabel(provider: String): String {
-    return provider.substringAfterLast('.').replaceFirstChar { it.titlecase() }.ifBlank { "Music" }
-}
-
+private fun MusicNoteEntity.toDetectedTrack(): DetectedMusicTrack = DetectedMusicTrack(trackId = trackId, trackName = trackName, artist = artist, album = album, albumArtUri = albumArtUri, provider = provider, playbackPositionMs = playbackPositionMs)
+private fun providerLabel(provider: String): String = provider.substringAfterLast('.').replaceFirstChar { it.titlecase() }.ifBlank { "Music" }
 private fun timeLeftLabel(expiresAt: Long): String {
     val remainingMinutes = ((expiresAt - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0L)
-    return when {
-        remainingMinutes >= 60L -> "${remainingMinutes / 60L}h"
-        else -> "${remainingMinutes}m"
-    }
+    return if (remainingMinutes >= 60L) "${remainingMinutes / 60L}h" else "${remainingMinutes}m"
 }
 
 @Composable
-fun ConnectionRequestCard(
-    request: ConnectionRequest,
-    onAccept: () -> Unit,
-    onReject: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = SurfaceCard),
-        border = BorderStroke(1.dp, BorderColor)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+fun ConnectionRequestCard(request: ConnectionRequest, onAccept: () -> Unit, onReject: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = SurfaceCard), border = BorderStroke(1.dp, BorderColor)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             AstraAvatar(name = request.name, size = 44.dp)
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    request.name,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = PrimaryText
-                )
-                Text(
-                    "wants to connect securely",
-                    fontSize = 13.sp,
-                    color = SecondaryText
-                )
+                Text(request.name, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = PrimaryText)
+                Text("wants to connect securely", fontSize = 13.sp, color = SecondaryText)
             }
-            IconButton(
-                onClick = onAccept,
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(TorXPrimarySoft)
-            ) {
+            IconButton(onClick = onAccept, modifier = Modifier.size(36.dp).clip(CircleShape).background(TorXPrimarySoft)) {
                 Icon(Icons.Rounded.CheckCircle, "Accept", tint = SuccessGreen, modifier = Modifier.size(22.dp))
             }
             Spacer(modifier = Modifier.width(6.dp))
-            IconButton(
-                onClick = onReject,
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(SurfaceSecondary)
-            ) {
+            IconButton(onClick = onReject, modifier = Modifier.size(36.dp).clip(CircleShape).background(SurfaceSecondary)) {
                 Icon(Icons.Rounded.Close, "Reject", tint = SecondaryText, modifier = Modifier.size(20.dp))
             }
         }
@@ -1097,93 +773,32 @@ fun ConnectionRequestCard(
 
 @Composable
 fun NearbyDeviceChip(device: NearbyDevice, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .width(96.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(SurfaceCard)
-            .border(1.dp, BorderColor, RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp, horizontal = 8.dp)
-    ) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(96.dp).clip(RoundedCornerShape(14.dp)).background(SurfaceCard).border(1.dp, BorderColor, RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 12.dp, horizontal = 8.dp)) {
         AstraAvatar(name = device.name, size = 44.dp)
         Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            device.name,
-            fontSize = 12.sp,
-            color = PrimaryText,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            "Nearby",
-            fontSize = 11.sp,
-            color = BluetoothAccent,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1
-        )
+        Text(device.name, fontSize = 12.sp, color = PrimaryText, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text("Nearby", fontSize = 11.sp, color = BluetoothAccent, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ContactRow(
-    contact: ContactEntity,
-    avatarModel: Any?,
-    isOnline: Boolean,
-    routeLabel: String,
-    lastMessageText: String,
-    lastMessageTime: Long?,
-    unreadCount: Int = 0,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AstraTheme.spacing.large, vertical = 4.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (unreadCount > 0) TorXPrimarySoft else SurfaceCard)
-            .border(
-                1.dp,
-                if (unreadCount > 0) TorXPrimary.copy(alpha = 0.25f) else BorderColor,
-                RoundedCornerShape(16.dp)
-            )
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+fun ContactRow(contact: ContactEntity, avatarModel: Any?, isOnline: Boolean, routeLabel: String, lastMessageText: String, lastMessageTime: Long?, unreadCount: Int = 0, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AstraTheme.spacing.large, vertical = 4.dp).clip(RoundedCornerShape(16.dp)).background(if (unreadCount > 0) TorXPrimarySoft else SurfaceCard).border(1.dp, if (unreadCount > 0) TorXPrimary.copy(alpha = 0.25f) else BorderColor, RoundedCornerShape(16.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = AstraTheme.spacing.standard, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         AstraAvatar(name = contact.name, model = avatarModel, size = AstraTheme.spacing.massive4, isOnline = isOnline)
         Spacer(modifier = Modifier.width(AstraTheme.spacing.medium))
         Column(modifier = Modifier.weight(1f)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(contact.name, fontSize = AstraTheme.typography.bodyLarge.fontSize, fontWeight = FontWeight.SemiBold, color = PrimaryText, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (lastMessageTime != null) {
-                    val timeString = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastMessageTime))
-                    Text(timeString, fontSize = AstraTheme.typography.labelSmall.fontSize, color = if (unreadCount > 0) TorXPrimary else TextMuted)
-                }
+                if (lastMessageTime != null) Text(SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(lastMessageTime)), fontSize = AstraTheme.typography.labelSmall.fontSize, color = if (unreadCount > 0) TorXPrimary else TextMuted)
             }
             Spacer(modifier = Modifier.height(AstraTheme.spacing.tiny))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(lastMessageText, fontSize = AstraTheme.typography.bodyMedium.fontSize, color = if (unreadCount > 0) PrimaryText else SecondaryText, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (unreadCount > 0) {
-                    Box(
-                        modifier = Modifier.padding(start = AstraTheme.spacing.small).size(22.dp).clip(CircleShape).background(TorXPrimary),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(unreadCount.toString(), fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                }
+                if (unreadCount > 0) Box(modifier = Modifier.padding(start = AstraTheme.spacing.small).size(22.dp).clip(CircleShape).background(TorXPrimary), contentAlignment = Alignment.Center) { Text(unreadCount.toString(), fontSize = AstraTheme.typography.labelSmall.fontSize, color = Color.White, fontWeight = FontWeight.Bold) }
             }
             Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                routeLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isOnline) SuccessGreen else TextMuted,
-                maxLines = 1
-            )
+            Text(routeLabel, style = MaterialTheme.typography.labelSmall, color = if (isOnline) SuccessGreen else TextMuted, maxLines = 1)
         }
     }
 }
@@ -1193,17 +808,5 @@ private fun manualMusicTrack(title: String, artist: String, provider: String): D
     if (cleanTitle.isBlank()) return null
     val cleanArtist = artist.trim().ifBlank { "Unknown artist" }
     val cleanProvider = provider.trim().ifBlank { "Manual" }
-    return DetectedMusicTrack(
-        trackId = "manual:${cleanTitle.lowercase()}:${cleanArtist.lowercase()}",
-        trackName = cleanTitle,
-        artist = cleanArtist,
-        album = "",
-        albumArtUri = null,
-        provider = cleanProvider,
-        playbackPositionMs = 0L
-    )
+    return DetectedMusicTrack(trackId = "manual:${cleanTitle.lowercase()}:${cleanArtist.lowercase()}", trackName = cleanTitle, artist = cleanArtist, album = "", albumArtUri = null, provider = cleanProvider, playbackPositionMs = 0L)
 }
-
-
-
-

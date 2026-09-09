@@ -78,7 +78,7 @@ class CallManager(
                     "torxone:call_active"
                 )?.apply {
                     setReferenceCounted(false)
-                    acquire(2 * 60 * 60 * 1000L) // 2 hours safety limit
+                    acquire(2 * 60 * 60 * 1000L)
                 }
                 Log.d(TAG, "Acquired PARTIAL_WAKE_LOCK for call")
             }
@@ -153,7 +153,6 @@ class CallManager(
             val routeContext = adaptiveRouter.buildContext(contact)
             if (routeContext.transport == com.torxone.app.network.Transport.FAILED) {
                 stateStore.update(CallUiState.Unavailable("Peer is offline. Move closer or wait for mesh connection."))
-                // Queue missed call record in caller chat and for remote peer
                 scope.launch {
                     messageRouter.sendMessage(peerKey, "📞 Outgoing call (Peer offline)", replyToId = null)
                 }
@@ -322,7 +321,6 @@ class CallManager(
                 }
             }.onFailure { e ->
                 if (e is SecurityException) {
-                    // Already logged by CallSecurityLogger in parse()
                     Log.w(TAG, "Rejected call signal $packetType: ${e.message}")
                 } else {
                     Log.e(TAG, "Failed to handle call signal $packetType", e)
@@ -332,7 +330,6 @@ class CallManager(
     }
 
     private suspend fun handleOffer(signal: CallSignal, senderKey: String) {
-        // Reject signals for terminated calls
         if (isTerminated(signal.callId)) {
             CallSecurityLogger.logSecurityEvent(
                 CallSecurityLogger.EVENT_TERMINATED_CALL_SIGNAL,
@@ -340,29 +337,54 @@ class CallManager(
             )
             return
         }
-        val contact = db.contactDao().getContact(senderKey)
-        val peerName = contact?.name ?: "Unknown Contact"
-        val offer = AstraSessionDescription("offer", signal.sdp ?: return)
-        
-        // Differentiate between new call and ICE restart renegotiation
-        if (activeCallId == signal.callId && activeEngine != null) {
-            Log.d(TAG, "Received renegotiation offer for active call: ${signal.callId}")
-            activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
-            activeEngine?.handleRenegotiationOffer(offer, senderKey, signal.callId)
+
+        val normalizedSenderKey = senderKey.trim()
+        if (normalizedSenderKey.isBlank()) {
+            Log.w(TAG, "Dropping CALL_OFFER with blank sender key for call ${signal.callId}")
             return
         }
 
-        // Busy collision protection: if already on a call with a DIFFERENT peer, reject the new offer
-        if (activeCallId != null && activePeerKey != null && activePeerKey != senderKey) {
+        val contact = db.contactDao().getContact(normalizedSenderKey)
+        val peerName = contact?.name ?: "Unknown Contact"
+        val offer = AstraSessionDescription("offer", signal.sdp ?: return)
+
+        if (activeCallId == signal.callId) {
+            if (activePeerKey != null && activePeerKey != normalizedSenderKey) {
+                CallSecurityLogger.logSecurityEvent(
+                    CallSecurityLogger.EVENT_WRONG_PEER_REJECTED,
+                    signal.callId,
+                    normalizedSenderKey,
+                    "CALL_OFFER peer mismatch for active call"
+                )
+                return
+            }
+
+            val currentState = stateStore.state.value
+            val canRenegotiate = currentState is CallUiState.Connected &&
+                activeEngine != null &&
+                offer.description != pendingOffer?.description
+
+            if (canRenegotiate) {
+                Log.d(TAG, "Received renegotiation offer for connected call: ${signal.callId}")
+                activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
+                activeEngine?.handleRenegotiationOffer(offer, normalizedSenderKey, signal.callId)
+            } else {
+                Log.d(TAG, "Dropping duplicate CALL_OFFER for active call ${signal.callId}; state=${currentState::class.simpleName}")
+                activeDiagnostics?.record("DUPLICATE_OFFER_DROPPED")
+            }
+            return
+        }
+
+        if (activeCallId != null) {
             CallSecurityLogger.logSecurityEvent(
                 CallSecurityLogger.EVENT_BUSY_COLLISION_DROPPED,
-                signal.callId, senderKey,
+                signal.callId,
+                normalizedSenderKey,
                 "busy with active call $activeCallId"
             )
-            // Send CALL_END back to the new caller indicating busy
             scope.launch {
                 runCatching {
-                    signaling.sendEnd(senderKey, signal.callId, signal.mode, "Busy")
+                    signaling.sendEnd(normalizedSenderKey, signal.callId, signal.mode, "Busy")
                 }
             }
             return
@@ -370,11 +392,11 @@ class CallManager(
 
         callGeneration++
         activeCallId = signal.callId
-        activePeerKey = senderKey
+        activePeerKey = normalizedSenderKey
         activeMode = signal.mode
         pendingOffer = offer
 
-        val diagnostics = CallConnectionDiagnostics(signal.callId, CallDirection.INCOMING, senderKey)
+        val diagnostics = CallConnectionDiagnostics(signal.callId, CallDirection.INCOMING, normalizedSenderKey)
         activeDiagnostics = diagnostics
         diagnostics.markOfferReceived()
 
@@ -388,8 +410,8 @@ class CallManager(
         acquireWakeLocks()
         startRingTimeout()
         ringtoneManager.start()
-        stateStore.update(CallUiState.Ringing(signal.callId, senderKey, peerName, CallDirection.INCOMING, signal.mode))
-        com.torxone.app.service.NotificationHelper.showIncomingCall(context, signal.callId, senderKey, peerName)
+        stateStore.update(CallUiState.Ringing(signal.callId, normalizedSenderKey, peerName, CallDirection.INCOMING, signal.mode))
+        com.torxone.app.service.NotificationHelper.showIncomingCall(context, signal.callId, normalizedSenderKey, peerName)
     }
 
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
@@ -415,7 +437,6 @@ class CallManager(
             )
             return
         }
-        // Validate sender matches active peer
         if (senderKey != activePeerKey) {
             CallSecurityLogger.logSecurityEvent(
                 CallSecurityLogger.EVENT_WRONG_PEER_REJECTED,
@@ -444,7 +465,6 @@ class CallManager(
             }
         }
         callGeneration++
-        // Avoid echoing CALL_END back to the peer.
         cancelRingTimeout()
         cancelConnectEstablishmentTimeout()
         networkMonitor.stop()
@@ -539,7 +559,6 @@ class CallManager(
                     startDurationTimer()
                     stateStore.update(CallUiState.Connected(callId, peerKey, peerName, result.mode))
                 } else {
-                    // For WebRTC: Connecting state. Connected state will be set by ICE callback.
                     stateStore.update(CallUiState.Negotiating(callId, peerKey, peerName, result.mode))
                     startConnectEstablishmentTimeout(callId)
                 }
@@ -581,8 +600,6 @@ class CallManager(
         }
     }
 
-    // ──────────────────────── Duration Timer ────────────────────────
-
     private fun startDurationTimer() {
         if (callStartMonotonicMs == 0L) {
             callStartMonotonicMs = android.os.SystemClock.elapsedRealtime()
@@ -607,8 +624,6 @@ class CallManager(
         durationJob = null
         callStartMonotonicMs = 0L
     }
-
-    // ──────────────────────── Ring Timeout ────────────────────────
 
     private fun startRingTimeout() {
         ringTimeoutJob = scope.launch {
@@ -651,7 +666,6 @@ class CallManager(
         connectTimeoutJob = null
     }
 
-    // Start duration timer, ongoing notification, and network monitor when WebRTC reports Connected
     init {
         scope.launch {
             stateStore.state.collect { state ->
