@@ -3,7 +3,6 @@ package com.torxone.app.call
 import android.Manifest
 import android.content.Context
 import com.torxone.app.data.AppDatabase
-import com.torxone.app.data.ContactDao
 import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.MeshProtocol
 import com.torxone.app.network.MessageRouter
@@ -12,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -24,7 +24,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.any
-import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
@@ -41,7 +40,7 @@ class CallManagerDuplicateOfferTest {
     private lateinit var scope: CoroutineScope
     private lateinit var context: Context
     private val db: AppDatabase = mock()
-    private val contactDao: ContactDao = mock()
+    private val contactDao: com.torxone.app.data.ContactDao = mock()
     private val messageRouter: MessageRouter = mock()
     private val peerKey = "peer_pubkey_duplicate"
     private val contact = ContactEntity(
@@ -114,7 +113,7 @@ class CallManagerDuplicateOfferTest {
         ringtoneManagerOverride = ringtone
     )
 
-    private fun offer(callId: String, sdp: String = "v=0...-$sdp") = """
+    private fun offer(callId: String, sdp: String = "v=0...initial") = """
         {"callId":"$callId","mode":"AUDIO","sdp":"$sdp"}
     """.trimIndent()
 
