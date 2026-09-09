@@ -435,9 +435,10 @@ class TorManager(private val context: Context) {
         }
     }
 
-    fun sendToOnion(onionHost: String, payload: String): Boolean {
+    fun sendToOnion(onionHost: String, payload: String, messageId: String? = null): Boolean {
         val lock = torSocketLocks.computeIfAbsent(onionHost) { Any() }
         synchronized(lock) {
+            val label = messageId?.takeIf { it.isNotBlank() }?.let { " id=$it" } ?: ""
             repeat(2) { attempt ->
                 val socket = getOrCreatePooledSocket(onionHost) ?: return false
                 try {
@@ -446,10 +447,10 @@ class TorManager(private val context: Context) {
                         write('\n'.code)
                         flush()
                     }
-                    addTorLog("[TOR] Packet sent to $onionHost${if (attempt > 0) " after reconnect" else ""}")
+                    addTorLog("[TOR] Packet sent to $onionHost$label${if (attempt > 0) " after reconnect" else ""}")
                     return true
                 } catch (e: Exception) {
-                    addTorLog("[TOR] Persistent socket failed: ${e.message}")
+                    addTorLog("[TOR] Persistent socket failed$label: ${e.message}")
                     removePooledSocket(onionHost, socket)
                     if (attempt == 1) _lastError.value = "Send failed: ${e.message}"
                 }

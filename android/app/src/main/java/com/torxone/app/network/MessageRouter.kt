@@ -276,7 +276,7 @@ class MessageRouter(
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             Log.d(TAG, "[TOR-SESSION] Sending session message to $onion")
-            val ok = sendTorFrame(onion, wireJson)
+            val ok = sendTorFrame(onion, wireJson, messageId)
             if (ok) return SendResult(true, Transport.TOR)
             Log.w(TAG, "[TOR-SESSION] Delivery failed to $onion")
         }
@@ -316,7 +316,7 @@ class MessageRouter(
         val onion = contact.onionAddress
         if (onion.isNotBlank() && torManager.isTorReady.value) {
             val wire = MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
-            if (sendTorFrame(onion, wire)) return SendResult(true, Transport.TOR)
+            if (sendTorFrame(onion, wire, messageId)) return SendResult(true, Transport.TOR)
         }
 
         if (connected.isNotEmpty()) {
@@ -337,9 +337,12 @@ class MessageRouter(
     }
 
     /** Send a chat/control frame over a reusable Tor socket. */
-    private suspend fun sendTorFrame(onionHost: String, payload: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun sendTorFrame(onionHost: String, payload: String, messageId: String? = null): Boolean = withContext(Dispatchers.IO) {
         if (!torManager.isTorReady.value) return@withContext false
-        torManager.sendToOnion(onionHost, payload)
+        Log.d(TAG, "[TOR-OUT] id=${messageId ?: "control"} connecting to $onionHost")
+        val sent = torManager.sendToOnion(onionHost, payload, messageId)
+        Log.d(TAG, "[TOR-OUT] id=${messageId ?: "control"} result=${if (sent) "written" else "failed"} peer=$onionHost")
+        sent
     }
 
     suspend fun sendGroupMessage(groupId: String, text: String, replyToId: String? = null): SendResult = withContext(Dispatchers.IO) {
@@ -570,6 +573,7 @@ class MessageRouter(
             val ok = dispatchReceipt(receipt, null, contact?.onionAddress)
             if (ok) {
                 db.receiptOutboxDao().deleteReceipt(receipt.id)
+                Log.i(TAG, "[RECEIPT_RETRY] id=${receipt.messageId} attempt=${receipt.retryCount + 1} result=success")
             } else {
                 val newCount = receipt.retryCount + 1
                 if (newCount >= MAX_RETRIES) {
@@ -578,6 +582,7 @@ class MessageRouter(
                     val backoff = (3_000L * (1L shl receipt.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
                     db.receiptOutboxDao().updateRetry(receipt.id, now + backoff)
                 }
+                Log.w(TAG, "[RECEIPT_RETRY] id=${receipt.messageId} attempt=$newCount result=failed")
             }
         }
     }
@@ -622,7 +627,9 @@ class MessageRouter(
             val delivered = dispatchReceipt(receipt, viaEndpoint, senderOnion)
             if (delivered) {
                 db.receiptOutboxDao().deleteReceipt(receipt.id)
+                Log.i(TAG, "[RECEIPT] id=${receipt.messageId} transportAccepted=true")
             } else {
+                Log.w(TAG, "[RECEIPT] id=${receipt.messageId} transportAccepted=false retryQueued=true")
                 ensureRetryLoopRunning()
             }
         }
@@ -654,7 +661,7 @@ class MessageRouter(
         // 2. Tor
         val onion = if (!senderOnion.isNullOrBlank()) senderOnion else contact?.onionAddress
         if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-            val ok = sendTorFrame(onion, wire)
+            val ok = sendTorFrame(onion, wire, receipt.messageId)
             if (ok) return true
         }
 
