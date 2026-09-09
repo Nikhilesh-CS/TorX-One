@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.27] - 2026-09-09
+### Added
+- **Call Quality Monitoring & Bitrate Tracking (`CallQualityMonitor.kt`)**: Periodic WebRTC stats polling (RTT, packet loss %, jitter, packets sent/received, audio bitrate, available outgoing bandwidth) with rolling window evaluation (Excellent, Good, Poor, Critical) and real-time In-Call UI status pills.
+- **Seamless Network Handover & ICE Restarts (`CallNetworkMonitor.kt`)**: Network interface listener with 1.5s debounce automatically triggers non-disruptive ICE restart renegotiation when transitioning between Wi-Fi and Cellular data, preventing silent call drops.
+- **Dedicated Audio Lifecycle Manager (`CallAudioManager.kt`)**: Telephony audio focus coordination handling transient losses (voice notes, alarms, transient calls) by ducking or pausing playback without altering user mic mute state, restoring full audio when focus returns.
+- **Strict 3-Tier Privacy Architecture (`CallPrivacyPolicy.kt`)**:
+  - `NORMAL`: Public host + srflx + relay allowed; RFC1918/ULA private LAN IPs (`192.168.x`, `10.x`, `172.16-31.x`) stripped before signaling.
+  - `PRIVACY`: 100% of host candidates blocked to hide device topology; only configured privacy STUN and TURN relays permitted.
+  - `STRICT`: Relay-only mode (`IceTransportsType.RELAY`). Host and srflx candidates completely withheld, preventing direct P2P media and STUN telemetry.
+- **Removed Third-Party STUN Telemetry (`DefaultIceServerProvider.kt`)**: Removed all hardcoded Google STUN servers (`stun.l.google.com:19302`) to prevent third-party IP and timing exposure.
+- **Signaling Security & Collision Defenses (`CallSignalingHandler.kt`, `CallManager.kt`)**: Enforced 64KB signal payload ceiling, 64KB SDP limit, 4KB ICE candidate limit, strict schema validation, sender public key verification on ICE trickles, and busy collision protection returning `"Busy"` when in an active call.
+- **Structured Security Event Logger (`CallSecurityLogger.kt`)**: Redacted peer key logging (`key.take(12)...`) and zero raw SDP/IP leakage to system logcat.
+- **Notification Privacy**: Added `NotificationCompat.VISIBILITY_PRIVATE` to ongoing call notifications on lockscreen.
+- **Embedded Native Tor v0.4.9.9 Binaries**: Packaged modern PIE ELF binaries for arm64-v8a, armeabi-v7a, and x86_64, eliminating the 16KB page alignment warning on Android 15+.
+
+### Verified
+- 73/73 unit tests passing (100% pass rate).
+- On-device hardware & network privacy verification passed directly on physical device (Realme RMX5070 - Android 16 / API 36).
+
 ## [1.0.26] - 2026-09-09
 ### Added
 - **Universal QR Scanner Screen (`ScanQrScreen.kt`)**: Immediate full-screen entry point launched from the home screen top-right QR button. Real-time dual detection automatically handles:

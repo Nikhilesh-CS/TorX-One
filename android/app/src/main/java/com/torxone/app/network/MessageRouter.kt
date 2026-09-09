@@ -455,6 +455,40 @@ class MessageRouter(
         attemptDelivery(contact, payload, messageId, messageType)
     }
 
+    suspend fun buildEncryptedWireFrame(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): String? = withContext(Dispatchers.IO) {
+        val identity = identity ?: return@withContext null
+        val contact = db.contactDao().getContact(contactKey) ?: return@withContext null
+        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) return@withContext null
+        val payload = buildEncryptedPayload(identity, contact, rawText) ?: return@withContext null
+        val messageId = UUID.randomUUID().toString()
+        MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
+    }
+
+    fun openCallTransportSession(
+        callId: String,
+        contact: ContactEntity,
+        transport: Transport
+    ): com.torxone.app.call.CallTransportSession {
+        return com.torxone.app.call.CallTransportSession(
+            callId = callId,
+            peerKey = contact.signingPublicKey,
+            transport = transport,
+            endpointId = contact.endpointId.takeIf { it.isNotBlank() },
+            onionHost = contact.onionAddress.takeIf { it.isNotBlank() },
+            nearbySender = { endpoint, frame ->
+                try {
+                    nearbyManager.sendRaw(endpoint, frame)
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            },
+            torSocketFactory = { host, port, timeout ->
+                torManager.createTorSocket(host, port, timeout)
+            }
+        )
+    }
+
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
         if (db.messageDao().getMessageById(targetMessageId)?.conversationType == "group") {
             val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }

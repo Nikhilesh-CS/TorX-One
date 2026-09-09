@@ -45,8 +45,8 @@ android {
         applicationId = "com.torxone.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "1.0.26"
+        versionCode = 31
+        versionName = "1.0.27"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -149,8 +149,8 @@ dependencies {
     // Accompanist (permissions)
     implementation("com.google.accompanist:accompanist-permissions:0.34.0")
 
-    // Tor Embedded
-    implementation("info.guardianproject:tor-android:0.4.8.12")
+    // Tor Embedded: Native libtor.so binaries (v0.4.9.9) are provided via jniLibs.
+    // jtorctl is kept for Tor control utility support.
     implementation("info.guardianproject:jtorctl:0.4.5.7")
 
     // Coil for image loading

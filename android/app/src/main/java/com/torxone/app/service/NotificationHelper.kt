@@ -25,6 +25,7 @@ object NotificationHelper {
     const val NOTIFICATION_ID_SUMMARY = 2
     const val NOTIFICATION_ID_INCOMING_CALL = 3
     const val NOTIFICATION_ID_GROUP_JOIN = 4
+    const val NOTIFICATION_ID_ONGOING_CALL = 5
 
     fun showGroupJoinRequest(context: Context, groupId: String, groupName: String, memberKey: String) {
         fun action(action: String, title: String): NotificationCompat.Action {
@@ -298,8 +299,8 @@ object NotificationHelper {
         }
         val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
-            .setContentTitle("Incoming TorX One call")
-            .setContentText(peerName)
+            .setContentTitle("📞 Incoming call")
+            .setContentText("$peerName is calling you")
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setOngoing(true)
@@ -307,13 +308,58 @@ object NotificationHelper {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(open)
             .setFullScreenIntent(open, true)
-            .addAction(action(NotificationActionReceiver.ACTION_ANSWER_CALL, "Answer"))
             .addAction(action(NotificationActionReceiver.ACTION_DECLINE_CALL, "Decline"))
+            .addAction(action(NotificationActionReceiver.ACTION_ANSWER_CALL, "Answer"))
             .build()
         context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID_INCOMING_CALL, notification)
     }
 
     fun clearIncomingCall(context: Context) {
         context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID_INCOMING_CALL)
+    }
+
+    fun showOngoingCall(context: Context, callId: String, peerKey: String, peerName: String, durationSeconds: Int) {
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("open_call", callId)
+        }
+        val open = PendingIntent.getActivity(
+            context,
+            callId.hashCode(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val endIntent = Intent(context, NotificationActionReceiver::class.java).apply {
+            action = NotificationActionReceiver.ACTION_DECLINE_CALL
+            putExtra("callId", callId)
+            putExtra("peerKey", peerKey)
+        }
+        val endPending = PendingIntent.getBroadcast(
+            context,
+            (callId + "end").hashCode(),
+            endIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val m = durationSeconds / 60
+        val s = durationSeconds % 60
+        val durationFormatted = java.lang.String.format(java.util.Locale.US, "%02d:%02d", m, s)
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle("📞 Call with $peerName")
+            .setContentText("Connected • $durationFormatted")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(open)
+            .addAction(NotificationCompat.Action.Builder(0, "End Call", endPending).build())
+            .build()
+        context.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID_ONGOING_CALL, notification)
+    }
+
+    fun clearOngoingCall(context: Context) {
+        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID_ONGOING_CALL)
     }
 }

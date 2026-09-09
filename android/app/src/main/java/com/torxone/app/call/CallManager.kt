@@ -20,17 +20,23 @@ import java.util.concurrent.ConcurrentHashMap
 class CallManager(
     private val context: Context,
     private val db: AppDatabase,
-    private val messageRouter: MessageRouter
+    private val messageRouter: MessageRouter,
+    enginesOverride: List<CallEngine>? = null,
+    scopeOverride: CoroutineScope? = null,
+    ringtoneManagerOverride: CallRingtoneManager? = null
 ) {
     companion object {
         private const val TAG = "CallManager"
-        private const val RING_TIMEOUT_MS = 30_000L
+        private const val RING_TIMEOUT_MS = 45_000L
+        private const val CONNECT_ESTABLISHMENT_TIMEOUT_MS = 25_000L
         private const val TERMINATED_CALL_TTL_MS = 2 * 60 * 1000L
     }
 
     val stateStore = CallStateStore()
-    val audioRouteManager = AudioRouteManager(context)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val callAudioManager: CallAudioManager = CallAudioManager(context)
+    val audioRouteManager: AudioRouteManager by lazy { AudioRouteManager(context) }
+    val ringtoneManager: CallRingtoneManager = ringtoneManagerOverride ?: CallRingtoneManager(context)
+    private val scope = scopeOverride ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val signaling = CallSignalingHandler(messageRouter)
     private val permissions = AudioVideoPermissionManager(context)
 
@@ -40,9 +46,9 @@ class CallManager(
     private var toneGenerator: ToneGenerator? = null
     private var ringbackJob: Job? = null
 
-    private val webRtcEngine = WebRtcCallEngine(context, signaling, stateStore, audioRouteManager)
-    private val voiceNoteEngine = VoiceNoteCallEngine(messageRouter)
-    private val engines: List<CallEngine> = listOf(webRtcEngine, voiceNoteEngine)
+    private val webRtcEngine by lazy { WebRtcCallEngine(context, signaling, stateStore, callAudioManager) }
+    private val voiceNoteEngine by lazy { VoiceNoteCallEngine(messageRouter) }
+    private val engines: List<CallEngine> = enginesOverride ?: listOf(webRtcEngine, voiceNoteEngine)
     private val adaptiveRouter = AdaptiveCallRouter(messageRouter, engines)
 
     private var activeEngine: CallEngine? = null
@@ -52,8 +58,17 @@ class CallManager(
     private var pendingOffer: AstraSessionDescription? = null
     private var durationJob: Job? = null
     private var ringTimeoutJob: Job? = null
-    private var callStartTimeMs: Long = 0L
+    private var connectTimeoutJob: Job? = null
+    private var callStartMonotonicMs: Long = 0L
     private val terminatedCalls = ConcurrentHashMap<String, Long>()
+    @Volatile
+    private var callGeneration: Long = 0L
+
+    private var activeDiagnostics: CallConnectionDiagnostics? = null
+    private var transportSession: CallTransportSession? = null
+    private val networkMonitor = CallNetworkMonitor(context) {
+        (activeEngine as? WebRtcCallEngine)?.triggerNetworkHandover()
+    }
 
     private fun acquireWakeLocks() {
         try {
@@ -145,8 +160,14 @@ class CallManager(
                 return@launch
             }
             val callId = UUID.randomUUID().toString()
+            val generation = ++callGeneration
             activeCallId = callId
             activePeerKey = peerKey
+            val diagnostics = CallConnectionDiagnostics(callId, CallDirection.OUTGOING, peerKey)
+            activeDiagnostics = diagnostics
+            val session = runCatching { messageRouter.openCallTransportSession(callId, contact, routeContext.transport) }.getOrNull()
+            transportSession = session
+            signaling.activeSession = session
             acquireWakeLocks()
             startRingbackTone()
             stateStore.update(CallUiState.Ringing(callId, peerKey, contact.name, CallDirection.OUTGOING, CallMode.AUDIO))
@@ -156,17 +177,37 @@ class CallManager(
             if (selected == null) {
                 stopRingbackTone()
                 releaseWakeLocks()
+                session?.close()
+                transportSession = null
+                signaling.activeSession = null
+                diagnostics.markFailed("No compatible engine")
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
                 return@launch
             }
 
+            if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                Log.d(TAG, "Call $callId cancelled before startOutgoing (gen $generation vs $callGeneration)")
+                session?.close()
+                return@launch
+            }
+
             activeEngine = selected
+            (selected as? WebRtcCallEngine)?.diagnostics = diagnostics
             val result = selected.startOutgoing(callId, contact, routeContext)
-            handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type)
+            if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                Log.d(TAG, "Call $callId cancelled during startOutgoing (gen $generation vs $callGeneration)")
+                selected.end()
+                session?.close()
+                return@launch
+            }
+            handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type, generation, selected)
         }
     }
 
     fun acceptIncomingCall() {
+        ringtoneManager.stop()
+        cancelRingTimeout()
+        com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
         scope.launch {
             val callId = activeCallId ?: return@launch
             val peerKey = activePeerKey ?: return@launch
@@ -180,9 +221,9 @@ class CallManager(
                 stateStore.update(CallUiState.Unavailable("Microphone permission is required."))
                 return@launch
             }
-            cancelRingTimeout()
+            stateStore.update(CallUiState.Accepted(callId, peerKey, contact.name, activeMode))
+            val generation = ++callGeneration
             acquireWakeLocks()
-            com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
             val routeContext = adaptiveRouter.buildContext(contact)
             val selected = adaptiveRouter.selectAudioEngine(routeContext)
             if (selected == null) {
@@ -190,13 +231,26 @@ class CallManager(
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
                 return@launch
             }
+
+            if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                Log.d(TAG, "Call $callId cancelled before acceptIncoming (gen $generation vs $callGeneration)")
+                return@launch
+            }
+
             activeEngine = selected
+            (selected as? WebRtcCallEngine)?.diagnostics = activeDiagnostics
             val result = selected.acceptIncoming(callId, contact, offer)
-            handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type)
+            if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                Log.d(TAG, "Call $callId cancelled during acceptIncoming (gen $generation vs $callGeneration)")
+                selected.end()
+                return@launch
+            }
+            handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type, generation, selected)
         }
     }
 
     fun rejectIncomingCall() {
+        ringtoneManager.stop()
         cancelRingTimeout()
         stopRingbackTone()
         releaseWakeLocks()
@@ -204,13 +258,28 @@ class CallManager(
     }
 
     fun endCall(reason: String = "Call ended") {
+        ringtoneManager.stop()
+        callGeneration++
         cancelRingTimeout()
+        cancelConnectEstablishmentTimeout()
+        networkMonitor.stop()
+        transportSession?.close()
+        transportSession = null
+        signaling.activeSession = null
+        activeDiagnostics?.let {
+            if (stateStore.state.value !is CallUiState.Connected) {
+                it.markFailed(reason)
+            }
+        }
+        activeDiagnostics = null
         stopRingbackTone()
         releaseWakeLocks()
+        callAudioManager.stopCallAudio()
         com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
+        com.torxone.app.service.NotificationHelper.clearOngoingCall(context)
         stopDurationTimer()
-        val duration = if (callStartTimeMs > 0) {
-            ((System.currentTimeMillis() - callStartTimeMs) / 1000).toInt()
+        val duration = if (callStartMonotonicMs > 0) {
+            ((android.os.SystemClock.elapsedRealtime() - callStartMonotonicMs) / 1000).toInt()
         } else 0
         val endingCallId = activeCallId
         val endingPeerKey = activePeerKey
@@ -225,18 +294,19 @@ class CallManager(
         activeCallId = null
         activePeerKey = null
         pendingOffer = null
-        callStartTimeMs = 0L
+        callStartMonotonicMs = 0L
         stateStore.update(CallUiState.Ended(reason, duration))
+        scheduleEndedReset()
     }
 
     fun toggleMute() {
-        val muted = audioRouteManager.toggleMute()
+        val muted = callAudioManager.toggleMute()
         (activeEngine as? WebRtcCallEngine)?.setMicEnabled(!muted)
         stateStore.updateConnectedState(isMuted = muted)
     }
 
     fun toggleSpeaker() {
-        val speaker = audioRouteManager.toggleSpeaker()
+        val speaker = callAudioManager.toggleSpeaker()
         stateStore.updateConnectedState(isSpeaker = speaker)
     }
 
@@ -247,18 +317,27 @@ class CallManager(
                 when (packetType) {
                     com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> handleOffer(signal, senderKey)
                     com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> handleAnswer(signal, senderKey)
-                    com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> handleIce(signal)
+                    com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> handleIce(signal, senderKey)
                     com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> handleRemoteEnd(signal, senderKey)
                 }
             }.onFailure { e ->
-                Log.e(TAG, "Failed to handle call signal $packetType", e)
+                if (e is SecurityException) {
+                    // Already logged by CallSecurityLogger in parse()
+                    Log.w(TAG, "Rejected call signal $packetType: ${e.message}")
+                } else {
+                    Log.e(TAG, "Failed to handle call signal $packetType", e)
+                }
             }
         }
     }
 
     private suspend fun handleOffer(signal: CallSignal, senderKey: String) {
+        // Reject signals for terminated calls
         if (isTerminated(signal.callId)) {
-            Log.d(TAG, "Ignoring delayed offer for terminated call ${signal.callId}")
+            CallSecurityLogger.logSecurityEvent(
+                CallSecurityLogger.EVENT_TERMINATED_CALL_SIGNAL,
+                signal.callId, senderKey, "offer for terminated call"
+            )
             return
         }
         val contact = db.contactDao().getContact(senderKey)
@@ -268,17 +347,49 @@ class CallManager(
         // Differentiate between new call and ICE restart renegotiation
         if (activeCallId == signal.callId && activeEngine != null) {
             Log.d(TAG, "Received renegotiation offer for active call: ${signal.callId}")
+            activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
             activeEngine?.handleRenegotiationOffer(offer, senderKey, signal.callId)
             return
         }
 
+        // Busy collision protection: if already on a call with a DIFFERENT peer, reject the new offer
+        if (activeCallId != null && activePeerKey != null && activePeerKey != senderKey) {
+            CallSecurityLogger.logSecurityEvent(
+                CallSecurityLogger.EVENT_BUSY_COLLISION_DROPPED,
+                signal.callId, senderKey,
+                "busy with active call $activeCallId"
+            )
+            // Send CALL_END back to the new caller indicating busy
+            scope.launch {
+                runCatching {
+                    signaling.sendEnd(senderKey, signal.callId, signal.mode, "Busy")
+                }
+            }
+            return
+        }
+
+        callGeneration++
         activeCallId = signal.callId
         activePeerKey = senderKey
         activeMode = signal.mode
         pendingOffer = offer
+
+        val diagnostics = CallConnectionDiagnostics(signal.callId, CallDirection.INCOMING, senderKey)
+        activeDiagnostics = diagnostics
+        diagnostics.markOfferReceived()
+
+        if (contact != null) {
+            val routeContext = adaptiveRouter.buildContext(contact)
+            val session = runCatching { messageRouter.openCallTransportSession(signal.callId, contact, routeContext.transport) }.getOrNull()
+            transportSession = session
+            signaling.activeSession = session
+        }
+
+        acquireWakeLocks()
+        startRingTimeout()
+        ringtoneManager.start()
         stateStore.update(CallUiState.Ringing(signal.callId, senderKey, peerName, CallDirection.INCOMING, signal.mode))
         com.torxone.app.service.NotificationHelper.showIncomingCall(context, signal.callId, senderKey, peerName)
-        startRingTimeout()
     }
 
     private suspend fun handleAnswer(signal: CallSignal, senderKey: String) {
@@ -289,30 +400,68 @@ class CallManager(
         val contact = db.contactDao().getContact(senderKey)
         val callId = signal.callId
         val answer = AstraSessionDescription("answer", signal.sdp ?: return)
+        activeDiagnostics?.markAnswerReceived()
         activeEngine?.handleRemoteDescription(answer)
         val peerName = contact?.name ?: "Unknown Contact"
         stateStore.update(CallUiState.Accepted(callId, senderKey, peerName, signal.mode))
+        startConnectEstablishmentTimeout(callId)
     }
 
-    private fun handleIce(signal: CallSignal) {
-        if (signal.callId != activeCallId || isTerminated(signal.callId)) return
+    private fun handleIce(signal: CallSignal, senderKey: String) {
+        if (signal.callId != activeCallId || isTerminated(signal.callId)) {
+            CallSecurityLogger.logSecurityEvent(
+                CallSecurityLogger.EVENT_STALE_SIGNAL_DISCARDED,
+                signal.callId, senderKey, "ICE candidate for wrong/terminated call"
+            )
+            return
+        }
+        // Validate sender matches active peer
+        if (senderKey != activePeerKey) {
+            CallSecurityLogger.logSecurityEvent(
+                CallSecurityLogger.EVENT_WRONG_PEER_REJECTED,
+                signal.callId, senderKey, "ICE from wrong peer"
+            )
+            return
+        }
         val candidateText = signal.candidate ?: return
         val mid = signal.sdpMid ?: return
         val index = signal.sdpMLineIndex ?: return
+        activeDiagnostics?.markIceCandidateReceived(mid)
         activeEngine?.handleIceCandidate(AstraIceCandidate(mid, index, candidateText))
     }
 
     private fun handleRemoteEnd(signal: CallSignal, senderKey: String) {
+        ringtoneManager.stop()
         if (senderKey != activePeerKey || signal.callId != activeCallId) {
             rememberTerminated(signal.callId)
             return
         }
-        val reason = signal.reason ?: "Remote ended call"
+        val isIncomingRinging = (stateStore.state.value as? CallUiState.Ringing)?.direction == CallDirection.INCOMING
+        val reason = if (isIncomingRinging) "Caller cancelled" else (signal.reason ?: "Remote ended call")
+        if (isIncomingRinging) {
+            scope.launch {
+                messageRouter.sendMessage(senderKey, "📞 Missed call (Caller cancelled)")
+            }
+        }
+        callGeneration++
         // Avoid echoing CALL_END back to the peer.
         cancelRingTimeout()
+        cancelConnectEstablishmentTimeout()
+        networkMonitor.stop()
+        transportSession?.close()
+        transportSession = null
+        signaling.activeSession = null
+        activeDiagnostics?.let {
+            if (stateStore.state.value !is CallUiState.Connected) {
+                it.markFailed(reason)
+            }
+        }
+        activeDiagnostics = null
         stopRingbackTone()
         releaseWakeLocks()
+        callAudioManager.stopCallAudio()
         com.torxone.app.service.NotificationHelper.clearIncomingCall(context)
+        com.torxone.app.service.NotificationHelper.clearOngoingCall(context)
         stopDurationTimer()
         rememberTerminated(signal.callId)
         activeEngine?.end()
@@ -320,8 +469,39 @@ class CallManager(
         activeCallId = null
         activePeerKey = null
         pendingOffer = null
-        callStartTimeMs = 0L
+        callStartMonotonicMs = 0L
         stateStore.update(CallUiState.Ended(reason, 0))
+        scheduleEndedReset()
+    }
+
+    private fun scheduleEndedReset() {
+        scope.launch {
+            delay(1500)
+            if (stateStore.state.value is CallUiState.Ended) {
+                stateStore.reset()
+                verifyCleanup()
+            }
+        }
+    }
+
+    fun verifyCleanup(): Boolean {
+        val issues = mutableListOf<String>()
+        if (activeEngine != null) issues.add("activeEngine is not null")
+        if (transportSession != null) issues.add("transportSession is not null")
+        if (activeDiagnostics != null) issues.add("activeDiagnostics is not null")
+        if (durationJob?.isActive == true) issues.add("durationJob is still active")
+        if (ringTimeoutJob?.isActive == true) issues.add("ringTimeoutJob is still active")
+        if (connectTimeoutJob?.isActive == true) issues.add("connectTimeoutJob is still active")
+        if (wakeLock?.isHeld == true) issues.add("wakeLock is still held")
+        if (proximityWakeLock?.isHeld == true) issues.add("proximityWakeLock is still held")
+
+        return if (issues.isEmpty()) {
+            Log.i(TAG, "CLEANUP OK: All call resources successfully released")
+            true
+        } else {
+            Log.w(TAG, "CLEANUP WARNING: ${issues.joinToString(", ")}")
+            false
+        }
     }
 
     private fun rememberTerminated(callId: String) {
@@ -337,8 +517,20 @@ class CallManager(
         callId: String,
         peerKey: String,
         peerName: String,
-        engineType: CallEngineType
+        engineType: CallEngineType,
+        generation: Long,
+        engine: CallEngine
     ) {
+        if (
+            generation != callGeneration ||
+            callId != activeCallId ||
+            isTerminated(callId)
+        ) {
+            Log.d(TAG, "Dropping stale CallStartResult for call $callId (gen $generation vs $callGeneration, active=$activeCallId, terminated=${isTerminated(callId)})")
+            engine.end()
+            return
+        }
+
         when (result) {
             is CallStartResult.Started -> {
                 activeMode = result.mode
@@ -349,6 +541,7 @@ class CallManager(
                 } else {
                     // For WebRTC: Connecting state. Connected state will be set by ICE callback.
                     stateStore.update(CallUiState.Negotiating(callId, peerKey, peerName, result.mode))
+                    startConnectEstablishmentTimeout(callId)
                 }
             }
             is CallStartResult.Fallback -> {
@@ -359,14 +552,27 @@ class CallManager(
                 }
                 activeEngine = fallback
                 scope.launch {
+                    if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                        Log.d(TAG, "Dropping fallback before start for call $callId (gen $generation vs $callGeneration)")
+                        return@launch
+                    }
                     val contact = db.contactDao().getContact(peerKey)
                     if (contact == null) {
                         stateStore.update(CallUiState.Unavailable("Contact not found."))
                         return@launch
                     }
+                    if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                        Log.d(TAG, "Dropping fallback after contact fetch for call $callId")
+                        return@launch
+                    }
                     val routeContext = adaptiveRouter.buildContext(contact)
                     val fallbackResult = fallback.startOutgoing(callId, contact, routeContext)
-                    handleStartResult(fallbackResult, callId, peerKey, peerName, fallback.capabilities.type)
+                    if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
+                        Log.d(TAG, "Dropping fallback after startOutgoing for call $callId")
+                        fallback.end()
+                        return@launch
+                    }
+                    handleStartResult(fallbackResult, callId, peerKey, peerName, fallback.capabilities.type, generation, fallback)
                 }
             }
             is CallStartResult.Failed -> {
@@ -378,13 +584,20 @@ class CallManager(
     // ──────────────────────── Duration Timer ────────────────────────
 
     private fun startDurationTimer() {
-        callStartTimeMs = System.currentTimeMillis()
+        if (callStartMonotonicMs == 0L) {
+            callStartMonotonicMs = android.os.SystemClock.elapsedRealtime()
+        }
+        durationJob?.cancel()
         durationJob = scope.launch {
-            var seconds = 0
-            while (true) {
+            while (isActive) {
                 delay(1000)
-                seconds++
-                stateStore.updateConnectedState(durationSeconds = seconds)
+                val elapsedSec = ((android.os.SystemClock.elapsedRealtime() - callStartMonotonicMs) / 1000L).toInt()
+                stateStore.updateConnectedState(durationSeconds = elapsedSec)
+                (stateStore.state.value as? CallUiState.Connected)?.let { conn ->
+                    com.torxone.app.service.NotificationHelper.showOngoingCall(
+                        context, conn.callId, conn.peerKey, conn.peerName, elapsedSec
+                    )
+                }
             }
         }
     }
@@ -392,6 +605,7 @@ class CallManager(
     private fun stopDurationTimer() {
         durationJob?.cancel()
         durationJob = null
+        callStartMonotonicMs = 0L
     }
 
     // ──────────────────────── Ring Timeout ────────────────────────
@@ -400,11 +614,14 @@ class CallManager(
         ringTimeoutJob = scope.launch {
             delay(RING_TIMEOUT_MS)
             Log.d(TAG, "Ring timeout — ending call")
+            ringtoneManager.stop()
             val peerKey = activePeerKey
-            endCall("No answer")
-            if (peerKey != null) {
+            val isIncoming = (stateStore.state.value as? CallUiState.Ringing)?.direction == CallDirection.INCOMING
+            val reason = if (isIncoming) "Missed call" else "No answer"
+            endCall(reason)
+            if (peerKey != null && isIncoming) {
                 scope.launch {
-                    messageRouter.sendMessage(peerKey, "📞 Missed voice call", replyToId = null)
+                    messageRouter.sendMessage(peerKey, "📞 Missed call")
                 }
             }
         }
@@ -415,12 +632,51 @@ class CallManager(
         ringTimeoutJob = null
     }
 
-    // Start duration timer when WebRTC reports Connected
+    private fun startConnectEstablishmentTimeout(callId: String) {
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = scope.launch {
+            delay(CONNECT_ESTABLISHMENT_TIMEOUT_MS)
+            val currentState = stateStore.state.value
+            if (activeCallId == callId &&
+                (currentState is CallUiState.Negotiating || currentState is CallUiState.IceConnecting || currentState is CallUiState.Accepted)) {
+                Log.w(TAG, "Connection establishment timed out for call $callId")
+                activeDiagnostics?.markFailed("Connection establishment timed out")
+                endCall("Connection timed out")
+            }
+        }
+    }
+
+    private fun cancelConnectEstablishmentTimeout() {
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
+    }
+
+    // Start duration timer, ongoing notification, and network monitor when WebRTC reports Connected
     init {
         scope.launch {
             stateStore.state.collect { state ->
-                if (state is CallUiState.Connected && durationJob == null) {
-                    startDurationTimer()
+                when (state) {
+                    is CallUiState.Connected -> {
+                        cancelConnectEstablishmentTimeout()
+                        if (durationJob == null) {
+                            startDurationTimer()
+                        }
+                        networkMonitor.start()
+                        com.torxone.app.service.NotificationHelper.showOngoingCall(
+                            context, state.callId, state.peerKey, state.peerName, state.callDurationSeconds
+                        )
+                    }
+                    is CallUiState.Reconnecting -> {
+                        com.torxone.app.service.NotificationHelper.showOngoingCall(
+                            context, state.callId, state.peerKey, state.peerName, state.callDurationSeconds
+                        )
+                    }
+                    is CallUiState.Ended,
+                    is CallUiState.Idle,
+                    is CallUiState.Unavailable -> {
+                        com.torxone.app.service.NotificationHelper.clearOngoingCall(context)
+                    }
+                    else -> {}
                 }
             }
         }

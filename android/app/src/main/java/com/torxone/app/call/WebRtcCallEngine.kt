@@ -1,31 +1,37 @@
 package com.torxone.app.call
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.Transport
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Production WebRTC call engine. Replaces the disabled stub.
+ * Production WebRTC call engine.
  * Uses WebRtcClient for real-time audio with SRTP encryption,
- * ICE NAT traversal, Opus codec, and echo cancellation.
+ * ICE NAT traversal, Opus codec, echo cancellation, single-flight ICE restarts,
+ * and periodic rolling quality monitoring.
  */
 class WebRtcCallEngine(
     private val context: Context,
     private val signaling: CallSignalingHandler,
     private val stateStore: CallStateStore,
-    private val audioRouteManager: AudioRouteManager
+    private val callAudioManager: CallAudioManager
 ) : CallEngine {
     companion object {
         private const val TAG = "WebRtcCallEngine"
+        const val RECONNECT_GRACE_MS = 15_000L
+        const val TRANSIENT_WAIT_MS = 2_000L
     }
 
     override val capabilities = CallEngineCapabilities(
@@ -40,22 +46,23 @@ class WebRtcCallEngine(
         )
     )
 
+    var diagnostics: CallConnectionDiagnostics? = null
     private var client: WebRtcClient? = null
     private var activeCallId: String? = null
     private var activePeerKey: String? = null
+    private var activePeerName: String = ""
     private var activeMode: CallMode = CallMode.AUDIO
     
     private var engineScope: CoroutineScope? = null
     private var reconnectJob: Job? = null
+    private var qualityMonitor: CallQualityMonitor? = null
+    private val iceRestartInProgress = AtomicBoolean(false)
     
     private var isIceConnected = false
     private var isMediaReceived = false
     private var isCleaningUp = false
 
-    override fun isAvailable(context: CallRouteContext): Boolean {
-        // WebRTC is now always available — the native library is bundled
-        return true
-    }
+    override fun isAvailable(context: CallRouteContext): Boolean = true
 
     override suspend fun startOutgoing(
         callId: String,
@@ -66,6 +73,7 @@ class WebRtcCallEngine(
             try {
                 activeCallId = callId
                 activePeerKey = contact.signingPublicKey
+                activePeerName = contact.name
                 activeMode = CallMode.AUDIO
 
                 val rtcClient = createAndInitClient()
@@ -73,15 +81,18 @@ class WebRtcCallEngine(
 
                 rtcClient.createPeerConnection()
                 rtcClient.startAudioSession()
-                audioRouteManager.startCallAudio()
+                callAudioManager.startCallAudio()
+                rtcClient.setMicEnabled(!callAudioManager.isMuted)
 
                 val offer = rtcClient.createOffer()
+                diagnostics?.markOfferSent()
                 signaling.sendOffer(contact.signingPublicKey, callId, CallMode.AUDIO, offer)
 
                 Log.d(TAG, "Outgoing call offer sent: $callId")
                 CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start outgoing call", e)
+                diagnostics?.markFailed("WebRTC init failed: ${e.message}")
                 cleanup()
                 CallStartResult.Failed("WebRTC initialization failed: ${e.message}")
             }
@@ -97,6 +108,7 @@ class WebRtcCallEngine(
             try {
                 activeCallId = callId
                 activePeerKey = contact.signingPublicKey
+                activePeerName = contact.name
                 activeMode = CallMode.AUDIO
 
                 val rtcClient = createAndInitClient()
@@ -104,16 +116,19 @@ class WebRtcCallEngine(
 
                 rtcClient.createPeerConnection()
                 rtcClient.startAudioSession()
-                audioRouteManager.startCallAudio()
+                callAudioManager.startCallAudio()
+                rtcClient.setMicEnabled(!callAudioManager.isMuted)
 
                 rtcClient.setRemoteDescription(offer)
                 val answer = rtcClient.createAnswer()
+                diagnostics?.markAnswerSent()
                 signaling.sendAnswer(contact.signingPublicKey, callId, CallMode.AUDIO, answer)
 
                 Log.d(TAG, "Incoming call accepted, answer sent: $callId")
                 CallStartResult.Started(callId, CallMode.AUDIO, CallEngineType.WEBRTC)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to accept incoming call", e)
+                diagnostics?.markFailed("WebRTC accept failed: ${e.message}")
                 cleanup()
                 CallStartResult.Failed("WebRTC accept failed: ${e.message}")
             }
@@ -121,14 +136,23 @@ class WebRtcCallEngine(
     }
 
     override fun handleRemoteDescription(description: AstraSessionDescription) {
-        client?.setRemoteDescription(description)
+        val rtcClient = client ?: return
+        diagnostics?.record("REMOTE_DESCRIPTION_SET")
+        rtcClient.setRemoteDescription(description)
     }
 
     override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {
-        Log.d(TAG, "Handling ICE restart renegotiation offer from $peerKey")
-        client?.setRemoteDescriptionSuspend(offer)
-        val answer = client?.createAnswer() ?: return
-        signaling.sendAnswer(peerKey, callId, activeMode, answer)
+        val rtcClient = client ?: return
+        Log.d(TAG, "Processing renegotiation offer for call $callId")
+        diagnostics?.record("RENEGOTIATION_PROCESSING")
+        try {
+            rtcClient.setRemoteDescription(offer)
+            val answer = rtcClient.createAnswer()
+            signaling.sendAnswer(peerKey, callId, activeMode, answer)
+            Log.d(TAG, "Renegotiation answer dispatched for call $callId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed responding to renegotiation offer", e)
+        }
     }
 
     override fun handleIceCandidate(candidate: AstraIceCandidate) {
@@ -140,13 +164,18 @@ class WebRtcCallEngine(
     }
 
     override fun end() {
-        Log.d(TAG, "Ending call")
+        Log.d(TAG, "Ending WebRTC call")
         cleanup()
     }
 
     private fun createAndInitClient(): WebRtcClient {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        engineScope = scope
         isCleaningUp = false
-        engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        isIceConnected = false
+        isMediaReceived = false
+        iceRestartInProgress.set(false)
+
         val rtcClient = WebRtcClient(
             context = context,
             iceServerProvider = DefaultIceServerProvider(),
@@ -154,6 +183,7 @@ class WebRtcCallEngine(
                 if (isCleaningUp) return@WebRtcClient
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
+                diagnostics?.markIceCandidateSent(candidate.sdpMid)
                 engineScope?.launch(Dispatchers.IO) {
                     signaling.sendIceCandidate(peerKey, callId, activeMode, candidate)
                 }
@@ -161,74 +191,168 @@ class WebRtcCallEngine(
             onConnected = {
                 reconnectJob?.cancel()
                 reconnectJob = null
+                iceRestartInProgress.set(false)
                 isIceConnected = true
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
                 Log.d(TAG, "ICE connected: $callId")
+                diagnostics?.markIceConnected()
                 if (isMediaReceived) {
                     checkFullyConnected()
                 } else {
-                    stateStore.update(CallUiState.IceConnecting(callId, peerKey, "", activeMode))
+                    stateStore.update(CallUiState.MediaConnecting(callId, peerKey, activePeerName, activeMode))
                 }
             },
             onDisconnected = {
-                if (isCleaningUp) return@WebRtcClient
-                Log.d(TAG, "Call disconnected, triggering reconnect")
-                stateStore.update(CallUiState.Reconnecting(activeCallId ?: "", activePeerKey ?: "", "", activeMode))
-                isIceConnected = false
-                // WebRtcClient will fire onReconnecting next if it was truly a disconnect
+                startStagedRecovery("ICE Disconnected")
             },
             onReconnecting = {
-                if (isCleaningUp) return@WebRtcClient
-                val callId = activeCallId ?: return@WebRtcClient
-                val peerKey = activePeerKey ?: return@WebRtcClient
-                Log.d(TAG, "Call reconnecting (ICE Restart): $callId")
-                stateStore.update(CallUiState.Reconnecting(callId, peerKey, "", activeMode))
-                isIceConnected = false
-                
-                if (reconnectJob?.isActive == true) return@WebRtcClient
-                
-                reconnectJob = engineScope?.launch {
-                    val startTime = System.currentTimeMillis()
-                    while (isActive) {
-                        try {
-                            val newOffer = client?.performIceRestart()
-                            if (newOffer != null) {
-                                signaling.sendOffer(peerKey, callId, activeMode, newOffer)
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to perform ICE restart", e)
-                        }
-                        
-                        // Wait for a long interval to prevent overlapping negotiations
-                        // If it succeeds, the onConnected callback cancels this job
-                        kotlinx.coroutines.delay(10000)
-                        
-                        if (System.currentTimeMillis() - startTime > 30000) {
-                            Log.e(TAG, "Reconnection timed out")
-                            withContext(Dispatchers.Main) {
-                                cleanup()
-                                stateStore.update(CallUiState.Ended("Connection lost"))
-                            }
-                            break
-                        }
-                    }
-                }
+                startStagedRecovery("WebRTC IceReconnecting")
             },
             onRemoteTrackReceived = {
                 isMediaReceived = true
                 val callId = activeCallId ?: return@WebRtcClient
                 val peerKey = activePeerKey ?: return@WebRtcClient
                 Log.d(TAG, "Media received: $callId")
+                diagnostics?.markRemoteTrackReceived()
+                diagnostics?.markAudioReady()
                 if (isIceConnected) {
                     checkFullyConnected()
                 } else {
-                    stateStore.update(CallUiState.MediaConnecting(callId, peerKey, "", activeMode))
+                    stateStore.update(CallUiState.MediaConnecting(callId, peerKey, activePeerName, activeMode))
+                }
+            },
+            onIceChecking = {
+                val callId = activeCallId ?: return@WebRtcClient
+                val peerKey = activePeerKey ?: return@WebRtcClient
+                diagnostics?.markIceChecking()
+                stateStore.update(CallUiState.IceConnecting(callId, peerKey, activePeerName, activeMode))
+            },
+            onIceGatheringChange = { gatheringState ->
+                if (gatheringState == org.webrtc.PeerConnection.IceGatheringState.GATHERING) {
+                    diagnostics?.markIceGatheringStart()
+                } else if (gatheringState == org.webrtc.PeerConnection.IceGatheringState.COMPLETE) {
+                    diagnostics?.markIceGatheringComplete(0)
                 }
             }
         )
+
+        qualityMonitor = CallQualityMonitor(
+            scope = scope,
+            statsProvider = { cb -> rtcClient.getStats(cb) },
+            onQualityUpdate = { quality, stats ->
+                diagnostics?.recordQualitySnapshot(stats.roundTripMs, stats.packetLossPercent, stats.jitterMs)
+                stateStore.updateConnectedState(quality = quality, stats = stats)
+            }
+        )
+
         rtcClient.initialize()
         return rtcClient
+    }
+
+    private fun startStagedRecovery(reason: String) {
+        if (isCleaningUp) return
+        val callId = activeCallId ?: return
+        val peerKey = activePeerKey ?: return
+
+        Log.d(TAG, "Starting staged recovery ($reason) for call $callId")
+        diagnostics?.markReconnecting(reason)
+        qualityMonitor?.stop()
+        isIceConnected = false
+
+        stateStore.update(
+            CallUiState.Reconnecting(
+                callId = callId,
+                peerKey = peerKey,
+                peerName = activePeerName,
+                mode = activeMode,
+                isMuted = callAudioManager.isMuted,
+                isSpeaker = callAudioManager.isSpeaker
+            )
+        )
+
+        if (reconnectJob?.isActive == true) return
+
+        reconnectJob = engineScope?.launch {
+            val startMonotonic = SystemClock.elapsedRealtime()
+
+            // Stage 1 (0-2s): Transient wait for self-healing
+            delay(TRANSIENT_WAIT_MS)
+            if (!isActive || isIceConnected) {
+                Log.d(TAG, "Self-healing resolved connection without full ICE restart")
+                return@launch
+            }
+
+            // Stage 2 (2-5s): Single-flight ICE restart
+            if (iceRestartInProgress.compareAndSet(false, true)) {
+                try {
+                    Log.i(TAG, "Executing single-flight ICE restart for call $callId")
+                    diagnostics?.record("ICE_RESTART_TRIGGERED")
+                    val newOffer = client?.performIceRestart()
+                    if (newOffer != null) {
+                        signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                        diagnostics?.record("ICE_RESTART_OFFER_SENT")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed performing ICE restart: ${e.message}", e)
+                    iceRestartInProgress.set(false)
+                }
+            }
+
+            // Stage 3 (5-15s): Wait within RECONNECT_GRACE_MS
+            while (isActive && !isIceConnected) {
+                val elapsed = SystemClock.elapsedRealtime() - startMonotonic
+                if (elapsed >= RECONNECT_GRACE_MS) {
+                    Log.e(TAG, "Reconnection grace period ($RECONNECT_GRACE_MS ms) expired")
+                    iceRestartInProgress.set(false)
+                    withContext(Dispatchers.Main) {
+                        cleanup()
+                        stateStore.update(CallUiState.Ended("Connection lost"))
+                    }
+                    break
+                }
+                delay(1000L)
+            }
+        }
+    }
+
+    fun triggerNetworkHandover() {
+        val peerKey = activePeerKey ?: return
+        val callId = activeCallId ?: return
+        Log.d(TAG, "Network handover triggered for call $callId")
+        diagnostics?.record("NETWORK_HANDOVER")
+        qualityMonitor?.stop()
+        isIceConnected = false
+
+        stateStore.update(
+            CallUiState.Reconnecting(
+                callId = callId,
+                peerKey = peerKey,
+                peerName = activePeerName,
+                mode = activeMode,
+                isMuted = callAudioManager.isMuted,
+                isSpeaker = callAudioManager.isSpeaker
+            )
+        )
+
+        if (!iceRestartInProgress.compareAndSet(false, true)) {
+            Log.d(TAG, "ICE restart already in progress, coalescing handover request")
+            return
+        }
+
+        engineScope?.launch {
+            try {
+                Log.i(TAG, "Executing handover single-flight ICE restart")
+                val newOffer = client?.performIceRestart()
+                if (newOffer != null) {
+                    signaling.sendOffer(peerKey, callId, activeMode, newOffer)
+                    diagnostics?.record("HANDOVER_RESTART_OFFER_SENT")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed ICE restart on network handover", e)
+                iceRestartInProgress.set(false)
+            }
+        }
     }
 
     private fun checkFullyConnected() {
@@ -236,27 +360,42 @@ class WebRtcCallEngine(
             val callId = activeCallId ?: return
             val peerKey = activePeerKey ?: return
             Log.d(TAG, "Call fully connected (ICE + Media): $callId")
+            diagnostics?.markFullyConnected()
+
+            // Restore mute and speaker settings
+            callAudioManager.restoreAudioState()
+            client?.setMicEnabled(!callAudioManager.isMuted)
+
             stateStore.update(CallUiState.Connected(
                 callId = callId,
                 peerKey = peerKey,
-                peerName = "", // Will be updated by CallManager
-                mode = activeMode
+                peerName = activePeerName,
+                mode = activeMode,
+                isMuted = callAudioManager.isMuted,
+                isSpeaker = callAudioManager.isSpeaker
             ))
+
+            // Start rolling quality monitor
+            qualityMonitor?.start()
         }
     }
 
     private fun cleanup() {
         if (isCleaningUp) return
         isCleaningUp = true
+        qualityMonitor?.stop()
+        qualityMonitor = null
+        iceRestartInProgress.set(false)
         engineScope?.cancel()
         engineScope = null
         reconnectJob?.cancel()
         reconnectJob = null
         client?.close()
         client = null
-        audioRouteManager.stopCallAudio()
+        callAudioManager.stopCallAudio()
         activeCallId = null
         activePeerKey = null
+        activePeerName = ""
         isIceConnected = false
         isMediaReceived = false
     }

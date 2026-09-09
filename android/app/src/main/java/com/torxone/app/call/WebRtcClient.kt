@@ -21,7 +21,10 @@ class WebRtcClient(
     private val onConnected: () -> Unit,
     private val onDisconnected: () -> Unit,
     private val onReconnecting: () -> Unit,
-    private val onRemoteTrackReceived: () -> Unit
+    private val onRemoteTrackReceived: () -> Unit,
+    private val onIceChecking: (() -> Unit)? = null,
+    private val onIceGatheringChange: ((PeerConnection.IceGatheringState) -> Unit)? = null,
+    private val privacyPolicy: CallPrivacyPolicy = CallPrivacyPolicy.DEFAULT
 ) {
     companion object {
         private const val TAG = "WebRtcClient"
@@ -36,36 +39,25 @@ class WebRtcClient(
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
 
     fun initialize() {
-        Log.d(TAG, "Initializing WebRTC PeerConnectionFactory")
-        eglBase = EglBase.create()
-
-        val initOptions = PeerConnectionFactory.InitializationOptions.builder(context)
-            .setEnableInternalTracer(false)
-            .createInitializationOptions()
-        PeerConnectionFactory.initialize(initOptions)
-
-        val audioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
-            .createAudioDeviceModule()
-
-        peerConnectionFactory = PeerConnectionFactory.builder()
-            .setAudioDeviceModule(audioDeviceModule)
-            .setOptions(PeerConnectionFactory.Options().apply {
-                disableEncryption = false
-                disableNetworkMonitor = false
-            })
-            .createPeerConnectionFactory()
-
-        Log.d(TAG, "PeerConnectionFactory created successfully")
+        Log.d(TAG, "Fetching WebRTC PeerConnectionFactory from WebRtcFactoryProvider")
+        eglBase = WebRtcFactoryProvider.getEglBase()
+        peerConnectionFactory = WebRtcFactoryProvider.getOrCreateFactory(context)
+        Log.d(TAG, "PeerConnectionFactory retrieved successfully")
     }
 
     suspend fun createPeerConnection() {
         val iceServers = iceServerProvider.getIceServers()
+        // Set ICE transport type based on privacy policy
+        val transportType = if (!privacyPolicy.allowDirectP2P && !privacyPolicy.allowSrflxCandidates) {
+            // Strict mode: relay only
+            PeerConnection.IceTransportsType.RELAY
+        } else {
+            PeerConnection.IceTransportsType.ALL
+        }
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            iceTransportsType = PeerConnection.IceTransportsType.ALL
+            iceTransportsType = transportType
         }
 
         peerConnection = peerConnectionFactory?.createPeerConnection(
@@ -73,7 +65,19 @@ class WebRtcClient(
             object : PeerConnection.Observer {
                 override fun onIceCandidate(candidate: IceCandidate?) {
                     candidate?.let {
-                        Log.d(TAG, "ICE candidate: ${it.sdpMid}")
+                        val candidateType = CallPrivacyPolicy.getCandidateType(it.sdp) ?: "unknown"
+                        // Filter candidates based on privacy policy
+                        if (!privacyPolicy.shouldSignalCandidate(it.sdp)) {
+                            Log.d(TAG, "ICE candidate filtered by privacy policy: type=$candidateType mid=${it.sdpMid}")
+                            CallSecurityLogger.logSecurityEvent(
+                                CallSecurityLogger.EVENT_PRIVATE_IP_CANDIDATE_STRIPPED,
+                                callId = null,
+                                peerKey = null,
+                                detail = "type=$candidateType"
+                            )
+                            return
+                        }
+                        Log.d(TAG, "ICE candidate signaled: type=$candidateType mid=${it.sdpMid}")
                         onIceCandidate(AstraIceCandidate(it.sdpMid, it.sdpMLineIndex, it.sdp))
                     }
                 }
@@ -81,6 +85,7 @@ class WebRtcClient(
                 override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                     Log.d(TAG, "ICE connection state: $state")
                     when (state) {
+                        PeerConnection.IceConnectionState.CHECKING -> onIceChecking?.invoke()
                         PeerConnection.IceConnectionState.CONNECTED,
                         PeerConnection.IceConnectionState.COMPLETED -> onConnected()
                         PeerConnection.IceConnectionState.DISCONNECTED,
@@ -96,7 +101,10 @@ class WebRtcClient(
 
                 override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
                 override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-                override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
+                override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
+                    Log.d(TAG, "ICE gathering state: $state")
+                    state?.let { onIceGatheringChange?.invoke(it) }
+                }
                 override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
                 override fun onAddStream(stream: MediaStream?) {}
                 override fun onRemoveStream(stream: MediaStream?) {}
@@ -299,8 +307,24 @@ class WebRtcClient(
         Log.d(TAG, "Mic enabled: $enabled")
     }
 
+    fun getStats(callback: (org.webrtc.RTCStatsReport?) -> Unit) {
+        val pc = peerConnection
+        if (pc == null) {
+            callback(null)
+            return
+        }
+        try {
+            pc.getStats { report ->
+                callback(report)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error querying WebRTC stats: ${e.message}")
+            callback(null)
+        }
+    }
+
     fun close() {
-        Log.d(TAG, "Closing WebRTC client")
+        Log.d(TAG, "Closing WebRTC client (releasing connection and tracks)")
         localAudioTrack?.setEnabled(false)
         localAudioTrack?.dispose()
         localAudioTrack = null
@@ -309,9 +333,7 @@ class WebRtcClient(
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
-        peerConnectionFactory?.dispose()
         peerConnectionFactory = null
-        eglBase?.release()
         eglBase = null
         started = false
     }

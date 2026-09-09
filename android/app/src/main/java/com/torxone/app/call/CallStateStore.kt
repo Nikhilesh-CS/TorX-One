@@ -16,10 +16,19 @@ enum class CallMode {
     VOICE_NOTE
 }
 
+enum class CallQuality {
+    UNKNOWN,
+    GOOD,
+    FAIR,
+    POOR
+}
+
 data class CallStats(
     val bitrateKbps: Int = 0,
     val packetLossPercent: Float = 0f,
-    val roundTripMs: Int = 0
+    val roundTripMs: Int = 0,
+    val jitterMs: Int = 0,
+    val audioLevel: Float = 0f
 )
 
 sealed class CallUiState {
@@ -69,13 +78,17 @@ sealed class CallUiState {
         val isMuted: Boolean = false,
         val isSpeaker: Boolean = false,
         val callDurationSeconds: Int = 0,
-        val stats: CallStats = CallStats()
+        val stats: CallStats = CallStats(),
+        val quality: CallQuality = CallQuality.GOOD
     ) : CallUiState()
     data class Reconnecting(
         val callId: String,
         val peerKey: String,
         val peerName: String,
-        val mode: CallMode
+        val mode: CallMode,
+        val isMuted: Boolean = false,
+        val isSpeaker: Boolean = false,
+        val callDurationSeconds: Int = 0
     ) : CallUiState()
     data class Ended(val reason: String, val durationSeconds: Int = 0) : CallUiState()
     data class Unavailable(val reason: String) : CallUiState()
@@ -93,19 +106,86 @@ class CallStateStore {
         _state.value = CallUiState.Idle
     }
 
-    /** Update mute/speaker/duration on the currently Connected state without replacing the whole state. */
+    /** Update mute/speaker/duration/stats/quality on the currently Connected state without replacing the whole state. */
     fun updateConnectedState(
         isMuted: Boolean? = null,
         isSpeaker: Boolean? = null,
         durationSeconds: Int? = null,
-        stats: CallStats? = null
+        stats: CallStats? = null,
+        quality: CallQuality? = null
     ) {
         val current = _state.value as? CallUiState.Connected ?: return
         _state.value = current.copy(
             isMuted = isMuted ?: current.isMuted,
             isSpeaker = isSpeaker ?: current.isSpeaker,
             callDurationSeconds = durationSeconds ?: current.callDurationSeconds,
-            stats = stats ?: current.stats
+            stats = stats ?: current.stats,
+            quality = quality ?: current.quality
         )
     }
 }
+
+val CallUiState.isActiveCall: Boolean
+    get() = when (this) {
+        is CallUiState.Outgoing,
+        is CallUiState.Ringing,
+        is CallUiState.Accepted,
+        is CallUiState.Negotiating,
+        is CallUiState.IceConnecting,
+        is CallUiState.MediaConnecting,
+        is CallUiState.Connected,
+        is CallUiState.Reconnecting -> true
+
+        is CallUiState.Idle,
+        is CallUiState.Ended,
+        is CallUiState.Unavailable -> false
+    }
+
+val CallUiState.activeCallId: String?
+    get() = when (this) {
+        is CallUiState.Outgoing -> callId
+        is CallUiState.Ringing -> callId
+        is CallUiState.Accepted -> callId
+        is CallUiState.Negotiating -> callId
+        is CallUiState.IceConnecting -> callId
+        is CallUiState.MediaConnecting -> callId
+        is CallUiState.Connected -> callId
+        is CallUiState.Reconnecting -> callId
+        else -> null
+    }
+
+val CallUiState.peerNameOrEmpty: String
+    get() = when (this) {
+        is CallUiState.Outgoing -> peerName
+        is CallUiState.Ringing -> peerName
+        is CallUiState.Accepted -> peerName
+        is CallUiState.Negotiating -> peerName
+        is CallUiState.IceConnecting -> peerName
+        is CallUiState.MediaConnecting -> peerName
+        is CallUiState.Connected -> peerName
+        is CallUiState.Reconnecting -> peerName
+        else -> ""
+    }
+
+fun CallUiState.bannerStatusText(): String = when (this) {
+    is CallUiState.Outgoing -> "Calling…"
+    is CallUiState.Ringing -> if (direction == CallDirection.INCOMING) "Incoming call" else "Ringing…"
+    is CallUiState.Accepted -> "Connecting…"
+    is CallUiState.Negotiating -> "Connecting…"
+    is CallUiState.IceConnecting -> "Connecting to peer…"
+    is CallUiState.MediaConnecting -> "Starting audio…"
+    is CallUiState.Connected -> {
+        val m = callDurationSeconds / 60
+        val s = callDurationSeconds % 60
+        if (quality == CallQuality.POOR) {
+            java.lang.String.format(java.util.Locale.US, "⚠ Poor connection • %02d:%02d", m, s)
+        } else {
+            java.lang.String.format(java.util.Locale.US, "Connected • %02d:%02d", m, s)
+        }
+    }
+    is CallUiState.Reconnecting -> "Reconnecting…"
+    is CallUiState.Idle,
+    is CallUiState.Ended,
+    is CallUiState.Unavailable -> ""
+}
+

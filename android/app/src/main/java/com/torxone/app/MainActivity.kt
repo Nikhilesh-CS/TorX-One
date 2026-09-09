@@ -44,6 +44,8 @@ import kotlinx.coroutines.launch
 import android.widget.Toast
 import com.torxone.app.call.CallDirection
 import com.torxone.app.call.CallUiState
+import com.torxone.app.call.activeCallId
+import com.torxone.app.call.isActiveCall
 
 class MainActivity : androidx.fragment.app.FragmentActivity() {
 
@@ -301,8 +303,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     }
 
                     val animDuration = if (reduceMotion) 0 else 300
-                    NavHost(
-                        navController = navController,
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        NavHost(
+                            navController = navController,
                         startDestination = if (hasIdentity) "main" else "setup",
                         enterTransition = { fadeIn(animationSpec = tween(animDuration)) + slideInHorizontally { if (reduceMotion) 0 else it / 4 } },
                         exitTransition = { fadeOut(animationSpec = tween(animDuration)) },
@@ -456,32 +459,57 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
                     meshService?.let { activeService ->
                         val callState by activeService.callManager.stateStore.state.collectAsState()
+                        var currentCallId by remember { mutableStateOf<String?>(null) }
                         var isCallMinimized by remember { mutableStateOf(false) }
 
                         LaunchedEffect(callState) {
-                            if (callState is com.torxone.app.call.CallUiState.Idle) {
+                            when (callState) {
+                                is com.torxone.app.call.CallUiState.Idle,
+                                is com.torxone.app.call.CallUiState.Ended -> {
+                                    isCallMinimized = false
+                                    currentCallId = null
+                                }
+                                is com.torxone.app.call.CallUiState.Unavailable -> {
+                                    // Let dialog show if not minimized
+                                }
+                                else -> {
+                                    val id = callState.activeCallId
+                                    if (id != null && id != currentCallId) {
+                                        currentCallId = id
+                                        isCallMinimized = false
+                                    }
+                                }
+                            }
+                        }
+
+                        LaunchedEffect(intent) {
+                            val openCallId = intent?.getStringExtra("open_call")
+                            if (openCallId != null && callState.isActiveCall) {
                                 isCallMinimized = false
                             }
                         }
 
-                        com.torxone.app.ui.screens.InCallScreen(
-                            state = callState,
-                            isMinimized = isCallMinimized,
+                        com.torxone.app.ui.screens.CallOverlayHost(
+                            callState = callState,
+                            isCallMinimized = isCallMinimized,
                             onMinimize = { isCallMinimized = true },
                             onExpand = { isCallMinimized = false },
                             onAccept = { activeService.callManager.acceptIncomingCall() },
                             onReject = { activeService.callManager.rejectIncomingCall() },
                             onEnd = {
                                 isCallMinimized = false
+                                currentCallId = null
                                 activeService.callManager.endCall()
                             },
                             onToggleMute = { activeService.callManager.toggleMute() },
                             onToggleSpeaker = { activeService.callManager.toggleSpeaker() },
-                            onDismissEnded = {
+                            onDismissUnavailable = {
                                 isCallMinimized = false
+                                currentCallId = null
                                 activeService.callManager.stateStore.reset()
                             }
                         )
+                    }
                     }
                 }
             }

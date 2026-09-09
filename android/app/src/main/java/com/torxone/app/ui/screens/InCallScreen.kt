@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.NorthEast
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,90 +30,80 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.torxone.app.call.CallDirection
+import com.torxone.app.call.CallQuality
 import com.torxone.app.call.CallUiState
+import com.torxone.app.call.bannerStatusText
+import com.torxone.app.call.isActiveCall
+import com.torxone.app.call.peerNameOrEmpty
 import com.torxone.app.ui.components.AstraAvatar
 import kotlinx.coroutines.delay
 
 @Composable
-fun InCallScreen(
-    state: CallUiState,
-    isMinimized: Boolean = false,
-    onMinimize: () -> Unit = {},
-    onExpand: () -> Unit = {},
+fun CallOverlayHost(
+    callState: CallUiState,
+    isCallMinimized: Boolean,
+    onMinimize: () -> Unit,
+    onExpand: () -> Unit,
     onAccept: () -> Unit,
     onReject: () -> Unit,
     onEnd: () -> Unit,
     onToggleMute: () -> Unit,
     onToggleSpeaker: () -> Unit,
-    onDismissEnded: () -> Unit
+    onDismissUnavailable: () -> Unit
 ) {
-    if (state is CallUiState.Idle) return
+    if (callState is CallUiState.Idle || callState is CallUiState.Ended) {
+        return
+    }
 
-    if (isMinimized && state !is CallUiState.Ended && state !is CallUiState.Unavailable) {
+    if (callState is CallUiState.Unavailable) {
+        AlertDialog(
+            onDismissRequest = onDismissUnavailable,
+            title = { Text("Call unavailable") },
+            text = { Text(callState.reason) },
+            confirmButton = {
+                TextButton(onClick = onDismissUnavailable) { Text("Close") }
+            }
+        )
+        return
+    }
+
+    if (!callState.isActiveCall) {
+        return
+    }
+
+    if (isCallMinimized) {
         ActiveCallBanner(
-            state = state,
+            state = callState,
             onExpand = onExpand,
             onToggleMute = onToggleMute,
             onEnd = onEnd
         )
-        return
-    }
-
-    if (state is CallUiState.Unavailable) {
-        AlertDialog(
-            onDismissRequest = onDismissEnded,
-            title = { Text("Call unavailable") },
-            text = { Text(state.reason) },
-            confirmButton = {
-                TextButton(onClick = onDismissEnded) { Text("Close") }
-            }
+    } else {
+        InCallScreen(
+            state = callState,
+            onMinimize = onMinimize,
+            onAccept = onAccept,
+            onReject = onReject,
+            onEnd = onEnd,
+            onToggleMute = onToggleMute,
+            onToggleSpeaker = onToggleSpeaker
         )
-        return
     }
+}
 
-    if (state is CallUiState.Ended) {
-        LaunchedEffect(Unit) {
-            delay(2000)
-            onDismissEnded()
-        }
-        Dialog(
-            onDismissRequest = onDismissEnded,
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color(0xFF1A1A1A)
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text("Call Ended", color = Color.White, fontSize = 24.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(state.reason, color = Color.Gray, fontSize = 16.sp)
-                    if (state.durationSeconds > 0) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(formatDuration(state.durationSeconds), color = Color.Gray, fontSize = 14.sp)
-                    }
-                }
-            }
-        }
-        return
-    }
+@Composable
+fun InCallScreen(
+    state: CallUiState,
+    onMinimize: () -> Unit,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+    onEnd: () -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleSpeaker: () -> Unit
+) {
+    if (!state.isActiveCall) return
 
-    // Active Call States (Ringing, Connecting, Connected)
-    val peerName = when (state) {
-        is CallUiState.Ringing -> state.peerName
-        is CallUiState.Outgoing -> state.peerName
-        is CallUiState.Accepted -> state.peerName
-        is CallUiState.Negotiating -> state.peerName
-        is CallUiState.IceConnecting -> state.peerName
-        is CallUiState.MediaConnecting -> state.peerName
-        is CallUiState.Reconnecting -> state.peerName
-        is CallUiState.Connected -> state.peerName
-        else -> ""
-    }
+    val peerName = state.peerNameOrEmpty
 
     Dialog(
         onDismissRequest = onMinimize,
@@ -158,6 +149,16 @@ fun InCallScreen(
 
                 // Top section (Status & Peer)
                 Spacer(modifier = Modifier.weight(1f))
+
+                if (state is CallUiState.Ringing && state.direction == CallDirection.INCOMING) {
+                    Text(
+                        text = "Incoming Call",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.height(20.dp))
+                }
                 
                 AstraAvatar(model = null, name = peerName, size = 120.dp)
                 
@@ -174,14 +175,21 @@ fun InCallScreen(
                 
                 // Status / Timer
                 val statusText = when (state) {
-                    is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming TorX One Call" else "Ringing..."
-                    is CallUiState.Outgoing -> "Calling..."
-                    is CallUiState.Accepted -> "Connecting..."
-                    is CallUiState.Negotiating -> "Securing Call..."
-                    is CallUiState.IceConnecting -> "Connecting to peer..."
-                    is CallUiState.MediaConnecting -> "Starting audio..."
-                    is CallUiState.Reconnecting -> "Reconnecting..."
-                    is CallUiState.Connected -> formatDuration(state.callDurationSeconds)
+                    is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "🔊 Ringing..." else "Ringing…"
+                    is CallUiState.Outgoing -> "Calling…"
+                    is CallUiState.Accepted -> "Connecting…"
+                    is CallUiState.Negotiating -> "Connecting…"
+                    is CallUiState.IceConnecting -> "Connecting to peer…"
+                    is CallUiState.MediaConnecting -> "Starting audio…"
+                    is CallUiState.Reconnecting -> "Reconnecting…"
+                    is CallUiState.Connected -> {
+                        val duration = formatDuration(state.callDurationSeconds)
+                        if (state.quality == CallQuality.POOR) {
+                            "⚠️ Poor connection • $duration"
+                        } else {
+                            duration
+                        }
+                    }
                     else -> ""
                 }
                 
@@ -336,28 +344,17 @@ fun ActiveCallBanner(
     state: CallUiState,
     onExpand: () -> Unit,
     onToggleMute: () -> Unit,
-    onEnd: () -> Unit
+    onEnd: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val peerName = when (state) {
-        is CallUiState.Ringing -> state.peerName
-        is CallUiState.Outgoing -> state.peerName
-        is CallUiState.Accepted -> state.peerName
-        is CallUiState.Negotiating -> state.peerName
-        is CallUiState.IceConnecting -> state.peerName
-        is CallUiState.MediaConnecting -> state.peerName
-        is CallUiState.Reconnecting -> state.peerName
-        is CallUiState.Connected -> state.peerName
-        else -> ""
-    }
-    val statusText = when (state) {
-        is CallUiState.Connected -> formatDuration(state.callDurationSeconds)
-        is CallUiState.Ringing -> if (state.direction == CallDirection.INCOMING) "Incoming Call" else "Ringing..."
-        else -> "Call Active"
-    }
+    if (!state.isActiveCall) return
+
+    val peerName = state.peerNameOrEmpty
+    val statusText = state.bannerStatusText()
     val isMuted = (state as? CallUiState.Connected)?.isMuted == true
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
             .statusBarsPadding()
@@ -392,37 +389,42 @@ fun ActiveCallBanner(
                     )
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f, fill = false)) {
                     Text(
                         text = peerName,
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     Text(
                         text = statusText,
                         color = Color(0xFF81C784),
-                        fontSize = 13.sp
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(
-                    onClick = onToggleMute,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(if (isMuted) Color.White.copy(alpha = 0.2f) else Color.Transparent)
-                ) {
-                    Icon(
-                        imageVector = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
-                        contentDescription = "Mute",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                if (state is CallUiState.Connected) {
+                    IconButton(
+                        onClick = onToggleMute,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(if (isMuted) Color.White.copy(alpha = 0.2f) else Color.Transparent)
+                    ) {
+                        Icon(
+                            imageVector = if (isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                            contentDescription = "Mute",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                 }
-                Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = onEnd,
                     modifier = Modifier
@@ -435,6 +437,20 @@ fun ActiveCallBanner(
                         contentDescription = "End Call",
                         tint = Color.White,
                         modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(
+                    onClick = onExpand,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.NorthEast,
+                        contentDescription = "Expand Call",
+                        tint = Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
