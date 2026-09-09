@@ -14,6 +14,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -63,10 +65,9 @@ class CallManager(
     private val terminatedCalls = ConcurrentHashMap<String, Long>()
     @Volatile
     private var callGeneration: Long = 0L
-    @Volatile
-    private var currentRemoteGeneration: Long = 0L
-    @Volatile
-    private var lastProcessedSeq: Int = 0
+    private data class SignalOrderingState(var generation: Long = 0L, var lastSeq: Int = 0)
+    private val signalLocks = ConcurrentHashMap<String, Mutex>()
+    private val signalOrderingStates = ConcurrentHashMap<String, SignalOrderingState>()
     private val earlyIceCandidates = ConcurrentHashMap<String, MutableList<AstraIceCandidate>>()
     private val processedSignalIds = java.util.Collections.synchronizedSet(LinkedHashSet<String>())
     private val outOfOrderSignals = ConcurrentHashMap<String, java.util.concurrent.ConcurrentSkipListMap<Int, Pair<String, CallSignal>>>()
@@ -316,6 +317,7 @@ class CallManager(
             rememberTerminated(endingCallId)
             earlyIceCandidates.remove(endingCallId)
             outOfOrderSignals.remove(endingCallId)
+            signalOrderingStates.remove(endingCallId)
             signaling.clearCallSignals(endingCallId)
             if (endingPeerKey != null) {
                 scope.launch { signaling.sendEnd(endingPeerKey, endingCallId, activeMode, reason, callGeneration) }
@@ -346,131 +348,78 @@ class CallManager(
         scope.launch {
             runCatching {
                 val signal = signaling.parse(rawPayload)
-
-                // 1. Handle incoming CALL_ACK directly
-                if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_ACK) {
-                    signaling.handleAck(signal)
-                    return@launch
-                }
-
-                val callId = signal.callId
-
-                // 2. Check if this call has already been terminated
-                if (isTerminated(callId)) {
-                    Log.d(TAG, "Signal $packetType received for terminated call $callId, re-ACKing and ignoring")
-                    signaling.sendAck(
-                        peerKey = senderKey,
-                        callId = callId,
-                        ackSignalId = signal.signalId,
-                        generation = signal.generation,
-                        seq = signal.seq,
-                        ackType = "TERMINATED_ACK"
-                    )
-                    return@launch
-                }
-
-                // 3. Exact signalId duplicate detection (Lost ACK scenario)
-                val isDuplicateSignalId = synchronized(processedSignalIds) {
-                    processedSignalIds.contains(signal.signalId)
-                }
-                if (isDuplicateSignalId) {
-                    Log.d(TAG, "Duplicate signalId=${signal.signalId} received for call $callId, re-ACKing and ignoring")
-                    val ackType = when (packetType) {
-                        com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> "OFFER_ACK"
-                        com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> "ANSWER_ACK"
-                        com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> "ICE_ACK"
-                        com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> "END_ACK"
-                        else -> "CALL_ACK"
-                    }
-                    signaling.sendAck(
-                        peerKey = senderKey,
-                        callId = callId,
-                        ackSignalId = signal.signalId,
-                        generation = signal.generation,
-                        seq = signal.seq,
-                        ackType = ackType
-                    )
-                    return@launch
-                }
-
-                // 4. Strict generation rules
-                // Older generation: ignore + re-ACK so sender stops retrying
-                if (signal.generation > 0L && signal.generation < currentRemoteGeneration) {
-                    Log.w(TAG, "Dropping older generation signal (gen=${signal.generation} < curr=$currentRemoteGeneration) for call $callId")
-                    signaling.sendAck(
-                        peerKey = senderKey,
-                        callId = callId,
-                        ackSignalId = signal.signalId,
-                        generation = signal.generation,
-                        seq = signal.seq,
-                        ackType = "STALE_GEN_ACK"
-                    )
-                    return@launch
-                }
-
-                // Newer generation: reset expected sequence window
-                if (signal.generation > currentRemoteGeneration) {
-                    Log.i(TAG, "Newer generation signal (gen=${signal.generation} > curr=$currentRemoteGeneration) for call $callId - resetting seq window")
-                    currentRemoteGeneration = signal.generation
-                    lastProcessedSeq = 0
-                    outOfOrderSignals.remove(callId)
-                }
-
-                // 5. CALL_END is authoritative and bypasses sequence ordering
-                if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_END) {
-                    rememberSignalId(signal.signalId)
-                    if (signal.seq > lastProcessedSeq) {
-                        lastProcessedSeq = signal.seq
-                    }
-                    handleRemoteEnd(signal, senderKey)
-                    return@launch
-                }
-
-                // 6. Same generation sequence rules
-                if (signal.generation == currentRemoteGeneration && signal.seq > 0) {
-                    if (signal.seq <= lastProcessedSeq) {
-                        Log.d(TAG, "Duplicate or old seq=${signal.seq} <= lastProcessedSeq=$lastProcessedSeq, re-ACKing and ignoring")
-                        signaling.sendAck(
-                            peerKey = senderKey,
-                            callId = callId,
-                            ackSignalId = signal.signalId,
-                            generation = signal.generation,
-                            seq = signal.seq,
-                            ackType = "DUP_SEQ_ACK"
-                        )
-                        return@launch
-                    }
-
-                    // Strict ordering: if signal.seq > lastProcessedSeq + 1, buffer it
-                    if (lastProcessedSeq > 0 && signal.seq > lastProcessedSeq + 1) {
-                        Log.d(TAG, "Out-of-order signal seq=${signal.seq} (expected ${lastProcessedSeq + 1}), buffering")
-                        val buffer = outOfOrderSignals.getOrPut(callId) { java.util.concurrent.ConcurrentSkipListMap() }
-                        if (buffer.size < 100) {
-                            buffer[signal.seq] = Pair(packetType, signal)
-                        }
-                        return@launch
-                    }
-                }
-
-                // 7. Process current signal
-                processSignal(packetType, signal, senderKey)
-
-                // 8. Drain any subsequent buffered signals that can now be processed in order
-                val buffer = outOfOrderSignals[callId]
-                if (buffer != null) {
-                    while (true) {
-                        val nextSeq = lastProcessedSeq + 1
-                        val nextEntry = buffer.remove(nextSeq) ?: break
-                        Log.d(TAG, "Processing buffered signal seq=$nextSeq type=${nextEntry.first}")
-                        processSignal(nextEntry.first, nextEntry.second, senderKey)
-                    }
-                }
+                val callLock = signalLocks.computeIfAbsent(signal.callId) { Mutex() }
+                callLock.withLock { handleSignalLocked(packetType, signal, senderKey) }
             }.onFailure { e ->
-                if (e is SecurityException) {
-                    Log.w(TAG, "Rejected call signal $packetType: ${e.message}")
-                } else {
-                    Log.e(TAG, "Failed to handle call signal $packetType", e)
-                }
+                if (e is SecurityException) Log.w(TAG, "Rejected call signal $packetType: ${e.message}")
+                else Log.e(TAG, "Failed to handle call signal $packetType", e)
+            }
+        }
+    }
+
+    private suspend fun handleSignalLocked(packetType: String, signal: CallSignal, senderKey: String) {
+        if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_ACK) {
+            signaling.handleAck(signal)
+            return
+        }
+
+        val callId = signal.callId
+        if (isTerminated(callId)) {
+            Log.d(TAG, "Signal $packetType received for terminated call $callId, re-ACKing and ignoring")
+            signaling.sendAck(senderKey, callId, signal.signalId, signal.generation, signal.seq, "TERMINATED_ACK")
+            return
+        }
+
+        val duplicate = synchronized(processedSignalIds) { processedSignalIds.contains(signal.signalId) }
+        if (duplicate) {
+            val ackType = when (packetType) {
+                com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> "OFFER_ACK"
+                com.torxone.app.network.MeshProtocol.TYPE_CALL_ANSWER -> "ANSWER_ACK"
+                com.torxone.app.network.MeshProtocol.TYPE_ICE_CANDIDATE -> "ICE_ACK"
+                com.torxone.app.network.MeshProtocol.TYPE_CALL_END -> "END_ACK"
+                else -> "CALL_ACK"
+            }
+            signaling.sendAck(senderKey, callId, signal.signalId, signal.generation, signal.seq, ackType)
+            return
+        }
+
+        val ordering = signalOrderingStates.computeIfAbsent(callId) { SignalOrderingState() }
+        if (signal.generation > 0L && signal.generation < ordering.generation) {
+            signaling.sendAck(senderKey, callId, signal.signalId, signal.generation, signal.seq, "STALE_GEN_ACK")
+            return
+        }
+        if (signal.generation > ordering.generation) {
+            ordering.generation = signal.generation
+            ordering.lastSeq = 0
+            outOfOrderSignals.remove(callId)
+        }
+
+        if (packetType == com.torxone.app.network.MeshProtocol.TYPE_CALL_END) {
+            rememberSignalId(signal.signalId)
+            ordering.lastSeq = maxOf(ordering.lastSeq, signal.seq)
+            handleRemoteEnd(signal, senderKey)
+            return
+        }
+
+        if (signal.generation == ordering.generation && signal.seq > 0) {
+            if (signal.seq <= ordering.lastSeq) {
+                signaling.sendAck(senderKey, callId, signal.signalId, signal.generation, signal.seq, "DUP_SEQ_ACK")
+                return
+            }
+            if (signal.seq > ordering.lastSeq + 1) {
+                val buffer = outOfOrderSignals.getOrPut(callId) { java.util.concurrent.ConcurrentSkipListMap() }
+                if (buffer.size < 100) buffer[signal.seq] = Pair(packetType, signal)
+                return
+            }
+        }
+
+        processSignal(packetType, signal, senderKey)
+        val buffer = outOfOrderSignals[callId]
+        if (buffer != null) {
+            while (true) {
+                val nextSeq = ordering.lastSeq + 1
+                val nextEntry = buffer.remove(nextSeq) ?: break
+                processSignal(nextEntry.first, nextEntry.second, senderKey)
             }
         }
     }
@@ -478,7 +427,7 @@ class CallManager(
     private suspend fun processSignal(packetType: String, signal: CallSignal, senderKey: String) {
         rememberSignalId(signal.signalId)
         if (signal.seq > 0) {
-            lastProcessedSeq = signal.seq
+            signalOrderingStates.computeIfAbsent(signal.callId) { SignalOrderingState() }.lastSeq = signal.seq
         }
         when (packetType) {
             com.torxone.app.network.MeshProtocol.TYPE_CALL_OFFER -> handleOffer(signal, senderKey)
@@ -680,6 +629,7 @@ class CallManager(
             rememberTerminated(signal.callId)
             earlyIceCandidates.remove(signal.callId)
             outOfOrderSignals.remove(signal.callId)
+            signalOrderingStates.remove(signal.callId)
             signaling.clearCallSignals(signal.callId)
             signaling.sendAck(
                 peerKey = senderKey,
@@ -720,6 +670,7 @@ class CallManager(
         rememberTerminated(signal.callId)
         earlyIceCandidates.remove(signal.callId)
         outOfOrderSignals.remove(signal.callId)
+        signalOrderingStates.remove(signal.callId)
         signaling.clearCallSignals(signal.callId)
         activeEngine?.end()
         activeEngine = null
