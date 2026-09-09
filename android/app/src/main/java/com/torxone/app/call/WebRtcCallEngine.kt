@@ -60,6 +60,8 @@ class WebRtcCallEngine(
     
     private var isIceConnected = false
     private var isMediaReceived = false
+    /** True only after ICE + remote media have established a real call. */
+    private var hasEstablishedCall = false
     private var isCleaningUp = false
 
     override fun isAvailable(context: CallRouteContext): Boolean = true
@@ -174,6 +176,7 @@ class WebRtcCallEngine(
         isCleaningUp = false
         isIceConnected = false
         isMediaReceived = false
+        hasEstablishedCall = false
         iceRestartInProgress.set(false)
 
         val rtcClient = WebRtcClient(
@@ -252,6 +255,10 @@ class WebRtcCallEngine(
 
     private fun startStagedRecovery(reason: String) {
         if (isCleaningUp) return
+        if (!hasEstablishedCall) {
+            Log.d(TAG, "Ignoring ICE recovery before call is fully established: $reason")
+            return
+        }
         val callId = activeCallId ?: return
         val peerKey = activePeerKey ?: return
 
@@ -317,6 +324,10 @@ class WebRtcCallEngine(
     }
 
     fun triggerNetworkHandover() {
+        if (!hasEstablishedCall) {
+            Log.d(TAG, "Ignoring network handover before call is fully established")
+            return
+        }
         val peerKey = activePeerKey ?: return
         val callId = activeCallId ?: return
         Log.d(TAG, "Network handover triggered for call $callId")
@@ -361,6 +372,7 @@ class WebRtcCallEngine(
             val peerKey = activePeerKey ?: return
             Log.d(TAG, "Call fully connected (ICE + Media): $callId")
             diagnostics?.markFullyConnected()
+            hasEstablishedCall = true
 
             // Restore mute and speaker settings
             callAudioManager.restoreAudioState()
@@ -386,6 +398,7 @@ class WebRtcCallEngine(
         qualityMonitor?.stop()
         qualityMonitor = null
         iceRestartInProgress.set(false)
+        hasEstablishedCall = false
         engineScope?.cancel()
         engineScope = null
         reconnectJob?.cancel()
