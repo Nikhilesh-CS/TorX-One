@@ -131,12 +131,15 @@ class NearbyConnectionManager(private val context: Context) {
         _pendingRequests.value = _pendingRequests.value.filter { it.endpointId != endpointId }
     }
 
-    fun sendRaw(endpointId: String, data: String) {
+    /** Returns true when Nearby accepted the payload task for transmission. */
+    fun sendRaw(endpointId: String, data: String): Boolean {
         try {
             val payload = Payload.fromBytes(data.toByteArray(Charsets.UTF_8))
             connectionsClient.sendPayload(endpointId, payload)
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send raw payload to $endpointId", e)
+            return false
         }
     }
 

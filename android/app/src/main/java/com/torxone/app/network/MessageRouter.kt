@@ -279,7 +279,7 @@ class MessageRouter(
         val connected = nearbyManager.connectedEndpoints.value
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
             Log.d(TAG, "[NEARBY-SESSION] Sending direct to ${contact.endpointId}")
-            val ok = try { nearbyManager.sendRaw(contact.endpointId, wireJson); true }
+            val ok = try { nearbyManager.sendRaw(contact.endpointId, wireJson) }
             catch (e: Exception) { Log.w(TAG, "[NEARBY-SESSION] Send failed: ${e.message}"); false }
             if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
@@ -301,8 +301,10 @@ class MessageRouter(
                 messageId = messageId,
                 senderOnion = myOnionAddress.ifBlank { null }
             )
-            connected.forEach { endpoint -> runCatching { nearbyManager.sendRaw(endpoint, relayWire) } }
-            return SendResult(true, Transport.NEARBY_RELAY)
+            val relayed = connected.any { endpoint ->
+                runCatching { nearbyManager.sendRaw(endpoint, relayWire) }.getOrDefault(false)
+            }
+            if (relayed) return SendResult(true, Transport.NEARBY_RELAY)
         }
 
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
@@ -316,8 +318,8 @@ class MessageRouter(
     ): SendResult {
         val connected = nearbyManager.connectedEndpoints.value
         if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-            val ok = try {
-                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType)); true
+                val ok = try {
+                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
             } catch (e: Exception) { Log.w(TAG, "[NEARBY] Direct send failed: ${e.message}"); false }
             if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
         }
@@ -336,8 +338,10 @@ class MessageRouter(
                 type = MeshProtocol.TYPE_RELAY,
                 innerType = messageType
             )
-            connected.forEach { endpoint -> runCatching { nearbyManager.sendRaw(endpoint, wire) } }
-            return SendResult(true, Transport.NEARBY_RELAY)
+            val relayed = connected.any { endpoint ->
+                runCatching { nearbyManager.sendRaw(endpoint, wire) }.getOrDefault(false)
+            }
+            if (relayed) return SendResult(true, Transport.NEARBY_RELAY)
         }
 
         return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
@@ -479,7 +483,7 @@ class MessageRouter(
     }
 
     fun openCallTransportSession(callId: String, contact: ContactEntity, transport: Transport): com.torxone.app.call.CallTransportSession {
-        return com.torxone.app.call.CallTransportSession(callId = callId, peerKey = contact.signingPublicKey, transport = transport, endpointId = contact.endpointId.takeIf { it.isNotBlank() }, onionHost = contact.onionAddress.takeIf { it.isNotBlank() }, nearbySender = { endpoint, frame -> try { nearbyManager.sendRaw(endpoint, frame); true } catch (_: Exception) { false } }, torSocketFactory = { host, port, timeout -> torManager.createTorSocket(host, port, timeout) })
+        return com.torxone.app.call.CallTransportSession(callId = callId, peerKey = contact.signingPublicKey, transport = transport, endpointId = contact.endpointId.takeIf { it.isNotBlank() }, onionHost = contact.onionAddress.takeIf { it.isNotBlank() }, nearbySender = { endpoint, frame -> runCatching { nearbyManager.sendRaw(endpoint, frame) }.getOrDefault(false) }, torSocketFactory = { host, port, timeout -> torManager.createTorSocket(host, port, timeout) })
     }
 
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
@@ -694,11 +698,11 @@ class MessageRouter(
 
         // 1. Direct Nearby to recipient
         if (viaEndpoint != null && connected.contains(viaEndpoint) && contact?.endpointId == viaEndpoint) {
-            val ok = runCatching { nearbyManager.sendRaw(viaEndpoint, wire); true }.getOrDefault(false)
+            val ok = runCatching { nearbyManager.sendRaw(viaEndpoint, wire) }.getOrDefault(false)
             if (ok) return true
         }
         if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) {
-            val ok = runCatching { nearbyManager.sendRaw(contact.endpointId, wire); true }.getOrDefault(false)
+            val ok = runCatching { nearbyManager.sendRaw(contact.endpointId, wire) }.getOrDefault(false)
             if (ok) return true
         }
 
@@ -713,7 +717,7 @@ class MessageRouter(
         if (connected.isNotEmpty()) {
             var anySent = false
             connected.forEach { endpoint ->
-                if (runCatching { nearbyManager.sendRaw(endpoint, wire); true }.getOrDefault(false)) {
+                if (runCatching { nearbyManager.sendRaw(endpoint, wire) }.getOrDefault(false)) {
                     anySent = true
                 }
             }

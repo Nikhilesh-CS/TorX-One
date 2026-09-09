@@ -18,8 +18,8 @@ class SessionManager(
     private val contactDao: ContactDao? = null,
     private val skippedKeyDao: SkippedMessageKeyDao? = null
 ) {
-    private val encryptLocks = ConcurrentHashMap<String, Mutex>()
-    private val decryptLocks = ConcurrentHashMap<String, Mutex>()
+    /** Encrypt and decrypt must share one lock because both upsert the complete ratchet row. */
+    private val sessionLocks = ConcurrentHashMap<String, Mutex>()
     companion object {
         private const val TAG = "SessionManager"
         private const val SCHEMA_VERSION = 1
@@ -33,7 +33,7 @@ class SessionManager(
     data class DecryptedResult(val plaintext: String, val messageType: String, val sessionId: String, val msgNum: Int)
     suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG, messageId: String = UUID.randomUUID().toString()): SessionWirePayload {
         val contactKey = contact.signingPublicKey.trim().lowercase()
-        return encryptLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {
+        return sessionLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {
             encryptLocked(contact, plaintext, messageType, messageId)
         }
     }
@@ -79,7 +79,7 @@ class SessionManager(
     }
     suspend fun decrypt(senderKey: String, json: JSONObject): DecryptedResult {
         val normalizedSender = senderKey.trim().lowercase()
-        return decryptLocks.computeIfAbsent(normalizedSender) { Mutex() }.withLock {
+        return sessionLocks.computeIfAbsent(normalizedSender) { Mutex() }.withLock {
             decryptLocked(normalizedSender, json)
         }
     }
@@ -219,12 +219,11 @@ class SessionManager(
         val result = try {
             deriveAndDecrypt(firstSession)
         } catch (firstError: Exception) {
-            Log.w(TAG, "[$sessionId] Ratchet mismatch for ${normalizedSender.take(12)}; rebuilding responder state: ${firstError.message}")
-            sessionDao.deleteSession(normalizedSender)
-            skippedKeyDao?.clearSessionSkippedKeys(sessionId)
-            replayProtection.clearSession(sessionId)
-            val newSession = initializeResponderSession(normalizedSender, sessionId, remoteRatchetPubHex, senderEncPubHex, id)
-            deriveAndDecrypt(newSession)
+            // A failed decrypt must not destroy the persisted ratchet. It may be
+            // a duplicate, delayed frame, or a transient transport corruption;
+            // resetting here permanently desynchronizes both peers.
+            Log.w(TAG, "[$sessionId] Ratchet decrypt failed for ${normalizedSender.take(12)}; preserving session: ${firstError.message}")
+            throw firstError
         }
         if (!replayProtection.checkAndMark(sessionId, msgNum)) throw SecurityException("Replay rejected: Counter #$msgNum in session $sessionId already processed")
         sessionDao.upsertSession(result.second)
@@ -233,11 +232,13 @@ class SessionManager(
     }
     suspend fun resetSession(contactKey: String) {
         val normalized = contactKey.trim().lowercase()
-        val existing = sessionDao.getSession(normalized)
-        sessionDao.deleteSession(normalized)
-        existing?.let { 
-            skippedKeyDao?.clearSessionSkippedKeys(it.sessionId)
-            replayProtection.clearSession(it.sessionId)
+        sessionLocks.computeIfAbsent(normalized) { Mutex() }.withLock {
+            val existing = sessionDao.getSession(normalized)
+            sessionDao.deleteSession(normalized)
+            existing?.let {
+                skippedKeyDao?.clearSessionSkippedKeys(it.sessionId)
+                replayProtection.clearSession(it.sessionId)
+            }
         }
         Log.w(TAG, "Reset ratchet session for ${normalized.take(12)}")
     }
