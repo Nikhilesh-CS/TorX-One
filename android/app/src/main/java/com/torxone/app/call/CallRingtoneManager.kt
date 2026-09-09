@@ -56,11 +56,10 @@ open class CallRingtoneManager(private val context: Context) {
     open fun stop() {
         if (!isRinging && ringtone == null && vibrator == null) return
         try {
-            ringtone?.let {
-                if (it.isPlaying) {
-                    it.stop()
-                }
-            }
+            // isPlaying is asynchronous and can briefly report false while
+            // the media server is still playing. Ringtone.stop() is
+            // idempotent, so always stop before dropping the reference.
+            ringtone?.stop()
             ringtone = null
             stopVibration()
             isRinging = false

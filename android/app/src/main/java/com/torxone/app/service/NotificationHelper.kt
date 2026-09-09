@@ -20,6 +20,7 @@ object NotificationHelper {
     const val CHANNEL_UPDATES = "astra_mesh_updates"
     const val CHANNEL_CRITICAL = "astra_mesh_critical"
     const val CHANNEL_CALLS = "astra_mesh_calls"
+    const val CHANNEL_ONGOING_CALLS = "astra_mesh_ongoing_calls"
 
     const val NOTIFICATION_ID_FOREGROUND = 1
     const val NOTIFICATION_ID_SUMMARY = 2
@@ -86,7 +87,18 @@ object NotificationHelper {
                 lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             }
 
-            nm.createNotificationChannels(listOf(messagesChannel, systemChannel, updatesChannel, criticalChannel, callsChannel))
+            val ongoingCallsChannel = NotificationChannel(
+                CHANNEL_ONGOING_CALLS,
+                "Ongoing calls",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Silent ongoing call status"
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            }
+
+            nm.createNotificationChannels(listOf(messagesChannel, systemChannel, updatesChannel, criticalChannel, callsChannel, ongoingCallsChannel))
         }
     }
 
@@ -344,12 +356,13 @@ object NotificationHelper {
         val s = durationSeconds % 60
         val durationFormatted = java.lang.String.format(java.util.Locale.US, "%02d:%02d", m, s)
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_CALLS)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ONGOING_CALLS)
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle("📞 Call with $peerName")
             .setContentText("Connected • $durationFormatted")
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
