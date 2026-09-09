@@ -75,6 +75,11 @@ class TorManager(private val context: Context) {
     }
 
     private fun updateState(state: TorState) {
+        if (state !is TorState.Connected) {
+            // Any socket opened through the previous Tor process is unsafe to
+            // reuse after a restart, even if Socket.isClosed is still false.
+            closePooledTorSockets()
+        }
         _torState.value = state
         _torStatus.value = state.getDisplayText()
         addTorLog("[STATE] ${state.getDisplayText()}")

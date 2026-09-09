@@ -8,11 +8,8 @@ import com.torxone.app.data.ContactEntity
 import com.torxone.app.data.MessageEntity
 import com.torxone.app.data.ReactionOutboxEntity
 import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import org.json.JSONArray
-import java.net.Socket
 import java.util.UUID
 import com.torxone.app.group.GroupCryptoManager
 import com.torxone.app.group.GroupPermission
@@ -25,9 +22,8 @@ data class SendResult(val success: Boolean, val transport: Transport, val error:
  * Routes messages: Nearby (direct) → Nearby mesh relay → Tor (.onion).
  * Includes ACK-based delivery confirmation and automatic retry for failed sends.
  *
- * Important: Double Ratchet state is serialized per contact. Tor chat sockets are
- * kept alive per onion so consecutive messages do not pay a new SOCKS/onion setup
- * cost for every frame.
+ * Important: Double Ratchet state is serialized per contact. Tor socket ownership
+ * and reconnect handling remain centralized in TorManager.
  */
 class MessageRouter(
     private val scope: CoroutineScope,
@@ -42,7 +38,6 @@ class MessageRouter(
         private const val MAX_RETRIES = 40
         private const val RELAY_CACHE_TTL_MS = 10 * 60 * 1000L
         private const val MAX_RELAY_CACHE_SIZE = 512
-        private const val MAX_TOR_CHAT_SOCKETS = 16
     }
 
     var identity: Identity? = null
@@ -55,12 +50,6 @@ class MessageRouter(
     private var retryBackoffMs: Long = RETRY_INTERVAL_MS
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
     private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
-
-    // Persistent, output-only Tor chat sockets. Each socket is protected by its
-    // own mutex so frames cannot interleave on the TCP stream.
-    private data class TorChatConnection(val socket: Socket, val lock: Mutex)
-    private val torChatConnections = java.util.concurrent.ConcurrentHashMap<String, TorChatConnection>()
-    private val torChatConnectionGuard = Any()
 
     // ──────────────────────── INCOMING HANDLERS ────────────────────────
 
@@ -350,51 +339,7 @@ class MessageRouter(
     /** Send a chat/control frame over a reusable Tor socket. */
     private suspend fun sendTorFrame(onionHost: String, payload: String): Boolean = withContext(Dispatchers.IO) {
         if (!torManager.isTorReady.value) return@withContext false
-        val connection = getOrCreateTorChatConnection(onionHost) ?: return@withContext false
-        connection.lock.withLock {
-            try {
-                connection.socket.getOutputStream().apply {
-                    write(payload.toByteArray(Charsets.UTF_8))
-                    write('\n'.code)
-                    flush()
-                }
-                true
-            } catch (e: Exception) {
-                Log.w(TAG, "[TOR-POOL] Persistent socket failed for $onionHost: ${e.message}")
-                removeTorChatConnection(onionHost, connection)
-                false
-            }
-        }
-    }
-
-    private fun getOrCreateTorChatConnection(onionHost: String): TorChatConnection? {
-        val existing = torChatConnections[onionHost]
-        if (existing != null && !existing.socket.isClosed) return existing
-        synchronized(torChatConnectionGuard) {
-            val current = torChatConnections[onionHost]
-            if (current != null && !current.socket.isClosed) return current
-            if (torChatConnections.size >= MAX_TOR_CHAT_SOCKETS) {
-                val victim = torChatConnections.entries.firstOrNull()
-                if (victim != null) removeTorChatConnection(victim.key, victim.value)
-            }
-            val socket = torManager.createTorSocket(onionHost) ?: return null
-            val connection = TorChatConnection(socket, Mutex())
-            torChatConnections[onionHost] = connection
-            Log.d(TAG, "[TOR-POOL] Opened persistent chat socket to $onionHost")
-            return connection
-        }
-    }
-
-    private fun removeTorChatConnection(onionHost: String, expected: TorChatConnection) {
-        if (torChatConnections.remove(onionHost, expected)) {
-            runCatching { expected.socket.close() }
-            Log.d(TAG, "[TOR-POOL] Closed chat socket to $onionHost")
-        }
-    }
-
-    fun closeTorChatConnections() {
-        torChatConnections.values.forEach { runCatching { it.socket.close() } }
-        torChatConnections.clear()
+        torManager.sendToOnion(onionHost, payload)
     }
 
     suspend fun sendGroupMessage(groupId: String, text: String, replyToId: String? = null): SendResult = withContext(Dispatchers.IO) {
