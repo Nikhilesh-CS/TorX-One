@@ -56,10 +56,6 @@ class MessageRouter(
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
     private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    // One lock per conversation prevents concurrent Double Ratchet encryptions
-    // from racing the same session's send/chain state.
-    private val sendLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
-
     // Persistent, output-only Tor chat sockets. Each socket is protected by its
     // own mutex so frames cannot interleave on the TCP stream.
     private data class TorChatConnection(val socket: Socket, val lock: Mutex)
@@ -189,20 +185,6 @@ class MessageRouter(
         replyToSender: String? = null,
         replyToType: String? = null
     ): SendResult = withContext(Dispatchers.IO) {
-        val lock = sendLocks.computeIfAbsent(contactKey.trim().lowercase()) { Mutex() }
-        lock.withLock {
-            sendMessageLocked(contactKey, text, replyToId, replyToText, replyToSender, replyToType)
-        }
-    }
-
-    private suspend fun sendMessageLocked(
-        contactKey: String,
-        text: String,
-        replyToId: String?,
-        replyToText: String?,
-        replyToSender: String?,
-        replyToType: String?
-    ): SendResult {
         val identity = identity ?: return SendResult(false, Transport.FAILED, "Not logged in")
         val contact = db.contactDao().getContact(contactKey)
             ?: return SendResult(false, Transport.FAILED, "Contact not found")
@@ -221,20 +203,9 @@ class MessageRouter(
             replyToType = replyToType
         )
 
-        val sessionPayload = try {
-            sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG)
-        } catch (e: Exception) {
-            Log.w(TAG, "[SEND] Session encryption error, falling back to legacy: ${e.message}")
-            null
-        }
-
-        val messageId = sessionPayload?.messageId ?: UUID.randomUUID().toString()
-        val wireJson = sessionPayload?.wireJsonString ?: run {
-            val payload = buildEncryptedPayload(identity, contact, wireText)
-                ?: return SendResult(false, Transport.FAILED, "Encryption failed")
-            MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, MeshProtocol.TYPE_MSG)
-        }
-
+        // Publish the local row before the potentially expensive crypto step so
+        // the conversation immediately renders the message as SENDING.
+        val messageId = UUID.randomUUID().toString()
         db.messageDao().insertMessage(
             MessageEntity(
                 messageId = messageId,
@@ -250,6 +221,23 @@ class MessageRouter(
             )
         )
         Log.i(TAG, "[MSG] id=$messageId state=SENDING")
+
+        val sessionPayload = try {
+            sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG, messageId)
+        } catch (e: Exception) {
+            Log.w(TAG, "[SEND] Session encryption error, falling back to legacy: ${e.message}")
+            null
+        }
+
+        val legacyPayload = if (sessionPayload == null) {
+            buildEncryptedPayload(identity, contact, wireText)
+                ?: run {
+                    db.messageDao().updateMessageStatus(messageId, "failed")
+                    return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
+                }
+        } else null
+        val wireJson = sessionPayload?.wireJsonString
+            ?: MeshProtocol.encodeDirectMessage(legacyPayload!!, messageId, myOnionAddress, MeshProtocol.TYPE_MSG)
 
         // Persist exact wire frame into MessageOutboxEntity BEFORE transmission
         db.messageOutboxDao().insertOutbox(
@@ -267,9 +255,7 @@ class MessageRouter(
             pendingSessionPayloads[messageId] = sessionPayload.wireJsonString
             attemptDeliverySession(contact, sessionPayload.wireJsonString, messageId)
         } else {
-            val payload = buildEncryptedPayload(identity, contact, wireText)
-                ?: return SendResult(false, Transport.FAILED, "Encryption failed")
-            attemptDelivery(contact, payload, messageId)
+            attemptDelivery(contact, legacyPayload!!, messageId)
         }
 
         if (result.success) {
@@ -605,28 +591,21 @@ class MessageRouter(
                 continue
             }
 
-            val lock = sendLocks.computeIfAbsent(outboxMsg.contactKey.trim().lowercase()) { Mutex() }
-            lock.withLock {
-                // Re-verify in lock
-                val current = db.messageDao().getMessageById(outboxMsg.messageId)
-                if (current == null || current.status == "delivered" || current.status == "read") {
-                    db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
-                    return@withLock
-                }
+            // Retries use the already encrypted wire frame and do not mutate
+            // ratchet state, so they must not wait behind a conversation's
+            // encryption path.
+            // Transmit EXACT stored wireJson - NEVER RE-ENCRYPT
+            val result = attemptDeliverySession(contact, outboxMsg.wireJson, outboxMsg.messageId)
+            val newAttempt = outboxMsg.retryCount + 1
+            val backoff = (3_000L * (1L shl outboxMsg.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
+            db.messageOutboxDao().updateRetry(outboxMsg.messageId, now + backoff)
 
-                // Transmit EXACT stored wireJson - NEVER RE-ENCRYPT
-                val result = attemptDeliverySession(contact, outboxMsg.wireJson, outboxMsg.messageId)
-                val newAttempt = outboxMsg.retryCount + 1
-                val backoff = (3_000L * (1L shl outboxMsg.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
-                db.messageOutboxDao().updateRetry(outboxMsg.messageId, now + backoff)
-
-                if (result.success) {
-                    db.messageDao().updateSentMessageStatus(outboxMsg.messageId, outboxMsg.contactKey, "sent", result.transport.name)
-                    Log.i(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=success")
-                } else {
-                    db.messageDao().incrementRetryCount(outboxMsg.messageId)
-                    Log.w(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=failed (${result.error})")
-                }
+            if (result.success) {
+                db.messageDao().updateSentMessageStatus(outboxMsg.messageId, outboxMsg.contactKey, "sent", result.transport.name)
+                Log.i(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=success")
+            } else {
+                db.messageDao().incrementRetryCount(outboxMsg.messageId)
+                Log.w(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=failed (${result.error})")
             }
         }
     }

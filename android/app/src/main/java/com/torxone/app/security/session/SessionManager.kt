@@ -31,14 +31,14 @@ class SessionManager(
     var myOnionAddress: String = ""
     data class SessionWirePayload(val wireJsonString: String, val sessionId: String, val messageId: String)
     data class DecryptedResult(val plaintext: String, val messageType: String, val sessionId: String, val msgNum: Int)
-    suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {
+    suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG, messageId: String = UUID.randomUUID().toString()): SessionWirePayload {
         val contactKey = contact.signingPublicKey.trim().lowercase()
         return encryptLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {
-            encryptLocked(contact, plaintext, messageType)
+            encryptLocked(contact, plaintext, messageType, messageId)
         }
     }
 
-    private suspend fun encryptLocked(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG): SessionWirePayload {
+    private suspend fun encryptLocked(contact: ContactEntity, plaintext: String, messageType: String, messageId: String): SessionWirePayload {
         val contactKey = contact.signingPublicKey.trim().lowercase()
         val id = identity ?: throw IllegalStateException("Identity not available")
         val mySigKeyHex = CryptoManager.toHex(id.signingPublicKey)
@@ -56,7 +56,6 @@ class SessionManager(
         val encrypted = SessionCipher.encrypt(messageKey, plaintext, aad)
         val signatureBody = buildSignatureBody(mySigKeyHex, myEncKeyHex, contactKey, messageType, session.sessionId, msgNum, session.localRatchetPubHex, encrypted.ciphertextBase64, encrypted.ivBase64, now)
         val signatureHex = CryptoManager.toHex(CryptoManager.sign(signatureBody, id.signingSecretKey))
-        val messageId = UUID.randomUUID().toString()
         val wireJson = JSONObject().apply {
             put("type", MeshProtocol.TYPE_SESSION_MSG)
             put("schemaVersion", SCHEMA_VERSION)
