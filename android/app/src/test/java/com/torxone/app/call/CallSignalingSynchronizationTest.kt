@@ -238,16 +238,17 @@ class CallSignalingSynchronizationTest {
         assertEquals("END", persisted?.signalType)
     }
 
-    // 4. ICE candidate transmitted transiently (not inserted into Room outbox)
+    // 4. ICE candidate is durable until ACK or call cleanup
     @Test
-    fun testIceCandidateTransmittedMemoryOnly() = runTest(testDispatcher) {
+    fun testIceCandidateIsPersistedForRetry() = runTest(testDispatcher) {
         val signaling = CallSignalingHandler(messageRouter, db, callScope)
         val candidate = AstraIceCandidate("audio", 0, "candidate:1 1 UDP...")
         val signalId = signaling.sendIceCandidate(testPeerKey, "call_4", CallMode.AUDIO, candidate, generation = 1L)
         testDispatcher.scheduler.advanceUntilIdle()
 
         val persisted = fakeSignalingDao.getSignal(signalId)
-        assertNull("ICE candidates should NOT be persisted to Room outbox", persisted)
+        assertNotNull("ICE candidates must be persisted to Room outbox", persisted)
+        assertEquals("ICE", persisted?.signalType)
     }
 
     // 5. Receiving ACK removes OFFER from Room outbox

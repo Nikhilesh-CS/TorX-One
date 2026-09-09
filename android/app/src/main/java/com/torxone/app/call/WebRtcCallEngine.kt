@@ -156,11 +156,12 @@ class WebRtcCallEngine(
         flushQueuedIceCandidates()
     }
 
-    override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String) {
+    override suspend fun handleRenegotiationOffer(offer: AstraSessionDescription, peerKey: String, callId: String, generation: Long) {
         val rtcClient = client ?: return
         Log.d(TAG, "Processing renegotiation offer for call $callId")
         diagnostics?.record("RENEGOTIATION_PROCESSING")
         try {
+            if (generation > currentGeneration) currentGeneration = generation
             rtcClient.setRemoteDescriptionSuspend(offer)
             isRemoteDescriptionSet.set(true)
             flushQueuedIceCandidates()

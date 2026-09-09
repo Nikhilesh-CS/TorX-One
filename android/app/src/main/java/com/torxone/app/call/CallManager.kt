@@ -211,7 +211,7 @@ class CallManager(
                 return@launch
             }
 
-            signaling.resetSequence()
+            signaling.resetSequence(callId)
             activeEngine = selected
             (selected as? WebRtcCallEngine)?.diagnostics = diagnostics
             (selected as? WebRtcCallEngine)?.currentGeneration = generation
@@ -480,7 +480,7 @@ class CallManager(
                 Log.d(TAG, "Received renegotiation offer for active call: ${signal.callId}")
                 activeDiagnostics?.record("RENEGOTIATION_OFFER_RECEIVED")
                 pendingOffer = offer
-                activeEngine?.handleRenegotiationOffer(offer, normalizedSenderKey, signal.callId)
+                activeEngine?.handleRenegotiationOffer(offer, normalizedSenderKey, signal.callId, signal.generation)
                 signaling.sendAck(
                     peerKey = normalizedSenderKey,
                     callId = signal.callId,

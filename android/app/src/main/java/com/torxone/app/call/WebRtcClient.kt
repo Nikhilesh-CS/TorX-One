@@ -47,6 +47,7 @@ class WebRtcClient(
 
     suspend fun createPeerConnection() {
         val iceServers = iceServerProvider.getIceServers()
+        val factory = checkNotNull(peerConnectionFactory) { "PeerConnectionFactory is not initialized" }
         // Set ICE transport type based on privacy policy
         val transportType = if (!privacyPolicy.allowDirectP2P && !privacyPolicy.allowSrflxCandidates) {
             // Strict mode: relay only
@@ -60,7 +61,7 @@ class WebRtcClient(
             iceTransportsType = transportType
         }
 
-        peerConnection = peerConnectionFactory?.createPeerConnection(
+        peerConnection = factory.createPeerConnection(
             rtcConfig,
             object : PeerConnection.Observer {
                 override fun onIceCandidate(candidate: IceCandidate?) {
@@ -120,7 +121,7 @@ class WebRtcClient(
                     }
                 }
             }
-        )
+        ) ?: error("PeerConnection creation returned null")
 
         Log.d(TAG, "PeerConnection created")
     }
@@ -133,11 +134,13 @@ class WebRtcClient(
             mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
         }
 
-        audioSource = peerConnectionFactory?.createAudioSource(constraints)
-        localAudioTrack = peerConnectionFactory?.createAudioTrack("audio_track_0", audioSource)
-        localAudioTrack?.setEnabled(true)
+        val factory = checkNotNull(peerConnectionFactory) { "PeerConnectionFactory is not initialized" }
+        val connection = checkNotNull(peerConnection) { "PeerConnection is not initialized" }
+        audioSource = factory.createAudioSource(constraints)
+        localAudioTrack = factory.createAudioTrack("audio_track_0", checkNotNull(audioSource) { "AudioSource creation failed" })
+        checkNotNull(localAudioTrack) { "AudioTrack creation failed" }.apply { setEnabled(true) }
 
-        peerConnection?.addTrack(localAudioTrack, listOf("stream_0"))
+        checkNotNull(connection.addTrack(localAudioTrack, listOf("stream_0"))) { "Adding local audio track failed" }
         started = true
         Log.d(TAG, "Audio session started with echo cancellation, AGC, noise suppression")
     }

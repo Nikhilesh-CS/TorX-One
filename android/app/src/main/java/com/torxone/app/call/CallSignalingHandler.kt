@@ -47,21 +47,7 @@ class CallSignalingHandler(
         ?: Dispatchers.IO
     private val scope = scopeOverride ?: CoroutineScope(SupervisorJob() + ioDispatcher)
     private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val localSequence = AtomicInteger(0)
-
-    data class TransientIceSignal(
-        val signalId: String,
-        val peerKey: String,
-        val callId: String,
-        val rawPayload: String,
-        val generation: Long,
-        val seq: Int,
-        val timestamp: Long = System.currentTimeMillis(),
-        var retryCount: Int = 0,
-        var nextRetryAt: Long = 0L
-    )
-
-    private val pendingIceOutbox = ConcurrentHashMap<String, TransientIceSignal>()
+    private val localSequences = ConcurrentHashMap<String, AtomicInteger>()
 
     companion object {
         private const val TAG = "CallSignalingHandler"
@@ -71,19 +57,22 @@ class CallSignalingHandler(
         const val MAX_SDP_SIZE = 65_536           // 64 KB
         /** Maximum ICE candidate string size (bytes). */
         const val MAX_ICE_CANDIDATE_SIZE = 4_096  // 4 KB
-        private const val MAX_CRITICAL_RETRIES = 6
-        private const val MAX_ICE_RETRIES = 4
         private const val BASE_RETRY_INTERVAL_MS = 600L
+        private const val CRITICAL_SIGNAL_TTL_MS = 30 * 60 * 1000L
     }
 
     init {
         startRetryLoop()
     }
 
-    fun nextSeq(): Int = localSequence.incrementAndGet()
+    private fun sequenceKey(callId: String, generation: Long): String = "$callId:$generation"
 
-    fun resetSequence() {
-        localSequence.set(0)
+    fun nextSeq(callId: String, generation: Long): Int =
+        localSequences.computeIfAbsent(sequenceKey(callId, generation)) { AtomicInteger(0) }.incrementAndGet()
+
+    fun resetSequence(callId: String? = null) {
+        if (callId == null) localSequences.clear()
+        else localSequences.keys.removeIf { it.startsWith("$callId:") }
     }
 
     private fun startRetryLoop() {
@@ -92,12 +81,12 @@ class CallSignalingHandler(
                 delay(400L)
                 runCatching {
                     val now = System.currentTimeMillis()
-                    // 1. Retry critical signals persisted in Room (OFFER, ANSWER, END)
+                    // Retry all critical signals persisted in Room (OFFER, ANSWER, ICE, END)
                     db?.let { appDb ->
                         val pending = appDb.callSignalingOutboxDao().getPendingSignals(now, limit = 20)
                         for (sig in pending) {
-                            if (sig.retryCount >= MAX_CRITICAL_RETRIES) {
-                                Log.w(TAG, "[CALL_SIG_RETRY] Max retries reached for signalId=${sig.signalId} type=${sig.signalType}, removing")
+                            if (now - sig.createdAt >= CRITICAL_SIGNAL_TTL_MS) {
+                                Log.w(TAG, "[CALL_SIG_RETRY] TTL expired for signalId=${sig.signalId} type=${sig.signalType}, removing")
                                 appDb.callSignalingOutboxDao().deleteSignal(sig.signalId)
                                 continue
                             }
@@ -108,21 +97,6 @@ class CallSignalingHandler(
                         }
                     }
 
-                    // 2. Retry transient ICE signals in memory
-                    for ((sigId, iceSig) in pendingIceOutbox) {
-                        if (iceSig.nextRetryAt <= now) {
-                            if (iceSig.retryCount >= MAX_ICE_RETRIES) {
-                                Log.d(TAG, "[CALL_SIG_RETRY] Expired unacked ICE signalId=$sigId")
-                                pendingIceOutbox.remove(sigId)
-                                continue
-                            }
-                            iceSig.retryCount++
-                            val backoff = (BASE_RETRY_INTERVAL_MS * (1 shl iceSig.retryCount.coerceAtMost(2))).coerceAtMost(2000L)
-                            iceSig.nextRetryAt = now + backoff
-                            Log.d(TAG, "[CALL_SIG_RETRY] Retrying ICE signalId=$sigId retry=${iceSig.retryCount}")
-                            sendRawCallSignal(iceSig.peerKey, iceSig.rawPayload, MeshProtocol.TYPE_ICE_CANDIDATE)
-                        }
-                    }
                 }
             }
         }
@@ -136,7 +110,7 @@ class CallSignalingHandler(
         generation: Long = 0L
     ): String {
         val signalId = UUID.randomUUID().toString()
-        val seq = nextSeq()
+        val seq = nextSeq(callId, generation)
         Log.d(TAG, "[CALL_SIG] Sent OFFER callId=$callId sigId=$signalId gen=$generation seq=$seq to=${peerKey.take(12)} mode=${mode.name}")
         sendSdp(peerKey, callId, mode, description, MeshProtocol.TYPE_CALL_OFFER, signalId, generation, seq)
         return signalId
@@ -150,7 +124,7 @@ class CallSignalingHandler(
         generation: Long = 0L
     ): String {
         val signalId = UUID.randomUUID().toString()
-        val seq = nextSeq()
+        val seq = nextSeq(callId, generation)
         Log.d(TAG, "[CALL_SIG] Sent ANSWER callId=$callId sigId=$signalId gen=$generation seq=$seq to=${peerKey.take(12)} mode=${mode.name}")
         sendSdp(peerKey, callId, mode, description, MeshProtocol.TYPE_CALL_ANSWER, signalId, generation, seq)
         return signalId
@@ -164,7 +138,7 @@ class CallSignalingHandler(
         generation: Long = 0L
     ): String {
         val signalId = UUID.randomUUID().toString()
-        val seq = nextSeq()
+        val seq = nextSeq(callId, generation)
         Log.d(TAG, "[CALL_SIG] Sent ICE candidate mid=${candidate.sdpMid} mLine=${candidate.sdpMLineIndex} callId=$callId sigId=$signalId gen=$generation seq=$seq to=${peerKey.take(12)}")
         val payload = JSONObject()
             .put("callId", callId)
@@ -178,16 +152,15 @@ class CallSignalingHandler(
             .put("timestamp", System.currentTimeMillis())
             .toString()
 
-        val now = System.currentTimeMillis()
-        pendingIceOutbox[signalId] = TransientIceSignal(
+        persistCriticalSignal(
             signalId = signalId,
-            peerKey = peerKey,
             callId = callId,
-            rawPayload = payload,
+            peerKey = peerKey,
+            signalType = "ICE",
             generation = generation,
             seq = seq,
-            timestamp = now,
-            nextRetryAt = now + BASE_RETRY_INTERVAL_MS
+            rawPayload = payload,
+            messageType = MeshProtocol.TYPE_ICE_CANDIDATE
         )
 
         sendRawCallSignal(peerKey, payload, MeshProtocol.TYPE_ICE_CANDIDATE)
@@ -202,7 +175,7 @@ class CallSignalingHandler(
         generation: Long = 0L
     ): String {
         val signalId = UUID.randomUUID().toString()
-        val seq = nextSeq()
+        val seq = nextSeq(callId, generation)
         Log.d(TAG, "[CALL_SIG] Sent CALL_END callId=$callId sigId=$signalId gen=$generation seq=$seq to=${peerKey.take(12)} reason=$reason")
         val payload = JSONObject()
             .put("callId", callId)
@@ -255,7 +228,6 @@ class CallSignalingHandler(
     fun handleAck(signal: CallSignal) {
         val ackSignalId = signal.ackSignalId ?: return
         Log.i(TAG, "[CALL_SIG_ACK] Received ACK for ackSignalId=$ackSignalId type=${signal.ackType}")
-        pendingIceOutbox.remove(ackSignalId)
         db?.let { appDb ->
             scope.launch(ioDispatcher) {
                 runCatching { appDb.callSignalingOutboxDao().deleteSignal(ackSignalId) }
@@ -264,7 +236,6 @@ class CallSignalingHandler(
     }
 
     fun clearCallSignals(callId: String) {
-        pendingIceOutbox.entries.removeIf { it.value.callId == callId }
         db?.let { appDb ->
             scope.launch(ioDispatcher) {
                 runCatching { appDb.callSignalingOutboxDao().deleteSignalsForCall(callId) }
@@ -272,7 +243,7 @@ class CallSignalingHandler(
         }
     }
 
-    private fun persistCriticalSignal(
+    private suspend fun persistCriticalSignal(
         signalId: String,
         callId: String,
         peerKey: String,
@@ -281,28 +252,22 @@ class CallSignalingHandler(
         seq: Int,
         rawPayload: String,
         messageType: String
-    ) {
-        db?.let { appDb ->
-            scope.launch(ioDispatcher) {
-                runCatching {
-                    appDb.callSignalingOutboxDao().insertSignal(
-                        CallSignalingOutboxEntity(
-                            signalId = signalId,
-                            callId = callId,
-                            peerKey = peerKey,
-                            signalType = signalType,
-                            generation = generation,
-                            seq = seq,
-                            rawPayload = rawPayload,
-                            messageType = messageType,
-                            createdAt = System.currentTimeMillis(),
-                            retryCount = 0,
-                            nextRetryAt = System.currentTimeMillis() + BASE_RETRY_INTERVAL_MS
-                        )
-                    )
-                }
-            }
-        }
+    ) = withContext(ioDispatcher) {
+        db?.callSignalingOutboxDao()?.insertSignal(
+            CallSignalingOutboxEntity(
+                signalId = signalId,
+                callId = callId,
+                peerKey = peerKey,
+                signalType = signalType,
+                generation = generation,
+                seq = seq,
+                rawPayload = rawPayload,
+                messageType = messageType,
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                nextRetryAt = System.currentTimeMillis() + BASE_RETRY_INTERVAL_MS
+            )
+        )
     }
 
     /**
