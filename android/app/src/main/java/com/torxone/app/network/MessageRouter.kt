@@ -820,12 +820,12 @@ class MessageRouter(
         val senderOnion = json.optString("senderOnion", "")
         if (to == mySigningKeyHex) {
             val sm = sessionManager ?: return
-            val contact = db.contactDao().getContact(fromKey) ?: return
-            if (senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
+            val contact = db.contactDao().getContact(fromKey)
+            if (contact != null && senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
 
             // Fast deduplication: If message is already in DB, resend ACK and skip decryption
             if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
-                Log.d(TAG, "[SESSION_RX] Duplicate message $messageId already in DB from ${contact.name}; sending ACK")
+                Log.d(TAG, "[SESSION_RX] Duplicate message $messageId already in DB from ${contact?.name ?: fromKey}; sending ACK")
                 sendAck(messageId, fromKey, viaEndpoint, senderOnion)
                 return
             }
@@ -833,7 +833,7 @@ class MessageRouter(
             val decrypted = try { 
                 sm.decrypt(fromKey, json) 
             } catch (e: Exception) { 
-                Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact.name}: ${e.message}")
+                Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact?.name ?: fromKey}: ${e.message}")
                 if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
                     sendAck(messageId, fromKey, viaEndpoint, senderOnion)
                 }
@@ -883,9 +883,9 @@ class MessageRouter(
         dispatchDecryptedMessage(contact, senderKey, plaintext, messageType, messageId, viaEndpoint, senderOnion)
     }
 
-    private suspend fun dispatchDecryptedMessage(contact: ContactEntity, senderKey: String, plaintext: String, messageType: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
+    private suspend fun dispatchDecryptedMessage(contact: ContactEntity?, senderKey: String, plaintext: String, messageType: String, messageId: String, viaEndpoint: String?, senderOnion: String?) {
         val service = com.torxone.app.service.TorXOneService.getInstance()
-        if (messageType != MeshProtocol.TYPE_PROFILE_UPDATE && messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO && messageType != MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) service?.profileSyncManager?.syncWithContactSoon(senderKey)
+        if (contact != null && messageType != MeshProtocol.TYPE_PROFILE_UPDATE && messageType != MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO && messageType != MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) service?.profileSyncManager?.syncWithContactSoon(senderKey)
         if (messageType == MeshProtocol.TYPE_MEDIA_CHUNK || messageType == MeshProtocol.TYPE_MEDIA_OFFER || messageType == MeshProtocol.TYPE_MEDIA_ACK || messageType == MeshProtocol.TYPE_MEDIA_COMPLETE) { service?.mediaTransferManager?.handleMediaPacket(messageType, plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_CALL_OFFER || messageType == MeshProtocol.TYPE_CALL_ANSWER || messageType == MeshProtocol.TYPE_ICE_CANDIDATE || messageType == MeshProtocol.TYPE_CALL_END || messageType == MeshProtocol.TYPE_CALL_ACK) { service?.callManager?.handleSignal(messageType, plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_PROFILE_UPDATE || messageType == MeshProtocol.TYPE_REQUEST_PROFILE_PHOTO || messageType == MeshProtocol.TYPE_PROFILE_PHOTO_CHUNK) { service?.profileSyncManager?.handleProfilePacket(messageType, plaintext, senderKey); return }
@@ -896,6 +896,12 @@ class MessageRouter(
         if (messageType == MeshProtocol.TYPE_MUSIC_SYNC) { service?.listenTogetherManager?.handleSyncPacket(plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_GROUP_INVITE || messageType == MeshProtocol.TYPE_GROUP_JOIN || messageType == MeshProtocol.TYPE_GROUP_UPDATE || messageType == MeshProtocol.TYPE_GROUP_LEAVE || messageType == MeshProtocol.TYPE_GROUP_KEY || messageType == MeshProtocol.TYPE_GROUP_SYNC_REQUEST || messageType == MeshProtocol.TYPE_GROUP_SYNC_RESPONSE || messageType == MeshProtocol.TYPE_GROUP_KEY_REQUEST) { service?.groupManager?.handleGroupPacket(messageType, plaintext, senderKey); return }
         if (messageType == MeshProtocol.TYPE_GROUP_MESSAGE) { handleGroupMessage(plaintext, senderKey, messageId, viaEndpoint, senderOnion); return }
+
+        // Session messages for ordinary direct chats still require a known
+        // contact for UI metadata and notification policy. Group messages
+        // are authorized by GroupMemberEntity instead and were dispatched
+        // above without that unrelated ContactEntity requirement.
+        if (contact == null) return
 
         val chatPayload = decodeChatMessagePayload(plaintext)
         if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
