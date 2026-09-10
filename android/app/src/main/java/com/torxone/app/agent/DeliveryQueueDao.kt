@@ -192,25 +192,55 @@ interface DeliveryQueueDao {
     @Query("UPDATE delivery_queue SET state = :state, lastAttemptAt = :now WHERE envelopeId = :envelopeId")
     suspend fun updateState(envelopeId: String, state: String, now: Long = System.currentTimeMillis())
 
+    @Query("UPDATE delivery_queue SET state = 'TRANSMITTING', lastAttemptAt = :now WHERE envelopeId = :envelopeId AND state NOT IN ('DELIVERED', 'READ', 'FAILED')")
+    suspend fun markTransmitting(envelopeId: String, now: Long = System.currentTimeMillis())
+
     @Query("""
         UPDATE delivery_queue 
         SET state = 'QUEUED', retryCount = retryCount + 1, 
             nextRetryAt = :nextRetryAt, lastAttemptAt = :now 
-        WHERE envelopeId = :envelopeId
+        WHERE envelopeId = :envelopeId AND state NOT IN ('DELIVERED', 'READ', 'FAILED')
     """)
     suspend fun scheduleRetry(envelopeId: String, nextRetryAt: Long, now: Long = System.currentTimeMillis())
 
+    /** Relay accepted envelope into its queue (peer has not received it yet). */
+    @Query("""
+        UPDATE delivery_queue 
+        SET state = 'RELAY_ACCEPTED', transportUsed = :transport, lastAttemptAt = :now 
+        WHERE envelopeId = :envelopeId AND state NOT IN ('DELIVERED', 'READ')
+    """)
+    suspend fun markRelayAccepted(envelopeId: String, transport: String, now: Long = System.currentTimeMillis())
+
+    /** Direct transport accepted bytes into physical connection (in-transit). */
     @Query("""
         UPDATE delivery_queue 
         SET state = 'ACCEPTED', transportUsed = :transport, lastAttemptAt = :now 
-        WHERE envelopeId = :envelopeId
+        WHERE envelopeId = :envelopeId AND state NOT IN ('DELIVERED', 'READ')
     """)
     suspend fun markAccepted(envelopeId: String, transport: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE delivery_queue SET state = 'DELIVERED', deliveredAt = :now WHERE messageId = :messageId AND state IN ('ACCEPTED', 'TRANSMITTING', 'QUEUED')")
+    /** Recipient device received raw envelope and passed validation. */
+    @Query("""
+        UPDATE delivery_queue 
+        SET state = 'DEVICE_RECEIVED', lastAttemptAt = :now 
+        WHERE messageId = :messageId AND state NOT IN ('DELIVERED', 'READ')
+    """)
+    suspend fun markDeviceReceived(messageId: String, now: Long = System.currentTimeMillis())
+
+    /** Recipient decrypted + persisted message and emitted authenticated delivery ACK. */
+    @Query("""
+        UPDATE delivery_queue 
+        SET state = 'DELIVERED', deliveredAt = :now 
+        WHERE messageId = :messageId AND state != 'READ'
+    """)
     suspend fun markDelivered(messageId: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE delivery_queue SET state = 'READ', readAt = :now WHERE messageId = :messageId AND state IN ('DELIVERED', 'ACCEPTED')")
+    /** Recipient UI emitted authenticated READ receipt. */
+    @Query("""
+        UPDATE delivery_queue 
+        SET state = 'READ', readAt = :now 
+        WHERE messageId = :messageId
+    """)
     suspend fun markRead(messageId: String, now: Long = System.currentTimeMillis())
 
     @Query("UPDATE delivery_queue SET state = 'FAILED' WHERE envelopeId = :envelopeId")

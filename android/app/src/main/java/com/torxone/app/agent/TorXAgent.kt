@@ -160,22 +160,40 @@ class TorXAgent(
         processedIncoming.add(messageId)
     }
 
-    // ──────────────────────── ACK/READ ────────────────────────
+    // ──────────────────────── ACK/READ / DEVICE_RECEIVED ────────────────────────
 
     /**
-     * Handle an ACK receipt — mark the envelope as DELIVERED.
+     * Handle an authenticated ACK receipt — marks envelope as DELIVERED and updates message status.
+     * Recipient successfully decrypted + persisted message and emitted authenticated delivery ACK.
      */
     suspend fun handleAck(messageId: String) {
         deliveryQueueDao.markDelivered(messageId)
-        Log.d(TAG, "[ACK] msgId=$messageId → DELIVERED")
+        val msg = db.messageDao().getMessageById(messageId)
+        if (msg != null && msg.direction == "sent") {
+            db.messageDao().updateSentMessageStatus(messageId, msg.contactKey, "delivered")
+        }
+        Log.i(TAG, "[ACK] msgId=$messageId marked DELIVERED")
     }
 
     /**
-     * Handle a READ receipt — mark the envelope as READ.
+     * Handle an authenticated READ receipt — marks envelope as READ and updates message status.
+     * Recipient UI/application layer displayed message and emitted authenticated READ receipt.
      */
     suspend fun handleRead(messageId: String) {
         deliveryQueueDao.markRead(messageId)
-        Log.d(TAG, "[READ] msgId=$messageId → READ")
+        val msg = db.messageDao().getMessageById(messageId)
+        if (msg != null && msg.direction == "sent") {
+            db.messageDao().updateSentMessageStatus(messageId, msg.contactKey, "read")
+        }
+        Log.i(TAG, "[READ] msgId=$messageId marked READ")
+    }
+
+    /**
+     * Handle DEVICE_RECEIVED event — recipient device confirmed receipt and wire validation.
+     */
+    suspend fun handleDeviceReceived(messageId: String) {
+        deliveryQueueDao.markDeviceReceived(messageId)
+        Log.d(TAG, "[DEVICE_RECEIVED] msgId=$messageId marked DEVICE_RECEIVED")
     }
 
     // ──────────────────────── DELIVERY ENGINE ────────────────────────
@@ -220,8 +238,8 @@ class TorXAgent(
     }
 
     private suspend fun attemptDelivery(entity: DeliveryQueueEntity) {
-        // Transition to TRANSMITTING
-        deliveryQueueDao.updateState(entity.envelopeId, "TRANSMITTING")
+        // Transition to TRANSMITTING (with regression guard)
+        deliveryQueueDao.markTransmitting(entity.envelopeId)
 
         // Resolve peer addresses for transport router
         val peerAddresses = resolvePeerAddresses(entity.recipientKey)
@@ -247,17 +265,34 @@ class TorXAgent(
         val result = transportRouter.deliver(peerAddresses, entity.encryptedPayload, metadata)
 
         if (result.success) {
-            deliveryQueueDao.markAccepted(
-                entity.envelopeId,
-                result.transportType.name
-            )
-            db.messageDao().updateSentMessageStatus(
-                entity.messageId,
-                entity.recipientKey,
-                "sent",
-                result.transportType.name
-            )
-            Log.i(TAG, "[DELIVER] envelopeId=${entity.envelopeId} ACCEPTED via ${result.transportType} (${result.latencyMs}ms)")
+            val isRelay = result.transportType == TransportType.OFFLINE_RELAY
+            if (isRelay) {
+                // Relay accepted ciphertext into its durable queue; Bob has NOT received or decrypted it yet
+                deliveryQueueDao.markRelayAccepted(
+                    entity.envelopeId,
+                    result.transportType.name
+                )
+                db.messageDao().updateSentMessageStatus(
+                    entity.messageId,
+                    entity.recipientKey,
+                    "sent",
+                    result.transportType.name
+                )
+                Log.i(TAG, "[DELIVER] envelopeId=${entity.envelopeId} RELAY_ACCEPTED via ${result.transportType} (${result.latencyMs}ms)")
+            } else {
+                // Direct transport socket transmitted the envelope
+                deliveryQueueDao.markAccepted(
+                    entity.envelopeId,
+                    result.transportType.name
+                )
+                db.messageDao().updateSentMessageStatus(
+                    entity.messageId,
+                    entity.recipientKey,
+                    "sent",
+                    result.transportType.name
+                )
+                Log.i(TAG, "[DELIVER] envelopeId=${entity.envelopeId} TRANSMITTED via direct ${result.transportType} (${result.latencyMs}ms)")
+            }
         } else {
             val backoff = calculateBackoff(entity.retryCount)
             deliveryQueueDao.scheduleRetry(

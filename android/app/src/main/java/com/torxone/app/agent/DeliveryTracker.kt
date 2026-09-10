@@ -102,7 +102,8 @@ class DeliveryTracker(
     }
 
     /**
-     * Send an ACK receipt to the message sender.
+     * Send an authenticated ACK receipt to the message sender via TorX Agent queue.
+     * All receipts flow through the persistent delivery engine — zero bypasses.
      */
     fun sendAck(messageId: String, senderKey: String, viaEndpoint: String? = null, senderOnion: String? = null) {
         if (messageId.isBlank() || senderKey.isBlank() || mySigningKeyHex.isBlank()) return
@@ -115,40 +116,22 @@ class DeliveryTracker(
 
         scope.launch {
             try {
-                // If we know the direct endpoint, try direct first
-                if (viaEndpoint != null && transportRouter.getConnectedEndpoints().contains(viaEndpoint)) {
-                    val res = transportRouter.sendDirect(TransportType.NEARBY_DIRECT, viaEndpoint, wire)
-                    if (res.success) {
-                        Log.d(TAG, "[SEND_ACK] Sent ACK for $messageId to $senderKey via Nearby ($viaEndpoint)")
-                        return@launch
-                    }
-                }
-
-                // If sender has onion address and Tor is ready
-                val onion = senderOnion?.ifBlank { null } ?: db.contactDao().getContact(senderKey)?.onionAddress?.ifBlank { null }
-                if (onion != null && transportRouter.isTorReady()) {
-                    val res = transportRouter.sendDirect(TransportType.TOR, onion, wire)
-                    if (res.success) {
-                        Log.d(TAG, "[SEND_ACK] Sent ACK for $messageId to $senderKey via Tor ($onion)")
-                        return@launch
-                    }
-                }
-
-                // Fall back to queueing as an envelope through TorXAgent
                 agent.queueForDelivery(
                     recipientKey = senderKey,
                     messageId = "ack_$messageId",
                     messageType = EnvelopeType.ACK,
                     encryptedPayload = wire
                 )
+                Log.d(TAG, "[SEND_ACK] Queued ACK envelope for $messageId to $senderKey")
             } catch (e: Exception) {
-                Log.w(TAG, "[SEND_ACK] Failed to send ACK for $messageId: ${e.message}")
+                Log.w(TAG, "[SEND_ACK] Failed to queue ACK for $messageId: ${e.message}")
             }
         }
     }
 
     /**
-     * Send a READ receipt to the message sender.
+     * Send an authenticated READ receipt to the message sender via TorX Agent queue.
+     * All receipts flow through the persistent delivery engine — zero bypasses.
      */
     fun sendReadReceipt(messageId: String, senderKey: String) {
         if (messageId.isBlank() || senderKey.isBlank() || mySigningKeyHex.isBlank()) return
@@ -161,33 +144,15 @@ class DeliveryTracker(
 
         scope.launch {
             try {
-                // Check contact
-                val contact = db.contactDao().getContact(senderKey)
-                if (contact?.endpointId?.isNotBlank() == true && transportRouter.getConnectedEndpoints().contains(contact.endpointId)) {
-                    val res = transportRouter.sendDirect(TransportType.NEARBY_DIRECT, contact.endpointId, wire)
-                    if (res.success) {
-                        Log.d(TAG, "[SEND_READ] Sent READ for $messageId via Nearby (${contact.endpointId})")
-                        return@launch
-                    }
-                }
-
-                if (contact?.onionAddress?.isNotBlank() == true && transportRouter.isTorReady()) {
-                    val res = transportRouter.sendDirect(TransportType.TOR, contact.onionAddress, wire)
-                    if (res.success) {
-                        Log.d(TAG, "[SEND_READ] Sent READ for $messageId via Tor (${contact.onionAddress})")
-                        return@launch
-                    }
-                }
-
-                // Fall back to agent queue
                 agent.queueForDelivery(
                     recipientKey = senderKey,
                     messageId = "read_$messageId",
                     messageType = EnvelopeType.READ,
                     encryptedPayload = wire
                 )
+                Log.d(TAG, "[SEND_READ] Queued READ envelope for $messageId to $senderKey")
             } catch (e: Exception) {
-                Log.w(TAG, "[SEND_READ] Failed to send READ for $messageId: ${e.message}")
+                Log.w(TAG, "[SEND_READ] Failed to queue READ for $messageId: ${e.message}")
             }
         }
     }
