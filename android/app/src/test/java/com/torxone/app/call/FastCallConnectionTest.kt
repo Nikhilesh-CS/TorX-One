@@ -131,14 +131,6 @@ class FastCallConnectionTest {
         whenever(messageRouter.getBestTransport(any())).thenReturn(Transport.NEARBY_DIRECT)
         whenever(db.contactDao()).thenReturn(contactDao)
         whenever(contactDao.getContact(testPeerKey)).thenReturn(testContact)
-
-        // Mock openCallTransportSession
-        whenever(messageRouter.openCallTransportSession(any(), any(), any())).thenAnswer { invocation ->
-            val callId = invocation.getArgument<String>(0)
-            val contact = invocation.getArgument<ContactEntity>(1)
-            val transport = invocation.getArgument<Transport>(2)
-            CallTransportSession(callId, contact.signingPublicKey, transport)
-        }
     }
 
     @After

@@ -41,7 +41,7 @@ class CallSignalingHandler(
     scopeOverride: CoroutineScope? = null,
     ioDispatcherOverride: CoroutineDispatcher? = null
 ) {
-    var activeSession: CallTransportSession? = null
+    var agent: com.torxone.app.agent.TorXAgent? = null
     private val ioDispatcher: CoroutineDispatcher = ioDispatcherOverride
         ?: (scopeOverride?.coroutineContext?.get(kotlin.coroutines.ContinuationInterceptor) as? CoroutineDispatcher)
         ?: Dispatchers.IO
@@ -396,10 +396,18 @@ class CallSignalingHandler(
 
     private suspend fun sendRawCallSignal(peerKey: String, rawText: String, messageType: String) {
         withContext(ioDispatcher) {
-            val session = activeSession
-            if (session != null && session.isActive && session.peerKey == peerKey) {
+            val agentInstance = agent ?: messageRouter.torXAgent
+            if (agentInstance != null) {
                 val wire = messageRouter.buildEncryptedWireFrame(peerKey, rawText, messageType)
-                if (wire != null && session.sendFrame(wire)) {
+                if (wire != null) {
+                    val envelopeType = com.torxone.app.agent.EnvelopeType.fromWireType(messageType)
+                    agentInstance.queueForDelivery(
+                        recipientKey = peerKey,
+                        messageId = UUID.randomUUID().toString(),
+                        messageType = envelopeType,
+                        encryptedPayload = wire
+                    )
+                    Log.d(TAG, "[CALL_SIG] Queued $messageType via TorXAgent for ${peerKey.take(12)}")
                     return@withContext
                 }
             }

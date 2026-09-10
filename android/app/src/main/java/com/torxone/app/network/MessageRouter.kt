@@ -446,10 +446,6 @@ class MessageRouter(
         MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
     }
 
-    fun openCallTransportSession(callId: String, contact: ContactEntity, transport: Transport): com.torxone.app.call.CallTransportSession {
-        return com.torxone.app.call.CallTransportSession(callId = callId, peerKey = contact.signingPublicKey, transport = transport, endpointId = contact.endpointId.takeIf { it.isNotBlank() }, onionHost = contact.onionAddress.takeIf { it.isNotBlank() }, nearbySender = { endpoint, frame -> runCatching { nearbyManager.sendRaw(endpoint, frame) }.getOrDefault(false) }, torSocketFactory = { host, port, timeout -> torManager.createTorSocket(host, port, timeout) })
-    }
-
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
         if (db.messageDao().getMessageById(targetMessageId)?.conversationType == "group") {
             val actor = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }

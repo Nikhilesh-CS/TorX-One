@@ -6,6 +6,7 @@ import android.media.ToneGenerator
 import android.os.PowerManager
 import android.util.Log
 import com.torxone.app.data.AppDatabase
+import com.torxone.app.data.ContactEntity
 import com.torxone.app.network.MessageRouter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -52,7 +53,30 @@ class CallManager(
     private val webRtcEngine by lazy { WebRtcCallEngine(context, signaling, stateStore, callAudioManager) }
     private val voiceNoteEngine by lazy { VoiceNoteCallEngine(messageRouter) }
     private val engines: List<CallEngine> = enginesOverride ?: listOf(webRtcEngine, voiceNoteEngine)
-    private val adaptiveRouter = AdaptiveCallRouter(messageRouter, engines)
+
+    var torXAgent: com.torxone.app.agent.TorXAgent? = null
+        set(value) {
+            field = value
+            signaling.agent = value
+        }
+
+    private fun buildRouteContext(contact: ContactEntity): CallRouteContext {
+        val transport = messageRouter.getBestTransport(contact)
+        return CallRouteContext(
+            peerKey = contact.signingPublicKey,
+            peerName = contact.name,
+            transport = transport,
+            privacyRequiresRelay = transport == com.torxone.app.network.Transport.TOR
+        )
+    }
+
+    private fun selectAudioEngine(context: CallRouteContext): CallEngine? {
+        val priority = listOf(CallEngineType.WEBRTC, CallEngineType.VOICE_NOTE)
+        return priority
+            .asSequence()
+            .mapNotNull { type -> engines.firstOrNull { it.capabilities.type == type } }
+            .firstOrNull { it.isAvailable(context) }
+    }
 
     private var activeEngine: CallEngine? = null
     private var activeCallId: String? = null
@@ -87,7 +111,6 @@ class CallManager(
     }
 
     private var activeDiagnostics: CallConnectionDiagnostics? = null
-    private var transportSession: CallTransportSession? = null
     private val networkMonitor = CallNetworkMonitor(context) {
         (activeEngine as? WebRtcCallEngine)?.triggerNetworkHandover()
     }
@@ -176,7 +199,7 @@ class CallManager(
                 stateStore.update(CallUiState.Unavailable("Contact not found."))
                 return@launch
             }
-            val routeContext = adaptiveRouter.buildContext(contact)
+            val routeContext = buildRouteContext(contact)
             if (routeContext.transport == com.torxone.app.network.Transport.FAILED) {
                 stateStore.update(CallUiState.Unavailable("Peer is offline. Move closer or wait for mesh connection."))
                 scope.launch {
@@ -190,21 +213,15 @@ class CallManager(
             activePeerKey = peerKey
             val diagnostics = CallConnectionDiagnostics(callId, CallDirection.OUTGOING, peerKey)
             activeDiagnostics = diagnostics
-            val session = runCatching { messageRouter.openCallTransportSession(callId, contact, routeContext.transport) }.getOrNull()
-            transportSession = session
-            signaling.activeSession = session
             acquireWakeLocks()
             startRingbackTone()
             stateStore.update(CallUiState.Ringing(callId, peerKey, contact.name, CallDirection.OUTGOING, CallMode.AUDIO))
             startRingTimeout()
 
-            val selected = adaptiveRouter.selectAudioEngine(routeContext)
+            val selected = selectAudioEngine(routeContext)
             if (selected == null) {
                 stopRingbackTone()
                 releaseWakeLocks()
-                session?.close()
-                transportSession = null
-                signaling.activeSession = null
                 diagnostics.markFailed("No compatible engine")
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
                 return@launch
@@ -212,7 +229,6 @@ class CallManager(
 
             if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
                 Log.d(TAG, "Call $callId cancelled before startOutgoing (gen $generation vs $callGeneration)")
-                session?.close()
                 return@launch
             }
 
@@ -224,7 +240,6 @@ class CallManager(
             if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
                 Log.d(TAG, "Call $callId cancelled during startOutgoing (gen $generation vs $callGeneration)")
                 selected.end()
-                session?.close()
                 return@launch
             }
             handleStartResult(result, callId, peerKey, contact.name, selected.capabilities.type, generation, selected)
@@ -251,8 +266,8 @@ class CallManager(
             stateStore.update(CallUiState.Accepted(callId, peerKey, contact.name, activeMode))
             val generation = ++callGeneration
             acquireWakeLocks()
-            val routeContext = adaptiveRouter.buildContext(contact)
-            val selected = adaptiveRouter.selectAudioEngine(routeContext)
+            val routeContext = buildRouteContext(contact)
+            val selected = selectAudioEngine(routeContext)
             if (selected == null) {
                 releaseWakeLocks()
                 stateStore.update(CallUiState.Unavailable("No compatible call engine is available for ${routeContext.transport}."))
@@ -298,9 +313,6 @@ class CallManager(
         cancelRingTimeout()
         cancelConnectEstablishmentTimeout()
         networkMonitor.stop()
-        transportSession?.close()
-        transportSession = null
-        signaling.activeSession = null
         activeDiagnostics?.let {
             if (stateStore.state.value !is CallUiState.Connected) {
                 it.markFailed(reason)
@@ -534,13 +546,6 @@ class CallManager(
         activeDiagnostics = diagnostics
         diagnostics.markOfferReceived()
 
-        if (contact != null) {
-            val routeContext = adaptiveRouter.buildContext(contact)
-            val session = runCatching { messageRouter.openCallTransportSession(signal.callId, contact, routeContext.transport) }.getOrNull()
-            transportSession = session
-            signaling.activeSession = session
-        }
-
         acquireWakeLocks()
         startRingTimeout()
         ringtoneManager.start()
@@ -657,9 +662,6 @@ class CallManager(
         cancelRingTimeout()
         cancelConnectEstablishmentTimeout()
         networkMonitor.stop()
-        transportSession?.close()
-        transportSession = null
-        signaling.activeSession = null
         activeDiagnostics?.let {
             if (stateStore.state.value !is CallUiState.Connected) {
                 it.markFailed(reason)
@@ -710,7 +712,6 @@ class CallManager(
     fun verifyCleanup(): Boolean {
         val issues = mutableListOf<String>()
         if (activeEngine != null) issues.add("activeEngine is not null")
-        if (transportSession != null) issues.add("transportSession is not null")
         if (activeDiagnostics != null) issues.add("activeDiagnostics is not null")
         if (durationJob?.isActive == true) issues.add("durationJob is still active")
         if (ringTimeoutJob?.isActive == true) issues.add("ringTimeoutJob is still active")
@@ -787,7 +788,7 @@ class CallManager(
                         Log.d(TAG, "Dropping fallback after contact fetch for call $callId")
                         return@launch
                     }
-                    val routeContext = adaptiveRouter.buildContext(contact)
+                    val routeContext = buildRouteContext(contact)
                     val fallbackResult = fallback.startOutgoing(callId, contact, routeContext)
                     if (generation != callGeneration || callId != activeCallId || isTerminated(callId)) {
                         Log.d(TAG, "Dropping fallback after startOutgoing for call $callId")
