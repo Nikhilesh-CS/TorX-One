@@ -45,8 +45,8 @@ android {
         applicationId = "com.torxone.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 33
-        versionName = "1.0.29"
+        versionCode = 34
+        versionName = "1.0.30"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
