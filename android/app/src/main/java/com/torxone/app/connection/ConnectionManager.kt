@@ -5,9 +5,12 @@ import com.torxone.app.agent.ConnectionQueueDao
 import com.torxone.app.agent.ConnectionQueueEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * TorX One 2.0 — Connection Layer
@@ -245,38 +248,24 @@ class ConnectionManager(
         false
     }
 
-    /**
-     * Rotate the send queue ID for a connection immediately (convenience helper).
-     */
-    suspend fun rotateSendQueue(connectionId: String): String = withContext(Dispatchers.IO) {
-        val newQueueId = UUID.randomUUID().toString()
-        connectionQueueDao.updateSendQueueId(connectionId, newQueueId, System.currentTimeMillis())
-        Log.i(TAG, "[ROTATE] Send queue for $connectionId rotated to $newQueueId")
-        newQueueId
-    }
-
-    /**
-     * Rotate the receive queue ID for a connection immediately (convenience helper).
-     */
-    suspend fun rotateRecvQueue(connectionId: String): String = withContext(Dispatchers.IO) {
-        val newQueueId = UUID.randomUUID().toString()
-        connectionQueueDao.updateRecvQueueId(connectionId, newQueueId, System.currentTimeMillis())
-        Log.i(TAG, "[ROTATE] Recv queue for $connectionId rotated to $newQueueId")
-        newQueueId
-    }
+    private val sendSeqLocks = ConcurrentHashMap<String, Mutex>()
 
     // ─────────────────── Monotonic Sequence Handling ───────────────────
 
     /**
      * Advance the next send sequence number for an outgoing envelope.
+     * Concurrency-safe: Protected by per-connection atomic Mutex to ensure sequence monotonicity without duplicates.
      * Returns the incremented sequence number.
      */
     suspend fun nextSendSequence(connectionId: String): Long = withContext(Dispatchers.IO) {
-        val conn = connectionQueueDao.getById(connectionId)
-            ?: throw IllegalStateException("Connection $connectionId not found")
-        val nextSeq = conn.lastSendSeq + 1
-        connectionQueueDao.updateSendSeq(connectionId, nextSeq, System.currentTimeMillis())
-        nextSeq
+        val lock = sendSeqLocks.computeIfAbsent(connectionId) { Mutex() }
+        lock.withLock {
+            val conn = connectionQueueDao.getById(connectionId)
+                ?: throw IllegalStateException("Connection $connectionId not found")
+            val nextSeq = conn.lastSendSeq + 1
+            connectionQueueDao.updateSendSeq(connectionId, nextSeq, System.currentTimeMillis())
+            nextSeq
+        }
     }
 
     /**
@@ -316,22 +305,6 @@ class ConnectionManager(
     ) = withContext(Dispatchers.IO) {
         connectionQueueDao.commitRecvSeq(connectionId, committedSeq, envelopeHash, System.currentTimeMillis())
         Log.d(TAG, "[SEQ] Committed recvSeq=$committedSeq for $connectionId (hash=$envelopeHash)")
-    }
-
-    /**
-     * Legacy helper: validates and immediately records.
-     * @deprecated Use [validateRecvSequence] followed by [commitRecvSequence] upon persistence.
-     */
-    @Deprecated("Use validateRecvSequence followed by commitRecvSequence after persistence")
-    suspend fun validateAndRecordRecvSequence(
-        connectionId: String,
-        incomingSeq: Long
-    ): SequenceValidationResult = withContext(Dispatchers.IO) {
-        val res = validateRecvSequence(connectionId, incomingSeq)
-        if (res is SequenceValidationResult.Valid || res is SequenceValidationResult.ValidWithGap) {
-            connectionQueueDao.updateRecvSeq(connectionId, incomingSeq, System.currentTimeMillis())
-        }
-        res
     }
 
     /**
@@ -421,9 +394,13 @@ class ConnectionManager(
 
         if (conn != null && newQueueId.isNotBlank()) {
             if (role == "send") {
-                connectionQueueDao.updateRecvQueueId(conn.connectionId, newQueueId, System.currentTimeMillis())
-                Log.i(TAG, "[ROTATE] Peer $fromKey rotated send queue -> our recvQueueId updated to $newQueueId")
+                // Peer rotated their send queue -> authenticate incoming proposal, activate, and drain old queue
+                authenticateQueueRotation(conn.connectionId, newQueueId)
+                activateNewQueue(conn.connectionId)
+                drainOldQueue(conn.connectionId)
+                Log.i(TAG, "[ROTATE] Peer $fromKey rotated send queue -> our recvQueueId transitioned to $newQueueId (draining)")
             } else if (role == "recv") {
+                // Peer rotated their recv queue -> update our active send queue
                 connectionQueueDao.updateSendQueueId(conn.connectionId, newQueueId, System.currentTimeMillis())
                 Log.i(TAG, "[ROTATE] Peer $fromKey rotated recv queue -> our sendQueueId updated to $newQueueId")
             }

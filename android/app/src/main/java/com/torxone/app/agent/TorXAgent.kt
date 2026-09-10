@@ -335,14 +335,17 @@ class TorXAgent(
      */
     suspend fun rotateQueues(remoteKey: String, mySigningKey: String): Boolean {
         val conn = connectionManager.getConnectionByRemoteKey(remoteKey) ?: return false
-        val newSendQueueId = connectionManager.rotateSendQueue(conn.connectionId)
+        val proposal = connectionManager.proposeQueueRotation(conn.connectionId)
         val notice = connectionManager.encodeQueueRotationNotice(
             connectionId = conn.connectionId,
             isSendQueue = true,
-            newQueueId = newSendQueueId,
+            newQueueId = proposal.proposedSendQueueId,
             fromKey = mySigningKey,
             toKey = remoteKey
         )
+        connectionManager.activateNewQueue(conn.connectionId)
+        connectionManager.drainOldQueue(conn.connectionId)
+
         queueForDelivery(
             recipientKey = remoteKey,
             messageId = "rotate_${System.currentTimeMillis()}",
@@ -369,18 +372,10 @@ class TorXAgent(
                 addresses[TransportType.TOR] = onion
             }
 
-            // Nearby relay is always a possibility if we have connected endpoints
-            if (transportRouter.getConnectedEndpoints().isNotEmpty()) {
-                // For relay, we use the recipientKey as the "address" — 
-                // the relay encoding happens at the protocol layer
-                addresses[TransportType.NEARBY_RELAY] = recipientKey
-            }
-
-            // Offline relay store-and-forward fallback if relay is available (opaque queue-addressed)
+            // Offline relay store-and-forward fallback if relay is available (strictly opaque queue-addressed)
             if (transportRouter.isRelayAvailable()) {
-                val conn = connectionManager.getConnectionByRemoteKey(recipientKey)
-                val targetQueue = conn?.sendQueueId ?: recipientKey
-                addresses[TransportType.OFFLINE_RELAY] = targetQueue
+                val conn = connectionManager.getOrCreateConnection(recipientKey)
+                addresses[TransportType.OFFLINE_RELAY] = conn.sendQueueId
             }
         }
 
