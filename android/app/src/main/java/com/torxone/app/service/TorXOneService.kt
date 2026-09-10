@@ -271,8 +271,8 @@ class TorXOneService : Service() {
         relayTransport.start()
         isConfigured.value = true
 
-        // Start retry loop for any pending messages from previous session
-        messageRouter.ensureRetryLoopRunning()
+        // Process any queued envelopes from previous session
+        torXAgent.triggerProcessing()
         serviceScope.launch {
             while (isConfigured.value) {
                 groupManager.retryPendingEvents()
@@ -395,7 +395,7 @@ class TorXOneService : Service() {
                 when (state) {
                     is TorState.Connected -> {
                         updateNotification("Connected", "Tor: ${state.onionAddress.take(16)}...")
-                        messageRouter.retryPendingNow()
+                        torXAgent.triggerProcessing()
                     }
                     is TorState.Reconnecting -> {
                         updateNotification("Reconnecting via Tor...", "Messages are queued safely")

@@ -62,10 +62,6 @@ class MessageRouter(
             return field
         }
 
-    private var retryJob: Job? = null
-    @Volatile
-    private var retryIntervalMs: Long = RETRY_INTERVAL_MS
-    private var retryBackoffMs: Long = RETRY_INTERVAL_MS
     private val recentRelayFingerprints = LinkedHashMap<String, Long>()
     private val pendingSessionPayloads = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -247,9 +243,7 @@ class MessageRouter(
         val action = if (mine == emoji) "remove" else "set"
         applyReactionToMessage(targetMessageId, actorKey, emoji, action)
         val reaction = ReactionOutboxEntity(reactionId = UUID.randomUUID().toString(), contactKey = contactKey, targetMessageId = targetMessageId, emoji = emoji, action = action, createdAt = System.currentTimeMillis())
-        val result = sendReactionPacket(reaction)
-        if (!result.success) { db.reactionOutboxDao().insertReaction(reaction); ensureRetryLoopRunning() }
-        result
+        sendReactionPacket(reaction)
     }
 
     suspend fun editGroupMessage(groupId: String, messageId: String, text: String): SendResult = withContext(Dispatchers.IO) {
@@ -310,52 +304,16 @@ class MessageRouter(
     // ──────────────────────── RETRY LOOP ────────────────────────
 
     fun ensureRetryLoopRunning() {
-        if (retryJob?.isActive == true) return
-        retryBackoffMs = RETRY_INTERVAL_MS
-        retryJob = scope.launch(Dispatchers.IO) {
-            Log.d(TAG, "[RETRY] Starting retry loop")
-            var currentDelay = 1_000L
-            while (isActive) {
-                try { retryPendingMessages() } catch (e: Exception) { Log.e(TAG, "[RETRY] Error in retry loop", e) }
-                if (!isActive) break
-                delay(currentDelay)
-                currentDelay = (currentDelay * 2).coerceAtMost(retryIntervalMs)
-            }
-        }
+        // TorX One 2.0: Delivery loops and retries are managed by TorXAgent
+        torXAgent?.triggerProcessing()
     }
 
-    private suspend fun retryPendingMessages() {
-        drainReceiptOutbox()
-
-        val pendingReactions = db.reactionOutboxDao().getPendingReactions()
-        if (pendingReactions.isNotEmpty()) {
-            retryPendingReactions(pendingReactions)
-        }
-
-        // Clean up legacy outbox entries if any exist
-        runCatching {
-            val pendingOutbox = db.messageOutboxDao().getPendingOutboxMessages(System.currentTimeMillis(), limit = 50)
-            for (outboxMsg in pendingOutbox) {
-                db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
-            }
-        }
+    fun setBackgroundRetryInterval(intervalMs: Long) {
+        // TorX One 2.0: Centrally paced by TorXAgent delivery loops
     }
 
-    private suspend fun drainReceiptOutbox() {
-        val now = System.currentTimeMillis()
-        val pending = db.receiptOutboxDao().getPendingReceipts(now, limit = 50)
-        if (pending.isEmpty()) return
-        for (receipt in pending) {
-            queueAndDispatchReceipt(receipt.messageId, receipt.recipientKey, receipt.type)
-            db.receiptOutboxDao().deleteReceipt(receipt.id)
-        }
-    }
-
-    fun setBackgroundRetryInterval(intervalMs: Long) { retryIntervalMs = intervalMs.coerceIn(2_000L, 120_000L) }
-    fun retryPendingNow() { scope.launch(Dispatchers.IO) { runCatching { retryPendingMessages() }.onFailure { Log.e(TAG, "[RETRY] Immediate retry failed", it) } } }
-
-    private suspend fun retryPendingReactions(pending: List<ReactionOutboxEntity>) {
-        pending.forEach { reaction -> val result = sendReactionPacket(reaction); if (result.success) db.reactionOutboxDao().deleteReaction(reaction.reactionId) else db.reactionOutboxDao().incrementRetry(reaction.reactionId) }
+    fun retryPendingNow() {
+        torXAgent?.triggerProcessing()
     }
 
     // ──────────────────────── RECEIPT DISPATCH & OUTBOX ────────────────────────
@@ -415,7 +373,6 @@ class MessageRouter(
         }
 
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "delivered")
-        db.messageOutboxDao().deleteOutbox(messageId)
         pendingSessionPayloads.remove(messageId)
         Log.i(TAG, "[ACK] id=$messageId received=true")
         Log.i(TAG, "[MSG] id=$messageId state=DELIVERED")
@@ -453,7 +410,6 @@ class MessageRouter(
         }
 
         db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "read")
-        db.messageOutboxDao().deleteOutbox(messageId)
         pendingSessionPayloads.remove(messageId)
         Log.i(TAG, "[READ] id=$messageId received=true")
         Log.i(TAG, "[MSG] id=$messageId state=SEEN")
@@ -486,15 +442,7 @@ class MessageRouter(
 
     fun sendMediaAck(messageId: String, senderKey: String) {
         if (messageId.isBlank()) return
-        val ackWire = MeshProtocol.encodeAck(messageId, mySigningKeyHex, senderKey, myOnionAddress)
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                val contact = db.contactDao().getContact(senderKey) ?: return@runCatching
-                val connected = nearbyManager.connectedEndpoints.value
-                if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) nearbyManager.sendRaw(contact.endpointId, ackWire)
-                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) torManager.sendToOnion(contact.onionAddress, ackWire, messageId)
-            }
-        }
+        sendAck(messageId, senderKey, null)
     }
 
     // ──────────────────────── HELLO EXCHANGE ────────────────────────

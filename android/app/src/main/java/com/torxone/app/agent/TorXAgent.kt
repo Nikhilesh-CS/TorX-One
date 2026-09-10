@@ -82,6 +82,21 @@ class TorXAgent(
         Log.i(TAG, "[STOP] TorX Agent stopped")
     }
 
+    /**
+     * Trigger immediate processing of pending delivery queues (e.g. when network connects or retry is requested).
+     */
+    fun triggerProcessing() {
+        scope.launch {
+            try {
+                processDeliveryQueue()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "[TRIGGER] Error: ${e.message}")
+            }
+        }
+    }
+
     // ──────────────────────── SEND API ────────────────────────
 
     /**
