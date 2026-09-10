@@ -93,7 +93,6 @@ data class DeliveryQueueEntity(
 @Entity(
     tableName = "connection_queue",
     indices = [
-        Index(value = ["connectionId"], unique = true),
         Index(value = ["remotePartyKey"]),
         Index(value = ["sendQueueId"]),
         Index(value = ["recvQueueId"]),
