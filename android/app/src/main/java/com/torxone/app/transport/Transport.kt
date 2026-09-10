@@ -80,17 +80,19 @@ enum class TransportType(val priority: Int) {
     /** Wi-Fi Direct peer-to-peer. */
     WIFI_DIRECT(priority = 2),
 
-    /** Local area network. */
-    LAN(priority = 3),
-
-    /** Mesh relay through intermediate Nearby peers. */
-    NEARBY_RELAY(priority = 4),
-
     /** Tor hidden service (.onion). */
-    TOR(priority = 5),
+    TOR(priority = 3),
 
-    /** Offline relay (store-and-forward). */
-    OFFLINE_RELAY(priority = 6)
+    /** Offline relay (store-and-forward, opaque queue-addressed). */
+    OFFLINE_RELAY(priority = 4),
+
+    /** Legacy mesh relay through intermediate Nearby peers. */
+    @Deprecated("Legacy mesh relay replaced by offline relay protocol")
+    NEARBY_RELAY(priority = 5),
+
+    /** Local area network. */
+    @Deprecated("Unused LAN transport")
+    LAN(priority = 6)
 }
 
 /** Metadata passed alongside transport send operations. */

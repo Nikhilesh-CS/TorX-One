@@ -119,7 +119,7 @@ class RelayTransportTest {
             "OFFLINE_RELAY must have lower priority number than TOR (higher priority int = later fallback)",
             TransportType.OFFLINE_RELAY.priority > TransportType.TOR.priority
         )
-        assertEquals(6, TransportType.OFFLINE_RELAY.priority)
+        assertEquals(4, TransportType.OFFLINE_RELAY.priority)
     }
 
     @Test
