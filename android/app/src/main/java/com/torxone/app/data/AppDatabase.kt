@@ -11,6 +11,10 @@ import com.torxone.app.security.session.SessionReplayEntity
 import com.torxone.app.security.session.SessionReplayDao
 import com.torxone.app.security.session.SkippedMessageKeyEntity
 import com.torxone.app.security.session.SkippedMessageKeyDao
+import com.torxone.app.agent.DeliveryQueueEntity
+import com.torxone.app.agent.DeliveryQueueDao
+import com.torxone.app.agent.ConnectionQueueEntity
+import com.torxone.app.agent.ConnectionQueueDao
 
 import androidx.room.Dao
 import androidx.room.Database
@@ -650,8 +654,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class],
-    version = 25,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class, DeliveryQueueEntity::class, ConnectionQueueEntity::class],
+    version = 26,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -676,6 +680,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun receiptOutboxDao(): ReceiptOutboxDao
     abstract fun messageOutboxDao(): MessageOutboxDao
     abstract fun callSignalingOutboxDao(): CallSignalingOutboxDao
+
+    // TorX Agent 2.0 DAOs
+    abstract fun deliveryQueueDao(): DeliveryQueueDao
+    abstract fun connectionQueueDao(): ConnectionQueueDao
 
     companion object {
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) { override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {} }
@@ -1066,6 +1074,56 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_callId` ON `call_signaling_outbox` (`callId`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_peerKey` ON `call_signaling_outbox` (`peerKey`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_signaling_outbox_nextRetryAt` ON `call_signaling_outbox` (`nextRetryAt`)")
+            }
+        }
+
+        val MIGRATION_25_26 = object : androidx.room.migration.Migration(25, 26) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // TorX Agent 2.0 — Delivery Queue
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `delivery_queue` (
+                        `envelopeId` TEXT NOT NULL,
+                        `connectionId` TEXT NOT NULL,
+                        `messageId` TEXT NOT NULL,
+                        `queueId` TEXT NOT NULL,
+                        `sequenceNumber` INTEGER NOT NULL,
+                        `previousMessageHash` TEXT,
+                        `messageType` TEXT NOT NULL,
+                        `encryptedPayload` TEXT NOT NULL,
+                        `state` TEXT NOT NULL DEFAULT 'CREATED',
+                        `createdAt` INTEGER NOT NULL,
+                        `lastAttemptAt` INTEGER,
+                        `nextRetryAt` INTEGER,
+                        `retryCount` INTEGER NOT NULL DEFAULT 0,
+                        `expiresAt` INTEGER NOT NULL,
+                        `transportUsed` TEXT,
+                        `recipientKey` TEXT NOT NULL,
+                        PRIMARY KEY(`envelopeId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_delivery_queue_state_nextRetryAt` ON `delivery_queue` (`state`, `nextRetryAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_delivery_queue_connectionId` ON `delivery_queue` (`connectionId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_delivery_queue_messageId` ON `delivery_queue` (`messageId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_delivery_queue_expiresAt` ON `delivery_queue` (`expiresAt`)")
+
+                // TorX Agent 2.0 — Connection Queue
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `connection_queue` (
+                        `connectionId` TEXT NOT NULL,
+                        `localPartyKey` TEXT NOT NULL,
+                        `remotePartyKey` TEXT NOT NULL,
+                        `sendQueueId` TEXT NOT NULL,
+                        `recvQueueId` TEXT NOT NULL,
+                        `lastSendSeq` INTEGER NOT NULL DEFAULT 0,
+                        `lastRecvSeq` INTEGER NOT NULL DEFAULT 0,
+                        `state` TEXT NOT NULL DEFAULT 'ACTIVE',
+                        `createdAt` INTEGER NOT NULL,
+                        `lastActiveAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`connectionId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_connection_queue_remotePartyKey` ON `connection_queue` (`remotePartyKey`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_connection_queue_state` ON `connection_queue` (`state`)")
             }
         }
     }

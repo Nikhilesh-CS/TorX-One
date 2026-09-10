@@ -44,6 +44,10 @@ class MessageRouter(
     var mySigningKeyHex: String = ""
     var myOnionAddress: String = ""
 
+    // TorX Agent 2.0 components
+    var torXAgent: com.torxone.app.agent.TorXAgent? = null
+    var deliveryTracker: com.torxone.app.agent.DeliveryTracker? = null
+
     private var retryJob: Job? = null
     @Volatile
     private var retryIntervalMs: Long = RETRY_INTERVAL_MS
@@ -144,7 +148,7 @@ class MessageRouter(
         }
     }
 
-    private fun handlePing(json: JSONObject, viaEndpoint: String?) {
+    internal fun handlePing(json: JSONObject, viaEndpoint: String?) {
         val timestamp = json.optLong("timestamp", 0)
         val fromOnion = json.optString("from", "")
         if (timestamp > 0) {
@@ -157,7 +161,7 @@ class MessageRouter(
         }
     }
 
-    private fun handlePong(json: JSONObject) {
+    internal fun handlePong(json: JSONObject) {
         val timestamp = json.optLong("timestamp", 0)
         if (timestamp > 0) {
             val latency = System.currentTimeMillis() - timestamp
@@ -230,7 +234,19 @@ class MessageRouter(
         val wireJson = sessionPayload?.wireJsonString
             ?: MeshProtocol.encodeDirectMessage(legacyPayload!!, messageId, myOnionAddress, MeshProtocol.TYPE_MSG)
 
-        // Persist exact wire frame into MessageOutboxEntity BEFORE transmission
+        // TorX Agent 2.0 Delivery Queue: persist-before-send crash safety + auto retry
+        val agent = torXAgent
+        if (agent != null) {
+            agent.queueForDelivery(
+                recipientKey = contactKey,
+                messageId = messageId,
+                messageType = com.torxone.app.agent.EnvelopeType.MSG,
+                encryptedPayload = wireJson
+            )
+            return@withContext SendResult(true, Transport.PENDING)
+        }
+
+        // Fallback: Legacy outbox path
         db.messageOutboxDao().insertOutbox(
             com.torxone.app.data.MessageOutboxEntity(
                 messageId = messageId,
@@ -681,7 +697,7 @@ class MessageRouter(
 
     // ──────────────────────── ACK HANDLING ────────────────────────
 
-    private suspend fun handleAck(json: JSONObject, viaEndpoint: String?) {
+    internal suspend fun handleAck(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
@@ -710,11 +726,16 @@ class MessageRouter(
         }
     }
 
-    private fun sendAck(messageId: String, senderKey: String, viaEndpoint: String?, senderOnion: String? = null) {
+    internal fun sendAck(messageId: String, senderKey: String, viaEndpoint: String?, senderOnion: String? = null) {
+        val tracker = deliveryTracker
+        if (tracker != null) {
+            tracker.sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+            return
+        }
         queueAndDispatchReceipt(messageId, senderKey, "ack", viaEndpoint, senderOnion)
     }
 
-    private suspend fun handleRead(json: JSONObject, viaEndpoint: String?) {
+    internal suspend fun handleRead(json: JSONObject, viaEndpoint: String?) {
         if (forwardReceiptIfNeeded(json, viaEndpoint)) return
         val messageId = json.optString("msgId")
         val senderKey = json.optString("from", "").trim().lowercase()
@@ -744,6 +765,11 @@ class MessageRouter(
     }
 
     fun sendReadReceipt(messageId: String, senderKey: String) {
+        val tracker = deliveryTracker
+        if (tracker != null) {
+            tracker.sendReadReceipt(messageId, senderKey)
+            return
+        }
         queueAndDispatchReceipt(messageId, senderKey, "read")
     }
 
@@ -778,7 +804,7 @@ class MessageRouter(
         nearbyManager.sendRaw(endpointId, MeshProtocol.encodeHello(contactString))
     }
 
-    private fun handleHello(endpointId: String, contactString: String) {
+    internal fun handleHello(endpointId: String, contactString: String) {
         if (contactString.isBlank()) return
         val parsed = CryptoManager.parseContactString(contactString) ?: return
         scope.launch(Dispatchers.IO) {
@@ -789,7 +815,7 @@ class MessageRouter(
 
     // ──────────────────────── RELAY ────────────────────────
 
-    private suspend fun handleRelay(fromEndpointId: String?, json: JSONObject) {
+    internal suspend fun handleRelay(fromEndpointId: String?, json: JSONObject) {
         val dest = json.optString("dest", "").trim().lowercase()
         val ttl = json.optInt("ttl", 0)
         val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
@@ -812,7 +838,7 @@ class MessageRouter(
 
     // ──────────────────────── DECRYPTION ────────────────────────
 
-    private suspend fun handleSessionMessage(viaEndpoint: String?, json: JSONObject) {
+    internal suspend fun handleSessionMessage(viaEndpoint: String?, json: JSONObject) {
         val to = json.optString("to", "").trim().lowercase()
         val ttl = json.optInt("ttl", 3)
         val fromKey = json.optString("from", "").trim().lowercase()
@@ -852,7 +878,7 @@ class MessageRouter(
         }
     }
 
-    private suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?, messageType: String) {
+    internal suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?, messageType: String) {
         val payload = MeshProtocol.parseEncrypted(json) ?: return
         val identity = identity ?: return
         val messageId = json.optString("msgId", "")

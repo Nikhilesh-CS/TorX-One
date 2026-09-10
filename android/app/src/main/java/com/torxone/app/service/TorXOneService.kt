@@ -63,6 +63,8 @@ class TorXOneService : Service() {
         private set
     lateinit var torManager: TorManager
         private set
+    lateinit var wifiDirectManager: com.torxone.app.network.WifiDirectManager
+        private set
     lateinit var messageRouter: MessageRouter
         private set
     lateinit var identityManager: IdentityManager
@@ -88,6 +90,16 @@ class TorXOneService : Service() {
     lateinit var sessionManager: com.torxone.app.security.session.SessionManager
         private set
     lateinit var settingsManager: com.torxone.app.data.SettingsManager
+        private set
+
+    // TorX Agent 2.0 components
+    lateinit var transportRouter: com.torxone.app.transport.TransportRouter
+        private set
+    lateinit var torXAgent: com.torxone.app.agent.TorXAgent
+        private set
+    lateinit var deliveryTracker: com.torxone.app.agent.DeliveryTracker
+        private set
+    lateinit var incomingDispatcher: com.torxone.app.agent.IncomingDispatcher
         private set
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -140,7 +152,8 @@ class TorXOneService : Service() {
                 AppDatabase.MIGRATION_21_22,
                 AppDatabase.MIGRATION_22_23,
                 AppDatabase.MIGRATION_23_24,
-                AppDatabase.MIGRATION_24_25
+                AppDatabase.MIGRATION_24_25,
+                AppDatabase.MIGRATION_25_26
             )
             .build()
 
@@ -168,6 +181,38 @@ class TorXOneService : Service() {
         groupManager = com.torxone.app.group.GroupManager(this, serviceScope, db, identityManager, messageRouter)
         
         settingsManager = com.torxone.app.data.SettingsManager(this)
+        wifiDirectManager = com.torxone.app.network.WifiDirectManager(this)
+
+        // ── TorX Agent 2.0 initialization ──
+        transportRouter = com.torxone.app.transport.TransportRouter(serviceScope)
+        val nearbyTransport = com.torxone.app.transport.NearbyTransport(nearbyManager, serviceScope)
+        val torTransport = com.torxone.app.transport.TorTransport(torManager, serviceScope)
+        val wifiDirectTransport = com.torxone.app.transport.WifiDirectTransport(wifiDirectManager, serviceScope)
+        transportRouter.registerTransport(nearbyTransport)
+        transportRouter.registerTransport(torTransport)
+        transportRouter.registerTransport(wifiDirectTransport)
+
+        torXAgent = com.torxone.app.agent.TorXAgent(
+            db = db,
+            transportRouter = transportRouter,
+            deliveryQueueDao = db.deliveryQueueDao(),
+            connectionQueueDao = db.connectionQueueDao(),
+            scope = serviceScope
+        )
+        deliveryTracker = com.torxone.app.agent.DeliveryTracker(
+            db = db,
+            agent = torXAgent,
+            transportRouter = transportRouter,
+            scope = serviceScope
+        )
+        messageRouter.torXAgent = torXAgent
+        messageRouter.deliveryTracker = deliveryTracker
+
+        incomingDispatcher = com.torxone.app.agent.IncomingDispatcher(torXAgent, serviceScope)
+        wireIncomingDispatcher()
+        transportRouter.setGlobalIncomingListener(incomingDispatcher)
+        torXAgent.start()
+        Log.d(TAG, "[INIT] TorX Agent 2.0 initialized")
 
         wireNetworking()
         startUpdateChecker()
@@ -192,11 +237,14 @@ class TorXOneService : Service() {
 
         nearbyManager.setLocalName(identity.name)
         messageRouter.identity = identity
-        messageRouter.mySigningKeyHex = CryptoManager.toHex(identity.signingPublicKey)
+        val myKey = CryptoManager.toHex(identity.signingPublicKey)
+        messageRouter.mySigningKeyHex = myKey
         val onion = identityManager.loadOnionAddress() ?: ""
         messageRouter.myOnionAddress = onion
         sessionManager.myOnionAddress = onion
         sessionManager.identity = identity
+        deliveryTracker.mySigningKeyHex = myKey
+        deliveryTracker.myOnionAddress = onion
 
         isConfigured.value = true
 
@@ -237,11 +285,54 @@ class TorXOneService : Service() {
         }
     }
 
-    private fun wireNetworking() {
-        nearbyManager.onMessageReceived = { endpointId, raw ->
-            messageRouter.handleNearbyPayload(endpointId, raw)
+    private fun wireIncomingDispatcher() {
+        incomingDispatcher.onHello = { endpointId, contactString ->
+            messageRouter.handleHello(endpointId, contactString)
         }
+        incomingDispatcher.onSessionMessage = { endpointId, json, _ ->
+            messageRouter.handleSessionMessage(endpointId, json)
+        }
+        incomingDispatcher.onLegacyEncrypted = { json, endpointId, type ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onAckReceived = { json, endpointId ->
+            deliveryTracker.handleAck(json, endpointId)
+            messageRouter.handleAck(json, endpointId)
+        }
+        incomingDispatcher.onReadReceived = { json, endpointId ->
+            deliveryTracker.handleRead(json, endpointId)
+            messageRouter.handleRead(json, endpointId)
+        }
+        incomingDispatcher.onCallSignal = { type, json, endpointId, _ ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onGroupMessage = { type, json, endpointId, _ ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onMediaTransfer = { type, json, endpointId, _ ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onPresence = { json, endpointId ->
+            messageRouter.handleEncrypted(json, endpointId, com.torxone.app.network.MeshProtocol.TYPE_PRESENCE)
+        }
+        incomingDispatcher.onProfileSync = { type, json, endpointId ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onMusicSync = { type, json, endpointId ->
+            messageRouter.handleEncrypted(json, endpointId, type)
+        }
+        incomingDispatcher.onRelayMessage = { json, endpointId ->
+            messageRouter.handleRelay(endpointId, json)
+        }
+        incomingDispatcher.onPing = { json, endpointId ->
+            messageRouter.handlePing(json, endpointId)
+        }
+        incomingDispatcher.onPong = { json ->
+            messageRouter.handlePong(json)
+        }
+    }
 
+    private fun wireNetworking() {
         nearbyManager.onConnectionEstablished = { endpointId, name ->
             serviceScope.launch {
                 val existing = db.contactDao().getContactByEndpoint(endpointId)
@@ -260,16 +351,12 @@ class TorXOneService : Service() {
             Log.d(TAG, "[NEARBY] Disconnected from $endpointId")
         }
 
-        torManager.onTorMessageReceived = { raw ->
-            Log.d(TAG, "[TOR] Received message on hidden service")
-            messageRouter.handleTorPayload(raw)
-        }
-
         serviceScope.launch {
             torManager.onionAddress.collectLatest { onion ->
                 if (onion.isNotBlank()) {
                     messageRouter.myOnionAddress = onion
                     sessionManager.myOnionAddress = onion
+                    deliveryTracker.myOnionAddress = onion
                     identityManager.saveOnionAddress(onion)
                     Log.d(TAG, "[TOR] Onion address saved: ${onion.take(20)}...")
                     updateNotification("Connected", "Tor: ${onion.take(16)}...")
