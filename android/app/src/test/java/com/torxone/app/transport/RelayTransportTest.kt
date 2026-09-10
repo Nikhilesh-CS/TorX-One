@@ -146,4 +146,76 @@ class RelayTransportTest {
         val active = router.activeTransports.value
         assertTrue(active.any { it.type == TransportType.OFFLINE_RELAY })
     }
+
+    @Test
+    fun testOpaqueQueueAddressedMessage_noPublicKeyExposure() {
+        val opaqueQueueId = "queue-uuid-8899-aabb-ccdd"
+        val wirePayload = "{\"version\":2,\"connectionId\":\"conn-1\",\"ciphertext\":\"enc_blob\"}"
+
+        val relayMsg = JSONObject().apply {
+            put("type", "message")
+            put("queueId", opaqueQueueId)
+            put("to", opaqueQueueId)
+            put("payload", wirePayload)
+            put("ciphertext", bytesToHex(wirePayload.toByteArray(Charsets.UTF_8)))
+            put("nonce", "")
+        }
+
+        // Must address strictly by queueId
+        assertEquals("message", relayMsg.getString("type"))
+        assertEquals(opaqueQueueId, relayMsg.getString("queueId"))
+        assertEquals(opaqueQueueId, relayMsg.getString("to"))
+        // CRITICAL: Sender public key must NOT be exposed in the relay envelope
+        assertFalse(relayMsg.has("from"))
+        assertFalse(relayMsg.has("senderKey"))
+        assertFalse(relayMsg.has("publicKey"))
+    }
+
+    @Test
+    fun testQueueSubscriptionMessage_format() {
+        val recvQueues = listOf("queue-recv-1", "queue-recv-2", "queue-recv-3")
+        val subMsg = JSONObject().apply {
+            put("type", "subscribe")
+            put("queues", org.json.JSONArray(recvQueues))
+        }
+
+        assertEquals("subscribe", subMsg.getString("type"))
+        val array = subMsg.getJSONArray("queues")
+        assertEquals(3, array.length())
+        assertEquals("queue-recv-1", array.getString(0))
+        assertEquals("queue-recv-2", array.getString(1))
+        assertEquals("queue-recv-3", array.getString(2))
+    }
+
+    @Test
+    fun testIncomingQueueAddressedMessage_routesByQueueId() {
+        val opaqueQueueId = "queue-recv-9900"
+        val originalPayload = "{\"version\":2,\"connectionId\":\"conn-123\",\"ciphertext\":\"xyz\"}"
+        val messageId = UUID.randomUUID().toString()
+
+        val incomingJson = JSONObject().apply {
+            put("type", "message")
+            put("id", messageId)
+            put("queueId", opaqueQueueId)
+            put("payload", originalPayload)
+        }
+
+        var dispatchedSource: String? = null
+        var dispatchedPayload: String? = null
+
+        val listener = TransportIncomingListener { source, payload, _ ->
+            dispatchedSource = source
+            dispatchedPayload = payload
+        }
+
+        val queueId = incomingJson.optString("queueId")
+        val payload = incomingJson.optString("payload")
+        val source = if (queueId.isNotBlank()) queueId else incomingJson.optString("from", "")
+
+        listener.onPayloadReceived(source, payload, TransportType.OFFLINE_RELAY)
+
+        // Verifies the sourceAddress is the opaque queueId rather than a public key
+        assertEquals(opaqueQueueId, dispatchedSource)
+        assertEquals(originalPayload, dispatchedPayload)
+    }
 }

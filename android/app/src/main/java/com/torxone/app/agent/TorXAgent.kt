@@ -361,9 +361,11 @@ class TorXAgent(
                 addresses[TransportType.NEARBY_RELAY] = recipientKey
             }
 
-            // Offline relay store-and-forward fallback if relay is available
+            // Offline relay store-and-forward fallback if relay is available (opaque queue-addressed)
             if (transportRouter.isRelayAvailable()) {
-                addresses[TransportType.OFFLINE_RELAY] = recipientKey
+                val conn = connectionManager.getConnectionByRemoteKey(recipientKey)
+                val targetQueue = conn?.sendQueueId ?: recipientKey
+                addresses[TransportType.OFFLINE_RELAY] = targetQueue
             }
         }
 

@@ -200,6 +200,7 @@ class TorXOneService : Service() {
         transportRouter.registerTransport(relayTransport)
 
         connectionManager = com.torxone.app.connection.ConnectionManager(db.connectionQueueDao())
+        relayTransport.connectionManager = connectionManager
         torXAgent = com.torxone.app.agent.TorXAgent(
             db = db,
             transportRouter = transportRouter,

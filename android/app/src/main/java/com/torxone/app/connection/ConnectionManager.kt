@@ -350,6 +350,24 @@ class ConnectionManager(
     }
 
     /**
+     * Get all currently valid receive queue IDs (including active and draining queues).
+     */
+    suspend fun getActiveRecvQueueIds(): Set<String> = withContext(Dispatchers.IO) {
+        val active = connectionQueueDao.getActiveConnections()
+        val queueIds = mutableSetOf<String>()
+        val now = System.currentTimeMillis()
+        for (conn in active) {
+            queueIds.add(conn.recvQueueId)
+            if (!conn.pendingRecvQueueId.isNullOrBlank()) {
+                if (conn.rotationState != ROTATION_OLD_QUEUE_DRAINING || now <= (conn.rotationGracePeriodUntil ?: 0L)) {
+                    queueIds.add(conn.pendingRecvQueueId)
+                }
+            }
+        }
+        queueIds
+    }
+
+    /**
      * Observe all connections in Room.
      */
     fun observeAll(): Flow<List<ConnectionQueueEntity>> {

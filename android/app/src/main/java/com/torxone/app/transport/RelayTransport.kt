@@ -52,6 +52,8 @@ class RelayTransport(
     override val name: String = "Offline Relay"
     override val type: TransportType = TransportType.OFFLINE_RELAY
 
+    var connectionManager: com.torxone.app.connection.ConnectionManager? = null
+
     private val _isAvailable = MutableStateFlow(false)
     override val isAvailable: StateFlow<Boolean> = _isAvailable
 
@@ -148,9 +150,11 @@ class RelayTransport(
         val startNs = System.nanoTime()
 
         return try {
+            val targetQueue = destination.trim()
             val msg = JSONObject().apply {
                 put("type", "message")
-                put("to", destination.trim().lowercase())
+                put("queueId", targetQueue)
+                put("to", targetQueue) // backward compatibility with legacy relay inspect
                 put("payload", payload)
                 // Also provide ciphertext hex for backward compatibility with older relay/inspect tools
                 put("ciphertext", CryptoManager.toHex(payload.toByteArray(Charsets.UTF_8)))
@@ -341,18 +345,62 @@ class RelayTransport(
         reconnectAttempt = 0
         _isAvailable.value = true
         _statusText.value = "Connected"
-        Log.i(TAG, "[AUTH] Successfully authenticated with relay. Offline queue flushed.")
+        Log.i(TAG, "[AUTH] Successfully authenticated with relay.")
+        scope.launch(Dispatchers.IO) {
+            syncActiveSubscriptions()
+        }
+    }
+
+    /**
+     * Subscribe to a specific queue ID on the connected relay.
+     */
+    fun subscribeQueue(queueId: String) {
+        val ws = webSocket
+        if (ws != null && _isAvailable.value) {
+            val clean = queueId.trim()
+            if (clean.isNotBlank()) {
+                val msg = JSONObject().apply {
+                    put("type", "subscribe")
+                    put("queueId", clean)
+                }
+                ws.send(msg.toString())
+                Log.d(TAG, "[WS] Subscribed to queue: ${clean.take(8)}…")
+            }
+        }
+    }
+
+    /**
+     * Sync active receive queue subscriptions with the relay.
+     */
+    suspend fun syncActiveSubscriptions() {
+        val ws = webSocket ?: return
+        if (!_isAvailable.value) return
+        val manager = connectionManager ?: return
+        val queues = manager.getActiveRecvQueueIds()
+        if (queues.isNotEmpty()) {
+            val msg = JSONObject().apply {
+                put("type", "subscribe")
+                put("queues", org.json.JSONArray(queues))
+            }
+            ws.send(msg.toString())
+            Log.i(TAG, "[WS] Subscribed to ${queues.size} active receive queue(s)")
+        }
     }
 
     private fun handleIncomingRelayedMessage(ws: WebSocket, json: JSONObject) {
         val id = json.optString("id")
-        val from = json.optString("from")
+        val queueId = json.optString("queueId")
         val payload = json.optString("payload")
         val ciphertextHex = json.optString("ciphertext")
 
         // Acknowledge receipt back to relay server so it doesn't hold it
         if (id.isNotBlank()) {
-            ws.send(JSONObject().put("type", "ack").put("id", id).toString())
+            val ackJson = JSONObject().apply {
+                put("type", "ack")
+                put("id", id)
+                if (queueId.isNotBlank()) put("queueId", queueId)
+            }
+            ws.send(ackJson.toString())
         }
 
         // Extract the envelope JSON string
@@ -369,9 +417,10 @@ class RelayTransport(
             return
         }
 
-        Log.i(TAG, "[INCOMING] Received envelope from ${from.take(12)}… via relay (len=${wireString.length})")
+        val source = if (queueId.isNotBlank()) queueId else json.optString("from", "")
+        Log.i(TAG, "[INCOMING] Received envelope on queue ${source.take(12)}… via relay (len=${wireString.length})")
         incomingListener?.onPayloadReceived(
-            sourceAddress = from,
+            sourceAddress = source,
             payload = wireString,
             transportType = TransportType.OFFLINE_RELAY
         )
