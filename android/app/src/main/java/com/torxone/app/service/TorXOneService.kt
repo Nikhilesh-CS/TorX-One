@@ -103,6 +103,8 @@ class TorXOneService : Service() {
         private set
     lateinit var incomingDispatcher: com.torxone.app.agent.IncomingDispatcher
         private set
+    lateinit var relayTransport: com.torxone.app.transport.RelayTransport
+        private set
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val binder = LocalBinder()
@@ -190,9 +192,11 @@ class TorXOneService : Service() {
         val nearbyTransport = com.torxone.app.transport.NearbyTransport(nearbyManager, serviceScope)
         val torTransport = com.torxone.app.transport.TorTransport(torManager, serviceScope)
         val wifiDirectTransport = com.torxone.app.transport.WifiDirectTransport(wifiDirectManager, serviceScope)
+        relayTransport = com.torxone.app.transport.RelayTransport(identityManager, settingsManager, serviceScope)
         transportRouter.registerTransport(nearbyTransport)
         transportRouter.registerTransport(torTransport)
         transportRouter.registerTransport(wifiDirectTransport)
+        transportRouter.registerTransport(relayTransport)
 
         connectionManager = com.torxone.app.connection.ConnectionManager(db.connectionQueueDao())
         torXAgent = com.torxone.app.agent.TorXAgent(
@@ -251,6 +255,7 @@ class TorXOneService : Service() {
         deliveryTracker.mySigningKeyHex = myKey
         deliveryTracker.myOnionAddress = onion
 
+        relayTransport.start()
         isConfigured.value = true
 
         // Start retry loop for any pending messages from previous session
@@ -538,6 +543,7 @@ class TorXOneService : Service() {
         }
         nearbyManager.stopAll()
         torManager.stop()
+        runCatching { relayTransport.stop() }
         serviceScope.cancel()
         super.onDestroy()
     }

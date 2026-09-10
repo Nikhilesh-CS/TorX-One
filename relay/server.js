@@ -66,10 +66,11 @@ const httpServer = http.createServer((req, res) => {
       snapshot[pubkey] = messages.map(m => ({
         id: m.id,
         from: m.from,
-        ciphertext: m.ciphertext,         // Full hex — verify it's gibberish
-        ciphertextBytes: m.ciphertext.length / 2,
+        ciphertext: m.ciphertext || '(payload envelope)',
+        ciphertextBytes: m.ciphertext ? (m.ciphertext.length / 2) : (m.payload ? m.payload.length : 0),
         nonce: m.nonce,
         signature: m.signature || null,
+        payload: m.payload || null,
         timestamp: new Date(m.timestamp).toISOString(),
       }));
     }
@@ -80,7 +81,7 @@ const httpServer = http.createServer((req, res) => {
       queuedRecipients: queues.size,
       totalQueuedMessages: [...queues.values()].reduce((sum, q) => sum + q.length, 0),
       queues: snapshot,
-      note: 'Every ciphertext value below is raw XSalsa20-Poly1305 (crypto_box) output. The relay has no decryption key. If you can read any message in plaintext here, something is broken.',
+      note: 'Every message value below is encrypted ciphertext. The relay has no decryption keys. If you can read any message in plaintext here, something is broken.',
     }, null, 2);
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -207,31 +208,34 @@ function handleAuth(ws, msg, challengeNonce, onSuccess) {
 // ─── Message Handler ─────────────────────────────────────────────────────────
 
 function handleMessage(ws, senderPubKey, msg) {
-  if (!msg.to || !msg.ciphertext || !msg.nonce) {
-    send(ws, { type: 'error', message: 'Missing to, ciphertext, or nonce' });
+  if (!msg.to || (!msg.ciphertext && !msg.payload)) {
+    send(ws, { type: 'error', message: 'Missing to, or ciphertext/payload' });
     return;
   }
 
   const envelope = {
     id: generateId(),
     from: senderPubKey,
-    ciphertext: msg.ciphertext,
-    nonce: msg.nonce,
+    ciphertext: msg.ciphertext || '',
+    nonce: msg.nonce || '',
     signature: msg.signature || null,
+    payload: msg.payload || null,
     timestamp: Date.now(),
   };
 
   const recipientWs = clients.get(msg.to);
   if (recipientWs && recipientWs.readyState === 1) {
     // Recipient online → forward immediately
-    send(recipientWs, {
+    const out = {
       type: 'message',
       id: envelope.id,
       from: envelope.from,
       ciphertext: envelope.ciphertext,
       nonce: envelope.nonce,
       signature: envelope.signature,
-    });
+    };
+    if (envelope.payload) out.payload = envelope.payload;
+    send(recipientWs, out);
     log(`→ Relayed ${shortId(envelope.id)} : ${shortKey(senderPubKey)} → ${shortKey(msg.to)}`);
   } else {
     // Recipient offline → queue
@@ -258,14 +262,16 @@ function flushQueue(pubKey, ws) {
   if (!queue || queue.length === 0) return;
 
   for (const m of queue) {
-    send(ws, {
+    const out = {
       type: 'message',
       id: m.id,
       from: m.from,
       ciphertext: m.ciphertext,
       nonce: m.nonce,
       signature: m.signature,
-    });
+    };
+    if (m.payload) out.payload = m.payload;
+    send(ws, out);
   }
   log(`  Flushed ${queue.length} queued message(s) to ${shortKey(pubKey)}`);
   queues.delete(pubKey);

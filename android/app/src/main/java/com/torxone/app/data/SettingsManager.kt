@@ -25,6 +25,9 @@ class SettingsManager(private val context: Context) {
         val BACKGROUND_SYNC_FREQUENCY = stringPreferencesKey("background_sync_frequency")
         val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
         val APP_LOCK_UPDATE_NOTIFIED = booleanPreferencesKey("app_lock_update_notified")
+        val RELAY_ENABLED = booleanPreferencesKey("relay_enabled")
+        val RELAY_SERVER_URL = stringPreferencesKey("relay_server_url")
+        const val DEFAULT_RELAY_URL = "ws://10.0.2.2:3000"
     }
 
     val torEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -113,5 +116,21 @@ class SettingsManager(private val context: Context) {
 
     suspend fun setAppLockUpdateNotified(notified: Boolean) {
         context.dataStore.edit { preferences -> preferences[APP_LOCK_UPDATE_NOTIFIED] = notified }
+    }
+
+    val relayEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[RELAY_ENABLED] ?: true
+    }
+
+    val relayServerUrlFlow: Flow<String> = context.dataStore.data.map { preferences ->
+        preferences[RELAY_SERVER_URL] ?: DEFAULT_RELAY_URL
+    }
+
+    suspend fun setRelayEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences -> preferences[RELAY_ENABLED] = enabled }
+    }
+
+    suspend fun setRelayServerUrl(url: String) {
+        context.dataStore.edit { preferences -> preferences[RELAY_SERVER_URL] = url.trim() }
     }
 }

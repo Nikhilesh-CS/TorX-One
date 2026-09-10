@@ -46,6 +46,7 @@ import com.torxone.app.ui.theme.*
 import com.torxone.app.updater.GitHubUpdater
 import com.torxone.app.updater.UpdateInfo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -82,6 +83,10 @@ fun SettingsScreen(
     val darkMode by settingsManager.darkModeFlow.collectAsStateWithLifecycle(initialValue = false)
     val performanceMode by settingsManager.performanceModeFlow.collectAsStateWithLifecycle(initialValue = "balanced")
     val appLockEnabled by settingsManager.appLockEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
+    val relayEnabled by settingsManager.relayEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
+    val relayServerUrl by settingsManager.relayServerUrlFlow.collectAsStateWithLifecycle(initialValue = SettingsManager.DEFAULT_RELAY_URL)
+    var showRelayDialog by remember { mutableStateOf(false) }
+    var editedRelayUrl by remember { mutableStateOf("") }
     val localProfile by db.profileDao().getProfile("LOCAL_USER").collectAsStateWithLifecycle(initialValue = null)
     var isBatteryOptimizationIgnored by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
     
@@ -354,6 +359,22 @@ fun SettingsScreen(
                 )
             }
             item {
+                val relayTransport = com.torxone.app.service.TorXOneService.getInstance()?.relayTransport
+                val isRelayAvailable by (relayTransport?.isAvailable ?: MutableStateFlow(false)).collectAsStateWithLifecycle()
+                val relayStatus by (relayTransport?.statusText ?: MutableStateFlow("Disconnected")).collectAsStateWithLifecycle()
+
+                SettingsItem(
+                    icon = Icons.Rounded.CloudQueue,
+                    title = "Offline Relay",
+                    subtitle = if (!relayEnabled) "Disabled" else if (isRelayAvailable) "Connected" else relayStatus,
+                    subtitleColor = if (!relayEnabled) MutedGray else if (isRelayAvailable) SuccessGreen else ErrorRed,
+                    onClick = {
+                        editedRelayUrl = relayServerUrl
+                        showRelayDialog = true
+                    }
+                )
+            }
+            item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Hide Online Status",
@@ -621,6 +642,98 @@ fun SettingsScreen(
             confirmButton = {
                 TextButton(onClick = { showLicenseDialog = false }) {
                     Text("Close", color = TorXPrimary, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        )
+    }
+
+    if (showRelayDialog) {
+        val relayTransport = com.torxone.app.service.TorXOneService.getInstance()?.relayTransport
+        val isRelayAvailable by (relayTransport?.isAvailable ?: MutableStateFlow(false)).collectAsStateWithLifecycle()
+        val relayStatus by (relayTransport?.statusText ?: MutableStateFlow("Disconnected")).collectAsStateWithLifecycle()
+
+        AlertDialog(
+            onDismissRequest = { showRelayDialog = false },
+            containerColor = SurfaceCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.CloudQueue, contentDescription = null, tint = TorXPrimary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Offline Relay", color = PrimaryText, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Store-and-forward relay buffers end-to-end encrypted messages when peers are offline.",
+                        color = SecondaryText,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Enable Relay", color = PrimaryText, fontWeight = FontWeight.Medium)
+                            Text(
+                                text = if (isRelayAvailable) "Status: Connected" else "Status: $relayStatus",
+                                color = if (isRelayAvailable) SuccessGreen else ErrorRed,
+                                fontSize = 12.sp
+                            )
+                        }
+                        Switch(
+                            checked = relayEnabled,
+                            onCheckedChange = { checked ->
+                                scope.launch { settingsManager.setRelayEnabled(checked) }
+                            }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text("Relay Server URL", color = PrimaryText, fontWeight = FontWeight.Medium, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = editedRelayUrl,
+                        onValueChange = { editedRelayUrl = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true,
+                        placeholder = { Text(SettingsManager.DEFAULT_RELAY_URL, color = MutedGray) }
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    TextButton(
+                        onClick = { editedRelayUrl = SettingsManager.DEFAULT_RELAY_URL },
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("Reset to Default (10.0.2.2:3000)", fontSize = 12.sp, color = TorXPrimary)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        scope.launch {
+                            settingsManager.setRelayServerUrl(editedRelayUrl.ifBlank { SettingsManager.DEFAULT_RELAY_URL })
+                            showRelayDialog = false
+                            showToast("Relay configuration saved")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TorXPrimary),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Save", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRelayDialog = false }) {
+                    Text("Cancel", color = SecondaryText)
                 }
             }
         )

@@ -34,6 +34,7 @@ class TransportRouter(
     private val transports = mutableListOf<Transport>()
     private var nearbyTransport: NearbyTransport? = null
     private var torTransport: TorTransport? = null
+    private var relayTransport: RelayTransport? = null
 
     private val _activeTransports = MutableStateFlow<List<TransportStatus>>(emptyList())
     val activeTransports: StateFlow<List<TransportStatus>> = _activeTransports
@@ -44,6 +45,7 @@ class TransportRouter(
         when (transport) {
             is NearbyTransport -> nearbyTransport = transport
             is TorTransport -> torTransport = transport
+            is RelayTransport -> relayTransport = transport
         }
         // Sort by priority (lower = higher priority)
         transports.sortBy { it.type.priority }
@@ -172,6 +174,12 @@ class TransportRouter(
 
     /** Check if Tor is ready. */
     fun isTorReady(): Boolean = torTransport?.isAvailable?.value ?: false
+
+    /** Check if offline relay is connected and available. */
+    fun isRelayAvailable(): Boolean = relayTransport?.isAvailable?.value ?: false
+
+    /** Get the registered RelayTransport instance. */
+    fun getRelayTransport(): RelayTransport? = relayTransport
 
     /** Get currently connected Nearby endpoints. */
     fun getConnectedEndpoints(): Set<String> = nearbyTransport?.getReachablePeers() ?: emptySet()

@@ -315,6 +315,11 @@ class TorXAgent(
                 // the relay encoding happens at the protocol layer
                 addresses[TransportType.NEARBY_RELAY] = recipientKey
             }
+
+            // Offline relay store-and-forward fallback if relay is available
+            if (transportRouter.isRelayAvailable()) {
+                addresses[TransportType.OFFLINE_RELAY] = recipientKey
+            }
         }
 
         return addresses

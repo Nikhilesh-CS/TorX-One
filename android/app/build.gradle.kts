@@ -132,6 +132,9 @@ dependencies {
     // Google Nearby Connections (P2P offline)
     implementation("com.google.android.gms:play-services-nearby:19.1.0")
 
+    // OkHttp (WebSocket relay transport)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // WebRTC runtime for calls/DataChannel. Kept behind RealtimeEngine so it can be replaced.
     // Room Database
     implementation("androidx.room:room-runtime:2.6.1")
