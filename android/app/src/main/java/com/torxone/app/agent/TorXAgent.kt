@@ -114,8 +114,17 @@ class TorXAgent(
         val envelopeId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
-        // Compute hash chain
-        val prevHash = computeEnvelopeHash(connection.connectionId, seq - 1)
+        // Compute genuine cryptographic hash chain: H(previousHash || connectionId || queueId || sequenceNumber || messageType || ciphertext)
+        val prevHash = connection.lastCommittedHash
+        val wireType = EnvelopeType.toWireType(messageType)
+        val currentHash = com.torxone.app.protocol.ProtocolEnvelope.computeEnvelopeHash(
+            previousHash = prevHash,
+            connectionId = connection.connectionId,
+            queueId = connection.sendQueueId,
+            sequenceNumber = seq,
+            messageType = wireType,
+            ciphertext = encryptedPayload
+        )
 
         val entity = DeliveryQueueEntity(
             envelopeId = envelopeId,
@@ -124,7 +133,8 @@ class TorXAgent(
             queueId = connection.sendQueueId,
             sequenceNumber = seq,
             previousMessageHash = prevHash,
-            messageType = EnvelopeType.toWireType(messageType),
+            envelopeHash = currentHash,
+            messageType = wireType,
             encryptedPayload = encryptedPayload,
             state = "QUEUED",
             createdAt = now,
@@ -365,12 +375,6 @@ class TorXAgent(
         return backoff.coerceAtMost(RETRY_MAX_MS)
     }
 
-    private fun computeEnvelopeHash(connectionId: String, seq: Long): String? {
-        if (seq <= 0) return null
-        val input = "$connectionId:$seq"
-        val digest = MessageDigest.getInstance("SHA-256")
-        return digest.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
-    }
 
     // ──────────────────────── MAINTENANCE ────────────────────────
 
