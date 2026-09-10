@@ -12,12 +12,30 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+/**
+ * Clean cryptographic interface for Double Ratchet session operations.
+ * Isolates cryptographic state transitions from transport routing and network side-effects.
+ */
+interface SessionCryptoService {
+    suspend fun encrypt(
+        contact: ContactEntity,
+        plaintext: String,
+        messageType: String = MeshProtocol.TYPE_MSG,
+        messageId: String = UUID.randomUUID().toString()
+    ): SessionManager.SessionWirePayload
+
+    suspend fun decrypt(
+        senderKey: String,
+        json: JSONObject
+    ): SessionManager.DecryptedResult
+}
+
 class SessionManager(
     private val sessionDao: SessionDao,
     private val replayProtection: ReplayProtection,
     private val contactDao: ContactDao? = null,
     private val skippedKeyDao: SkippedMessageKeyDao? = null
-) {
+) : SessionCryptoService {
     /** Encrypt and decrypt must share one lock because both upsert the complete ratchet row. */
     private val sessionLocks = ConcurrentHashMap<String, Mutex>()
     companion object {
@@ -28,10 +46,12 @@ class SessionManager(
         private val lazySodium by lazy { LazySodiumAndroid(SodiumAndroid()) }
     }
     var identity: Identity? = null
+
+    @Deprecated("Crypto layer is decoupled from transport addresses in TorX One 2.0")
     var myOnionAddress: String = ""
     data class SessionWirePayload(val wireJsonString: String, val sessionId: String, val messageId: String)
     data class DecryptedResult(val plaintext: String, val messageType: String, val sessionId: String, val msgNum: Int)
-    suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String = MeshProtocol.TYPE_MSG, messageId: String = UUID.randomUUID().toString()): SessionWirePayload {
+    override suspend fun encrypt(contact: ContactEntity, plaintext: String, messageType: String, messageId: String): SessionWirePayload {
         val contactKey = contact.signingPublicKey.trim().lowercase()
         return sessionLocks.computeIfAbsent(contactKey) { Mutex() }.withLock {
             encryptLocked(contact, plaintext, messageType, messageId)
@@ -77,7 +97,7 @@ class SessionManager(
         sessionDao.upsertSession(session.copy(sendChainKeyHex = CryptoManager.toHex(nextSendChain), sendMsgCount = session.sendMsgCount + 1, lastActiveAt = now))
         return SessionWirePayload(wireJson.toString(), session.sessionId, messageId)
     }
-    suspend fun decrypt(senderKey: String, json: JSONObject): DecryptedResult {
+    override suspend fun decrypt(senderKey: String, json: JSONObject): DecryptedResult {
         val normalizedSender = senderKey.trim().lowercase()
         return sessionLocks.computeIfAbsent(normalizedSender) { Mutex() }.withLock {
             decryptLocked(normalizedSender, json)

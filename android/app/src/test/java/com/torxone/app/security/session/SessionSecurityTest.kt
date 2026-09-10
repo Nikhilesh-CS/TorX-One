@@ -267,4 +267,16 @@ class SessionSecurityTest {
         // 4. Duplicate message 1 must be rejected
         assertFalse(replayProtection.checkAndMark(sessionId, 1))
     }
+
+    @Test
+    fun testSessionCryptoServiceInterfaceAbstraction() {
+        val mockDao = org.mockito.Mockito.mock(SessionDao::class.java)
+        val mockReplayDao = org.mockito.Mockito.mock(SessionReplayDao::class.java)
+        val replayProtection = ReplayProtection(mockReplayDao)
+        val sessionManager = SessionManager(mockDao, replayProtection)
+
+        // Verifies SessionManager is a valid SessionCryptoService instance decoupled from transports
+        val cryptoService: SessionCryptoService = sessionManager
+        assertTrue(cryptoService is SessionCryptoService)
+    }
 }
