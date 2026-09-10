@@ -84,15 +84,14 @@ class ChatViewModel(
                         null -> TransportType.NONE
                         else -> TransportType.AUTO
                     }
-                    val lifecycle = when (entity.status) {
-                        "pending" -> MessageLifecycleState.QUEUED
-                        "queued" -> MessageLifecycleState.QUEUED
-                        "sending" -> MessageLifecycleState.SENDING
-                        "sent" -> MessageLifecycleState.IN_TRANSIT
-                        "delivered" -> MessageLifecycleState.DELIVERED
-                        "read" -> MessageLifecycleState.READ
+                    val lifecycle = when (entity.status.lowercase()) {
+                        "pending", "queued", "draft" -> MessageLifecycleState.QUEUED
+                        "sending", "transmitting", "encrypting" -> MessageLifecycleState.SENDING
+                        "sent", "relay_accepted", "transmitted", "in_transit", "transport_selected" -> MessageLifecycleState.IN_TRANSIT
+                        "delivered", "device_received" -> MessageLifecycleState.DELIVERED
+                        "read", "seen" -> MessageLifecycleState.READ
                         "receiving" -> MessageLifecycleState.IN_TRANSIT
-                        "failed" -> MessageLifecycleState.FAILED
+                        "failed", "cancelled", "expired" -> MessageLifecycleState.FAILED
                         else -> MessageLifecycleState.QUEUED
                     }
                     

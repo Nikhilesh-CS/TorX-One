@@ -40,12 +40,16 @@ class MessageDeliverySynchronizationTest {
         assertEquals(MessageDeliveryState.SENDING, MessageDeliveryState.fromDbStatus("queued"))
         assertEquals(MessageDeliveryState.SENDING, MessageDeliveryState.fromDbStatus("draft"))
         assertEquals(MessageDeliveryState.SENDING, MessageDeliveryState.fromDbStatus("encrypting"))
+        assertEquals(MessageDeliveryState.SENDING, MessageDeliveryState.fromDbStatus("transmitting"))
 
         assertEquals(MessageDeliveryState.SENT, MessageDeliveryState.fromDbStatus("sent"))
         assertEquals(MessageDeliveryState.SENT, MessageDeliveryState.fromDbStatus("in_transit"))
         assertEquals(MessageDeliveryState.SENT, MessageDeliveryState.fromDbStatus("transport_selected"))
+        assertEquals(MessageDeliveryState.SENT, MessageDeliveryState.fromDbStatus("transmitted"))
+        assertEquals(MessageDeliveryState.SENT, MessageDeliveryState.fromDbStatus("relay_accepted"))
 
         assertEquals(MessageDeliveryState.DELIVERED, MessageDeliveryState.fromDbStatus("delivered"))
+        assertEquals(MessageDeliveryState.DELIVERED, MessageDeliveryState.fromDbStatus("device_received"))
 
         assertEquals(MessageDeliveryState.SEEN, MessageDeliveryState.fromDbStatus("read"))
         assertEquals(MessageDeliveryState.SEEN, MessageDeliveryState.fromDbStatus("seen"))

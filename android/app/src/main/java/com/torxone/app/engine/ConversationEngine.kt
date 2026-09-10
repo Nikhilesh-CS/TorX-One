@@ -31,9 +31,9 @@ enum class MessageDeliveryState {
     companion object {
         fun fromDbStatus(status: String): MessageDeliveryState {
             return when (status.lowercase()) {
-                "sending", "pending", "queued", "draft", "encrypting" -> SENDING
-                "sent", "in_transit", "transport_selected" -> SENT
-                "delivered" -> DELIVERED
+                "sending", "pending", "queued", "draft", "encrypting", "transmitting" -> SENDING
+                "sent", "in_transit", "transport_selected", "transmitted", "relay_accepted" -> SENT
+                "delivered", "device_received" -> DELIVERED
                 "read", "seen" -> SEEN
                 "failed", "cancelled", "expired" -> FAILED
                 else -> SENDING
