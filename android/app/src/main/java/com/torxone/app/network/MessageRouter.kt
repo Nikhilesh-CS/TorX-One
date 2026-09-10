@@ -47,6 +47,20 @@ class MessageRouter(
     // TorX Agent 2.0 components
     var torXAgent: com.torxone.app.agent.TorXAgent? = null
     var deliveryTracker: com.torxone.app.agent.DeliveryTracker? = null
+    var chatMessageService: com.torxone.app.service.ChatMessageService? = null
+        get() {
+            if (field == null && torXAgent != null) {
+                field = com.torxone.app.service.ChatMessageService(
+                    scope = scope,
+                    db = db,
+                    torXAgent = torXAgent!!,
+                    sessionCryptoService = sessionManager,
+                    identityProvider = { identity },
+                    onionAddressProvider = { myOnionAddress }
+                )
+            }
+            return field
+        }
 
     private var retryJob: Job? = null
     @Volatile
@@ -156,7 +170,7 @@ class MessageRouter(
             if (viaEndpoint != null) {
                 nearbyManager.sendRaw(viaEndpoint, pongWire)
             } else if (fromOnion.isNotBlank()) {
-                scope.launch(Dispatchers.IO) { sendTorFrame(fromOnion, pongWire) }
+                scope.launch(Dispatchers.IO) { torManager.sendToOnion(fromOnion, pongWire, null) }
             }
         }
     }
@@ -180,233 +194,19 @@ class MessageRouter(
         replyToSender: String? = null,
         replyToType: String? = null
     ): SendResult = withContext(Dispatchers.IO) {
-        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
-        val contact = db.contactDao().getContact(contactKey)
-            ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
-
-        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) {
-            return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
+        val service = chatMessageService
+        if (service != null) {
+            return@withContext service.sendMessage(contactKey, text, replyToId, replyToText, replyToSender, replyToType)
         }
-
-        val sentAt = System.currentTimeMillis()
-        val wireText = encodeChatMessagePayload(
-            text = text,
-            sentAt = sentAt,
-            replyToId = replyToId,
-            replyToText = replyToText,
-            replyToSender = replyToSender,
-            replyToType = replyToType
-        )
-
-        // Publish the local row before the potentially expensive crypto step so
-        // the conversation immediately renders the message as SENDING.
-        val messageId = UUID.randomUUID().toString()
-        db.messageDao().insertMessage(
-            MessageEntity(
-                messageId = messageId,
-                contactKey = contactKey,
-                text = text,
-                timestamp = sentAt,
-                direction = "sent",
-                status = "sending",
-                replyToId = replyToId,
-                replyToText = replyToText,
-                replyToSender = replyToSender,
-                replyToType = replyToType
-            )
-        )
-        Log.i(TAG, "[MSG] id=$messageId state=SENDING")
-
-        val sessionPayload = try {
-            sessionManager?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG, messageId)
-        } catch (e: Exception) {
-            Log.w(TAG, "[SEND] Session encryption error, falling back to legacy: ${e.message}")
-            null
-        }
-
-        val legacyPayload = if (sessionPayload == null) {
-            buildEncryptedPayload(identity, contact, wireText)
-                ?: run {
-                    db.messageDao().updateMessageStatus(messageId, "failed")
-                    return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
-                }
-        } else null
-        val wireJson = sessionPayload?.wireJsonString
-            ?: MeshProtocol.encodeDirectMessage(legacyPayload!!, messageId, myOnionAddress, MeshProtocol.TYPE_MSG)
-
-        // TorX Agent 2.0 Delivery Queue: persist-before-send crash safety + auto retry
-        val agent = torXAgent
-        if (agent != null) {
-            agent.queueForDelivery(
-                recipientKey = contactKey,
-                messageId = messageId,
-                messageType = com.torxone.app.agent.EnvelopeType.MSG,
-                encryptedPayload = wireJson
-            )
-            return@withContext SendResult(true, Transport.PENDING)
-        }
-        return@withContext SendResult(false, Transport.FAILED, "TorX Agent not initialized")
-    }
-
-    private suspend fun attemptDeliverySession(
-        contact: ContactEntity,
-        wireJson: String,
-        messageId: String
-    ): SendResult {
-        val connected = nearbyManager.connectedEndpoints.value
-        if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-            Log.d(TAG, "[NEARBY-SESSION] Sending direct to ${contact.endpointId}")
-            val ok = try { nearbyManager.sendRaw(contact.endpointId, wireJson) }
-            catch (e: Exception) { Log.w(TAG, "[NEARBY-SESSION] Send failed: ${e.message}"); false }
-            if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
-        }
-
-        val onion = contact.onionAddress
-        if (onion.isNotBlank() && torManager.isTorReady.value) {
-            Log.d(TAG, "[TOR-SESSION] Sending session message to $onion")
-            val ok = sendTorFrame(onion, wireJson, messageId)
-            if (ok) return SendResult(true, Transport.TOR)
-            Log.w(TAG, "[TOR-SESSION] Delivery failed to $onion")
-        }
-
-        if (connected.isNotEmpty()) {
-            val relayWire = MeshProtocol.encodeSessionRelay(
-                dest = contact.signingPublicKey,
-                from = mySigningKeyHex,
-                sessionWireJson = wireJson,
-                ttl = 3,
-                messageId = messageId,
-                senderOnion = myOnionAddress.ifBlank { null }
-            )
-            val relayed = connected.any { endpoint ->
-                runCatching { nearbyManager.sendRaw(endpoint, relayWire) }.getOrDefault(false)
-            }
-            if (relayed) return SendResult(true, Transport.NEARBY_RELAY)
-        }
-
-        return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
-    }
-
-    private suspend fun attemptDelivery(
-        contact: ContactEntity,
-        payload: MeshProtocol.EncryptedPayload,
-        messageId: String,
-        messageType: String = MeshProtocol.TYPE_MSG
-    ): SendResult {
-        val connected = nearbyManager.connectedEndpoints.value
-        if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) {
-                val ok = try {
-                nearbyManager.sendRaw(contact.endpointId, MeshProtocol.encodeDirectMessage(payload, messageId, null, messageType))
-            } catch (e: Exception) { Log.w(TAG, "[NEARBY] Direct send failed: ${e.message}"); false }
-            if (ok) return SendResult(true, Transport.NEARBY_DIRECT)
-        }
-
-        val onion = contact.onionAddress
-        if (onion.isNotBlank() && torManager.isTorReady.value) {
-            val wire = MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
-            if (sendTorFrame(onion, wire, messageId)) return SendResult(true, Transport.TOR)
-        }
-
-        if (connected.isNotEmpty()) {
-            val wire = MeshProtocol.encodeRelayMessage(
-                payload = payload,
-                messageId = messageId,
-                senderOnion = myOnionAddress,
-                type = MeshProtocol.TYPE_RELAY,
-                innerType = messageType
-            )
-            val relayed = connected.any { endpoint ->
-                runCatching { nearbyManager.sendRaw(endpoint, wire) }.getOrDefault(false)
-            }
-            if (relayed) return SendResult(true, Transport.NEARBY_RELAY)
-        }
-
-        return SendResult(false, Transport.FAILED, "Peer offline — move closer or wait for Tor")
-    }
-
-    /** Send a chat/control frame over a reusable Tor socket. */
-    private suspend fun sendTorFrame(onionHost: String, payload: String, messageId: String? = null): Boolean = withContext(Dispatchers.IO) {
-        if (!torManager.isTorReady.value) return@withContext false
-        Log.d(TAG, "[TOR-OUT] id=${messageId ?: "control"} connecting to $onionHost")
-        val sent = torManager.sendToOnion(onionHost, payload, messageId)
-        Log.d(TAG, "[TOR-OUT] id=${messageId ?: "control"} result=${if (sent) "written" else "failed"} peer=$onionHost")
-        sent
+        SendResult(false, Transport.FAILED, "Chat service not initialized")
     }
 
     suspend fun sendGroupMessage(groupId: String, text: String, replyToId: String? = null): SendResult = withContext(Dispatchers.IO) {
-        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
-        val myKey = CryptoManager.toHex(identity.signingPublicKey)
-        val group = db.groupDao().getGroup(groupId) ?: return@withContext SendResult(false, Transport.FAILED, "Group not found")
-        val localMembership = db.groupDao().getGroupMember(groupId, myKey)
-        if (!GroupPermission.canSendMessages(group, localMembership)) return@withContext SendResult(false, Transport.FAILED, "You do not have permission to send in this group")
-        val messageId = UUID.randomUUID().toString()
-        val entity = MessageEntity(messageId = messageId, contactKey = groupId, conversationType = "group", senderKey = myKey, direction = "sent", status = "pending", text = text.trim(), timestamp = System.currentTimeMillis(), replyToId = replyToId)
-        db.messageDao().insertMessage(entity)
-
-        var groupKey = db.groupKeyDao().getLatestKey(groupId)
-        if (groupKey == null && (group.creatorKey == myKey || group.myRole == "owner")) {
-            val newKey = com.torxone.app.data.GroupKeyEntity(groupId = groupId, keyVersion = maxOf(1, group.currentKeyVersion), aesKeyBase64 = GroupCryptoManager.newKeyBase64(), distributedAt = System.currentTimeMillis())
-            db.groupKeyDao().insertKey(newKey)
-            groupKey = newKey
+        val service = chatMessageService
+        if (service != null) {
+            return@withContext service.sendGroupMessage(groupId, text, replyToId)
         }
-        if (groupKey == null) {
-            com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, 1)
-            return@withContext SendResult(false, Transport.PENDING, "Waiting for group key distribution")
-        }
-
-        val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
-        val innerPayload = JSONObject().apply {
-            put("astraType", "chat_message")
-            put("version", 1)
-            put("type", "TEXT")
-            put("messageId", messageId)
-            put("senderKey", myKey)
-            put("timestamp", System.currentTimeMillis())
-            put("text", text.trim())
-            replyTarget?.let { target -> put("reply", JSONObject().put("originalMessageId", target.messageId).put("originalSender", target.senderKey).put("originalType", target.messageType).put("originalPreview", target.text.take(500))) }
-            put("mentions", JSONArray().apply { Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) } })
-        }
-        val encrypted = GroupCryptoManager.encrypt(groupKey, innerPayload.toString())
-        val finalPayload = JSONObject().apply {
-            put("type", MeshProtocol.TYPE_GROUP_MESSAGE)
-            put("schemaVersion", 2)
-            put("groupId", groupId)
-            put("keyVersion", groupKey.keyVersion)
-            put("ciphertext", encrypted.ciphertextBase64)
-            put("iv", encrypted.ivBase64)
-        }
-        val members = db.groupDao().getGroupMembersSync(groupId)
-        var sentToAnyMember = false
-        var failedRecipients = 0
-        val agent = torXAgent
-        members.filter { it.role != "invited" }.forEach { member ->
-            if (member.memberKey != myKey) {
-                if (agent != null) {
-                    val wire = buildEncryptedWireFrame(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
-                    if (wire != null) {
-                        agent.queueForDelivery(
-                            recipientKey = member.memberKey,
-                            messageId = "${messageId}_${member.memberKey.take(8)}",
-                            messageType = com.torxone.app.agent.EnvelopeType.GROUP_MESSAGE,
-                            encryptedPayload = wire
-                        )
-                        sentToAnyMember = true
-                    } else {
-                        val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
-                        if (result.success) sentToAnyMember = true else failedRecipients++
-                    }
-                } else {
-                    val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
-                    if (result.success) sentToAnyMember = true else {
-                        failedRecipients++
-                        db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(eventId = messageId, groupId = groupId, recipientKey = member.memberKey, payload = finalPayload.toString(), eventType = MeshProtocol.TYPE_GROUP_MESSAGE, createdAt = System.currentTimeMillis(), nextRetryAt = System.currentTimeMillis() + 30_000L, expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L))
-                    }
-                }
-            }
-        }
-        val finalStatus = if (sentToAnyMember || members.count { it.role != "invited" } <= 1) "sent" else "pending"
-        db.messageDao().updateMessageStatus(messageId, finalStatus)
-        if (!sentToAnyMember && members.count { it.role != "invited" } > 1) SendResult(true, Transport.PENDING, "Queued for offline delivery") else SendResult(true, if (failedRecipients > 0) Transport.NEARBY_RELAY else Transport.NEARBY_DIRECT)
+        SendResult(false, Transport.FAILED, "Chat service not initialized")
     }
 
     fun getBestTransport(contact: ContactEntity): Transport {
@@ -418,21 +218,15 @@ class MessageRouter(
     }
 
     suspend fun sendRawPayload(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): SendResult = withContext(Dispatchers.IO) {
-        val identity = identity ?: return@withContext SendResult(false, Transport.FAILED, "Not logged in")
-        val contact = db.contactDao().getContact(contactKey) ?: return@withContext SendResult(false, Transport.FAILED, "Contact not found")
-        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) return@withContext SendResult(false, Transport.FAILED, "Missing encryption key")
-        val payload = buildEncryptedPayload(identity, contact, rawText) ?: return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
-        val messageId = UUID.randomUUID().toString()
-        attemptDelivery(contact, payload, messageId, messageType)
+        val service = chatMessageService
+        if (service != null) {
+            return@withContext service.sendRawPayload(contactKey, rawText, messageType)
+        }
+        SendResult(false, Transport.FAILED, "Chat service not initialized")
     }
 
     suspend fun buildEncryptedWireFrame(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): String? = withContext(Dispatchers.IO) {
-        val identity = identity ?: return@withContext null
-        val contact = db.contactDao().getContact(contactKey) ?: return@withContext null
-        if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) return@withContext null
-        val payload = buildEncryptedPayload(identity, contact, rawText) ?: return@withContext null
-        val messageId = UUID.randomUUID().toString()
-        MeshProtocol.encodeDirectMessage(payload, messageId, myOnionAddress, messageType)
+        chatMessageService?.buildEncryptedWireFrame(contactKey, rawText, messageType)
     }
 
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {
@@ -552,21 +346,8 @@ class MessageRouter(
         val pending = db.receiptOutboxDao().getPendingReceipts(now, limit = 50)
         if (pending.isEmpty()) return
         for (receipt in pending) {
-            val contact = db.contactDao().getContact(receipt.recipientKey)
-            val ok = dispatchReceipt(receipt, null, contact?.onionAddress)
-            if (ok) {
-                db.receiptOutboxDao().deleteReceipt(receipt.id)
-                Log.i(TAG, "[RECEIPT_RETRY] id=${receipt.messageId} attempt=${receipt.retryCount + 1} result=success")
-            } else {
-                val newCount = receipt.retryCount + 1
-                if (newCount >= MAX_RETRIES) {
-                    db.receiptOutboxDao().deleteReceipt(receipt.id)
-                } else {
-                    val backoff = (3_000L * (1L shl receipt.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
-                    db.receiptOutboxDao().updateRetry(receipt.id, now + backoff)
-                }
-                Log.w(TAG, "[RECEIPT_RETRY] id=${receipt.messageId} attempt=$newCount result=failed")
-            }
+            queueAndDispatchReceipt(receipt.messageId, receipt.recipientKey, receipt.type)
+            db.receiptOutboxDao().deleteReceipt(receipt.id)
         }
     }
 
@@ -587,80 +368,33 @@ class MessageRouter(
         senderOnion: String? = null
     ) {
         if (messageId.isBlank() || recipientKey.isBlank()) return
-        scope.launch(Dispatchers.IO) {
-            val existing = db.receiptOutboxDao().getPendingReceiptsForRecipient(recipientKey)
-                .firstOrNull { it.messageId == messageId && it.type == type }
-            val receipt = existing ?: com.torxone.app.data.ReceiptOutboxEntity(
-                id = UUID.randomUUID().toString(),
-                messageId = messageId,
-                recipientKey = recipientKey,
-                type = type,
-                createdAt = System.currentTimeMillis(),
-                retryCount = 0,
-                nextRetryAt = System.currentTimeMillis()
-            ).also {
-                db.receiptOutboxDao().insertReceipt(it)
-                if (type == "ack") {
-                    Log.i(TAG, "[ACK] id=$messageId queued=true")
-                } else {
-                    Log.i(TAG, "[READ] id=$messageId queued=true")
-                }
-            }
-
-            val delivered = dispatchReceipt(receipt, viaEndpoint, senderOnion)
-            if (delivered) {
-                db.receiptOutboxDao().deleteReceipt(receipt.id)
-                Log.i(TAG, "[RECEIPT] id=${receipt.messageId} transportAccepted=true")
+        val tracker = deliveryTracker
+        if (tracker != null) {
+            if (type == "read") {
+                tracker.sendReadReceipt(messageId, recipientKey)
             } else {
-                Log.w(TAG, "[RECEIPT] id=${receipt.messageId} transportAccepted=false retryQueued=true")
-                ensureRetryLoopRunning()
+                tracker.sendAck(messageId, recipientKey, viaEndpoint, senderOnion)
+            }
+            return
+        }
+        val agent = torXAgent
+        if (agent != null) {
+            val wire = if (type == "read") {
+                MeshProtocol.encodeRead(messageId, mySigningKeyHex, recipientKey, myOnionAddress.ifBlank { null })
+            } else {
+                MeshProtocol.encodeAck(messageId, mySigningKeyHex, recipientKey, myOnionAddress.ifBlank { null })
+            }
+            scope.launch(Dispatchers.IO) {
+                agent.queueForDelivery(
+                    recipientKey = recipientKey,
+                    messageId = "${type}_$messageId",
+                    messageType = if (type == "read") com.torxone.app.agent.EnvelopeType.READ else com.torxone.app.agent.EnvelopeType.ACK,
+                    encryptedPayload = wire
+                )
             }
         }
     }
 
-    private suspend fun dispatchReceipt(
-        receipt: com.torxone.app.data.ReceiptOutboxEntity,
-        viaEndpoint: String? = null,
-        senderOnion: String? = null
-    ): Boolean {
-        val wire = if (receipt.type == "read") {
-            MeshProtocol.encodeRead(receipt.messageId, mySigningKeyHex, receipt.recipientKey, myOnionAddress)
-        } else {
-            MeshProtocol.encodeAck(receipt.messageId, mySigningKeyHex, receipt.recipientKey, myOnionAddress)
-        }
-        val contact = db.contactDao().getContact(receipt.recipientKey)
-        val connected = nearbyManager.connectedEndpoints.value
-
-        // 1. Direct Nearby to recipient
-        if (viaEndpoint != null && connected.contains(viaEndpoint) && contact?.endpointId == viaEndpoint) {
-            val ok = runCatching { nearbyManager.sendRaw(viaEndpoint, wire) }.getOrDefault(false)
-            if (ok) return true
-        }
-        if (contact?.endpointId?.isNotBlank() == true && connected.contains(contact.endpointId)) {
-            val ok = runCatching { nearbyManager.sendRaw(contact.endpointId, wire) }.getOrDefault(false)
-            if (ok) return true
-        }
-
-        // 2. Tor
-        val onion = if (!senderOnion.isNullOrBlank()) senderOnion else contact?.onionAddress
-        if (!onion.isNullOrBlank() && torManager.isTorReady.value) {
-            val ok = sendTorFrame(onion, wire, receipt.messageId)
-            if (ok) return true
-        }
-
-        // 3. Mesh relay broadcast to any connected endpoints
-        if (connected.isNotEmpty()) {
-            var anySent = false
-            connected.forEach { endpoint ->
-                if (runCatching { nearbyManager.sendRaw(endpoint, wire) }.getOrDefault(false)) {
-                    anySent = true
-                }
-            }
-            if (anySent) return true
-        }
-
-        return false
-    }
 
     // ──────────────────────── ACK HANDLING ────────────────────────
 
@@ -758,7 +492,7 @@ class MessageRouter(
                 val contact = db.contactDao().getContact(senderKey) ?: return@runCatching
                 val connected = nearbyManager.connectedEndpoints.value
                 if (contact.endpointId.isNotEmpty() && connected.contains(contact.endpointId)) nearbyManager.sendRaw(contact.endpointId, ackWire)
-                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) sendTorFrame(contact.onionAddress, ackWire)
+                else if (!contact.onionAddress.isNullOrBlank() && torManager.isTorReady.value) torManager.sendToOnion(contact.onionAddress, ackWire, messageId)
             }
         }
     }

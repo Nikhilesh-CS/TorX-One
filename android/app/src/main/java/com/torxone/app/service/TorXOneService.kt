@@ -103,6 +103,8 @@ class TorXOneService : Service() {
         private set
     lateinit var incomingDispatcher: com.torxone.app.agent.IncomingDispatcher
         private set
+    lateinit var chatMessageService: ChatMessageService
+        private set
     lateinit var relayTransport: com.torxone.app.transport.RelayTransport
         private set
 
@@ -214,6 +216,15 @@ class TorXOneService : Service() {
             transportRouter = transportRouter,
             scope = serviceScope
         )
+        chatMessageService = ChatMessageService(
+            scope = serviceScope,
+            db = db,
+            torXAgent = torXAgent,
+            sessionCryptoService = sessionManager,
+            identityProvider = { identityManager.loadIdentity() },
+            onionAddressProvider = { identityManager.loadOnionAddress() ?: "" }
+        )
+        messageRouter.chatMessageService = chatMessageService
         messageRouter.torXAgent = torXAgent
         messageRouter.deliveryTracker = deliveryTracker
         callManager.torXAgent = torXAgent

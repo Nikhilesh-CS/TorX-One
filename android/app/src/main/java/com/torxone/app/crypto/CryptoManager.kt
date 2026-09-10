@@ -36,7 +36,7 @@ data class Identity(
 }
 
 object CryptoManager {
-    private val lazySodium = LazySodiumAndroid(SodiumAndroid())
+    private val lazySodium by lazy { LazySodiumAndroid(SodiumAndroid()) }
     private val hexRegex = Regex("^[0-9a-f]+$")
     private val onionRegex = Regex("^[a-z2-7]{56}\\.onion$")
 
