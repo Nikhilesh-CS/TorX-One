@@ -80,6 +80,10 @@ class CallSignalingHandler(
             while (isActive) {
                 delay(400L)
                 runCatching {
+                    // TorX One 2.0: If TorXAgent is present, delivery queue and retries are centralized in TorXAgent.
+                    val agentInstance = agent ?: messageRouter.torXAgent
+                    if (agentInstance != null) return@runCatching
+
                     val now = System.currentTimeMillis()
                     // Retry all critical signals persisted in Room (OFFER, ANSWER, ICE, END)
                     db?.let { appDb ->
@@ -96,7 +100,6 @@ class CallSignalingHandler(
                             sendRawCallSignal(sig.peerKey, sig.rawPayload, sig.messageType)
                         }
                     }
-
                 }
             }
         }
@@ -253,6 +256,10 @@ class CallSignalingHandler(
         rawPayload: String,
         messageType: String
     ) = withContext(ioDispatcher) {
+        val agentInstance = agent ?: messageRouter.torXAgent
+        // If TorXAgent is active, persistence is handled by TorXAgent DeliveryQueueDao
+        if (agentInstance != null) return@withContext
+
         db?.callSignalingOutboxDao()?.insertSignal(
             CallSignalingOutboxEntity(
                 signalId = signalId,
