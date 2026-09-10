@@ -95,6 +95,8 @@ class TorXOneService : Service() {
     // TorX Agent 2.0 components
     lateinit var transportRouter: com.torxone.app.transport.TransportRouter
         private set
+    lateinit var connectionManager: com.torxone.app.connection.ConnectionManager
+        private set
     lateinit var torXAgent: com.torxone.app.agent.TorXAgent
         private set
     lateinit var deliveryTracker: com.torxone.app.agent.DeliveryTracker
@@ -192,11 +194,12 @@ class TorXOneService : Service() {
         transportRouter.registerTransport(torTransport)
         transportRouter.registerTransport(wifiDirectTransport)
 
+        connectionManager = com.torxone.app.connection.ConnectionManager(db.connectionQueueDao())
         torXAgent = com.torxone.app.agent.TorXAgent(
             db = db,
             transportRouter = transportRouter,
             deliveryQueueDao = db.deliveryQueueDao(),
-            connectionQueueDao = db.connectionQueueDao(),
+            connectionManager = connectionManager,
             scope = serviceScope
         )
         deliveryTracker = com.torxone.app.agent.DeliveryTracker(
@@ -329,6 +332,9 @@ class TorXOneService : Service() {
         }
         incomingDispatcher.onPong = { json ->
             messageRouter.handlePong(json)
+        }
+        incomingDispatcher.onQueueRotation = { json ->
+            connectionManager.handleQueueRotationNotice(json)
         }
     }
 

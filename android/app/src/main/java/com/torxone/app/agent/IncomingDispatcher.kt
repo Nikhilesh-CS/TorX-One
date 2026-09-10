@@ -80,6 +80,9 @@ class IncomingDispatcher(
     var onPing: ((payload: JSONObject, sourceAddress: String?) -> Unit)? = null
     var onPong: ((payload: JSONObject) -> Unit)? = null
 
+    /** Handler for pairwise queue rotation (TorX One 2.0 connection layer). */
+    var onQueueRotation: (suspend (payload: JSONObject) -> Unit)? = null
+
     /** Handler for legacy encrypted messages (pre-ratchet). */
     var onLegacyEncrypted: (suspend (payload: JSONObject, sourceAddress: String?, messageType: String) -> Unit)? = null
 
@@ -218,6 +221,11 @@ class IncomingDispatcher(
             MeshProtocol.TYPE_REACTION,
             MeshProtocol.TYPE_POLL_VOTE -> {
                 onLegacyEncrypted?.invoke(json, sourceAddress, type)
+            }
+
+            // TorX One 2.0 Pairwise queue rotation
+            "queue_rotate" -> {
+                onQueueRotation?.invoke(json)
             }
 
             else -> {

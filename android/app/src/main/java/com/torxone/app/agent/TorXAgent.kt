@@ -36,7 +36,7 @@ class TorXAgent(
     private val db: AppDatabase,
     private val transportRouter: TransportRouter,
     private val deliveryQueueDao: DeliveryQueueDao,
-    private val connectionQueueDao: ConnectionQueueDao,
+    val connectionManager: com.torxone.app.connection.ConnectionManager,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
     companion object {
@@ -106,13 +106,13 @@ class TorXAgent(
     ): String {
         val normalizedKey = recipientKey.trim().lowercase()
 
-        // Ensure connection exists
-        val connection = getOrCreateConnection(normalizedKey)
+        // Ensure connection exists via ConnectionManager
+        val connection = connectionManager.getOrCreateConnection(normalizedKey)
+        val seq = connectionManager.nextSendSequence(connection.connectionId)
 
         // Generate envelope
         val envelopeId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
-        val seq = connection.lastSendSeq + 1
 
         // Compute hash chain
         val prevHash = computeEnvelopeHash(connection.connectionId, seq - 1)
@@ -135,9 +135,6 @@ class TorXAgent(
 
         // Persist BEFORE any send attempt (crash-safe invariant)
         deliveryQueueDao.insert(entity)
-
-        // Update connection sequence
-        connectionQueueDao.updateSendSeq(connection.connectionId, seq)
 
         Log.i(TAG, "[QUEUE] envelopeId=$envelopeId msgId=$messageId type=${messageType.name} seq=$seq → $normalizedKey")
 
@@ -273,25 +270,26 @@ class TorXAgent(
 
     // ──────────────────────── HELPERS ────────────────────────
 
-    private suspend fun getOrCreateConnection(remoteKey: String): ConnectionQueueEntity {
-        val existing = connectionQueueDao.getByRemoteKey(remoteKey)
-        if (existing != null) return existing
-
-        val now = System.currentTimeMillis()
-        val connectionId = UUID.randomUUID().toString()
-        val connection = ConnectionQueueEntity(
-            connectionId = connectionId,
-            localPartyKey = "", // Filled by caller context
-            remotePartyKey = remoteKey,
-            sendQueueId = UUID.randomUUID().toString(),
-            recvQueueId = UUID.randomUUID().toString(),
-            state = "ACTIVE",
-            createdAt = now,
-            lastActiveAt = now
+    /**
+     * Rotate send queue for forward secrecy / traffic decoupling.
+     */
+    suspend fun rotateQueues(remoteKey: String, mySigningKey: String): Boolean {
+        val conn = connectionManager.getConnectionByRemoteKey(remoteKey) ?: return false
+        val newSendQueueId = connectionManager.rotateSendQueue(conn.connectionId)
+        val notice = connectionManager.encodeQueueRotationNotice(
+            connectionId = conn.connectionId,
+            isSendQueue = true,
+            newQueueId = newSendQueueId,
+            fromKey = mySigningKey,
+            toKey = remoteKey
         )
-        connectionQueueDao.upsert(connection)
-        Log.d(TAG, "[CONNECTION] Created new connection $connectionId for $remoteKey")
-        return connection
+        queueForDelivery(
+            recipientKey = remoteKey,
+            messageId = "rotate_${System.currentTimeMillis()}",
+            messageType = EnvelopeType.MSG,
+            encryptedPayload = notice
+        )
+        return true
     }
 
     private suspend fun resolvePeerAddresses(recipientKey: String): Map<TransportType, String> {

@@ -233,6 +233,15 @@ interface ConnectionQueueDao {
     @Query("UPDATE connection_queue SET state = :state WHERE connectionId = :connectionId")
     suspend fun updateState(connectionId: String, state: String)
 
+    @Query("UPDATE connection_queue SET sendQueueId = :sendQueueId, lastActiveAt = :now WHERE connectionId = :connectionId")
+    suspend fun updateSendQueueId(connectionId: String, sendQueueId: String, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE connection_queue SET recvQueueId = :recvQueueId, lastActiveAt = :now WHERE connectionId = :connectionId")
+    suspend fun updateRecvQueueId(connectionId: String, recvQueueId: String, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE connection_queue SET lastActiveAt = :now WHERE connectionId = :connectionId")
+    suspend fun touchActive(connectionId: String, now: Long = System.currentTimeMillis())
+
     @Query("SELECT * FROM connection_queue")
     fun observeAll(): Flow<List<ConnectionQueueEntity>>
 
