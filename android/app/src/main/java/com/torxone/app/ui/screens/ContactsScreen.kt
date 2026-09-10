@@ -248,6 +248,10 @@ fun ContactsScreen(
     if (showAddContact) {
         AddContactDialog(
             onDismiss = { showAddContact = false },
+            onScanQrClick = {
+                showAddContact = false
+                navController.navigate("scan_qr")
+            },
             onContactAdded = { contactString ->
                 scope.launch {
                     val parsed = CryptoManager.parseContactString(contactString.trim())

@@ -34,10 +34,10 @@ import com.torxone.app.ui.theme.TorXPrimary
 @Composable
 fun AddContactDialog(
     onDismiss: () -> Unit,
-    onContactAdded: (String) -> Unit
+    onContactAdded: (String) -> Unit,
+    onScanQrClick: (() -> Unit)? = null
 ) {
     var contactString by remember { mutableStateOf("") }
-    var showQrScanner by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -68,12 +68,14 @@ fun AddContactDialog(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     trailingIcon = {
-                        IconButton(onClick = { showQrScanner = true }) {
-                            Icon(
-                                Icons.Rounded.QrCodeScanner,
-                                contentDescription = "Scan contact QR",
-                                tint = TorXPrimary
-                            )
+                        if (onScanQrClick != null) {
+                            IconButton(onClick = onScanQrClick) {
+                                Icon(
+                                    Icons.Rounded.QrCodeScanner,
+                                    contentDescription = "Scan contact QR",
+                                    tint = TorXPrimary
+                                )
+                            }
                         }
                     },
                     colors = OutlinedTextFieldDefaults.colors(
@@ -107,14 +109,4 @@ fun AddContactDialog(
             }
         }
     )
-
-    if (showQrScanner) {
-        QrContactScannerDialog(
-            onDismiss = { showQrScanner = false },
-            onContactScanned = { scannedContact ->
-                contactString = scannedContact
-                showQrScanner = false
-            }
-        )
-    }
 }

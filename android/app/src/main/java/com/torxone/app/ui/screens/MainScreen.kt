@@ -117,13 +117,6 @@ fun MainScreen(
                     torManager = torManager
                 )
             }
-            composable("universe") {
-                NetworkUniverseScreen(
-                    nearbyManager = nearbyManager,
-                    torManager = torManager,
-                    db = db
-                )
-            }
             composable("security") {
                 SecurityCenterScreen(
                     identityManager = identityManager,

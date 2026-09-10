@@ -245,35 +245,7 @@ class MessageRouter(
             )
             return@withContext SendResult(true, Transport.PENDING)
         }
-
-        // Fallback: Legacy outbox path
-        db.messageOutboxDao().insertOutbox(
-            com.torxone.app.data.MessageOutboxEntity(
-                messageId = messageId,
-                contactKey = contactKey,
-                wireJson = wireJson,
-                createdAt = sentAt,
-                retryCount = 0,
-                nextRetryAt = sentAt + 3_000L
-            )
-        )
-
-        val result = if (sessionPayload != null) {
-            pendingSessionPayloads[messageId] = sessionPayload.wireJsonString
-            attemptDeliverySession(contact, sessionPayload.wireJsonString, messageId)
-        } else {
-            attemptDelivery(contact, legacyPayload!!, messageId)
-        }
-
-        if (result.success) {
-            db.messageDao().updateSentMessageStatus(messageId, contactKey, "sent", result.transport.name)
-            Log.i(TAG, "[SEND] id=$messageId transport=${result.transport} state=SENT awaitingAck=true")
-            ensureRetryLoopRunning()
-        } else {
-            Log.w(TAG, "[SEND] id=$messageId delivery failed: ${result.error}. Outbox retry active.")
-            ensureRetryLoopRunning()
-        }
-        result
+        return@withContext SendResult(false, Transport.FAILED, "TorX Agent not initialized")
     }
 
     private suspend fun attemptDeliverySession(
@@ -391,7 +363,7 @@ class MessageRouter(
             put("senderKey", myKey)
             put("timestamp", System.currentTimeMillis())
             put("text", text.trim())
-            replyTarget?.let { target -> put("reply", JSONObject().put("originalMessageId", target.messageId).put("originalSender", target.senderKey ?: "").put("originalType", target.messageType ?: "TEXT").put("originalPreview", target.text.take(500))) }
+            replyTarget?.let { target -> put("reply", JSONObject().put("originalMessageId", target.messageId).put("originalSender", target.senderKey).put("originalType", target.messageType).put("originalPreview", target.text.take(500))) }
             put("mentions", JSONArray().apply { Regex("@([A-Za-z0-9_]{1,64})").findAll(text).forEach { match -> put(JSONObject().put("label", match.groupValues[1]).put("start", match.range.first).put("length", match.value.length)) } })
         }
         val encrypted = GroupCryptoManager.encrypt(groupKey, innerPayload.toString())
@@ -561,52 +533,16 @@ class MessageRouter(
     private suspend fun retryPendingMessages() {
         drainReceiptOutbox()
 
-        val now = System.currentTimeMillis()
-        val pendingOutbox = db.messageOutboxDao().getPendingOutboxMessages(now, limit = 50)
         val pendingReactions = db.reactionOutboxDao().getPendingReactions()
-        val pendingReceipts = db.receiptOutboxDao().getPendingReceipts(now, limit = 10)
-
-        if (pendingOutbox.isEmpty() && pendingReactions.isEmpty() && pendingReceipts.isEmpty()) {
-            retryJob?.cancel()
-            return
+        if (pendingReactions.isNotEmpty()) {
+            retryPendingReactions(pendingReactions)
         }
-        retryPendingReactions(pendingReactions)
 
-        for (outboxMsg in pendingOutbox) {
-            val localMsg = db.messageDao().getMessageById(outboxMsg.messageId)
-            // If already confirmed delivered or read or deleted, clean up outbox
-            if (localMsg == null || localMsg.status == "delivered" || localMsg.status == "read") {
+        // Clean up legacy outbox entries if any exist
+        runCatching {
+            val pendingOutbox = db.messageOutboxDao().getPendingOutboxMessages(System.currentTimeMillis(), limit = 50)
+            for (outboxMsg in pendingOutbox) {
                 db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
-                continue
-            }
-
-            if (outboxMsg.retryCount >= MAX_RETRIES) {
-                db.messageDao().updateMessageStatus(outboxMsg.messageId, "failed")
-                db.messageOutboxDao().deleteOutbox(outboxMsg.messageId)
-                Log.w(TAG, "[MSG] id=${outboxMsg.messageId} state=FAILED")
-                continue
-            }
-
-            val contact = db.contactDao().getContact(outboxMsg.contactKey)
-            if (contact == null) {
-                continue
-            }
-
-            // Retries use the already encrypted wire frame and do not mutate
-            // ratchet state, so they must not wait behind a conversation's
-            // encryption path.
-            // Transmit EXACT stored wireJson - NEVER RE-ENCRYPT
-            val result = attemptDeliverySession(contact, outboxMsg.wireJson, outboxMsg.messageId)
-            val newAttempt = outboxMsg.retryCount + 1
-            val backoff = (3_000L * (1L shl outboxMsg.retryCount.coerceAtMost(5))).coerceAtMost(60_000L)
-            db.messageOutboxDao().updateRetry(outboxMsg.messageId, now + backoff)
-
-            if (result.success) {
-                db.messageDao().updateSentMessageStatus(outboxMsg.messageId, outboxMsg.contactKey, "sent", result.transport.name)
-                Log.i(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=success")
-            } else {
-                db.messageDao().incrementRetryCount(outboxMsg.messageId)
-                Log.w(TAG, "[RETRY] id=${outboxMsg.messageId} attempt=$newAttempt transport=${result.transport} result=failed (${result.error})")
             }
         }
     }
@@ -851,7 +787,6 @@ class MessageRouter(
         val ttl = json.optInt("ttl", 0)
         val innerType = json.optString("innerType", MeshProtocol.TYPE_MSG)
         val messageId = json.optString("msgId", "")
-        val senderOnion = json.optString("senderOnion", "")
         if (dest == mySigningKeyHex) {
             if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
                 val wireStr = json.optString("sessionWire", "")

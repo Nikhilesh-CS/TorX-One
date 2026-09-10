@@ -442,11 +442,6 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 torManager = service.torManager
                             )
                         }
-                        composable("mesh_dashboard") {
-                            com.torxone.app.ui.screens.MeshDashboardScreen(
-                                onNavigateBack = { navController.popBackStack() }
-                            )
-                        }
                         composable("scan_qr") {
                             com.torxone.app.ui.screens.ScanQrScreen(
                                 navController = navController,
