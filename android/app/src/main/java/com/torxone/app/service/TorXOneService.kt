@@ -157,7 +157,8 @@ class TorXOneService : Service() {
                 AppDatabase.MIGRATION_22_23,
                 AppDatabase.MIGRATION_23_24,
                 AppDatabase.MIGRATION_24_25,
-                AppDatabase.MIGRATION_25_26
+                AppDatabase.MIGRATION_25_26,
+                AppDatabase.MIGRATION_26_27
             )
             .build()
 

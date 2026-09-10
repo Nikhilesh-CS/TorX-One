@@ -655,7 +655,7 @@ interface MusicNoteDao {
 
 @Database(
     entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class, DeliveryQueueEntity::class, ConnectionQueueEntity::class],
-    version = 26,
+    version = 27,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -1124,6 +1124,30 @@ abstract class AppDatabase : RoomDatabase() {
                 """.trimIndent())
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_connection_queue_remotePartyKey` ON `connection_queue` (`remotePartyKey`)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS `index_connection_queue_state` ON `connection_queue` (`state`)")
+            }
+        }
+
+        val MIGRATION_26_27 = object : androidx.room.migration.Migration(26, 27) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // 1. Alter connection_queue table: Remove 1:1 identity constraint
+                db.execSQL("DROP INDEX IF EXISTS `index_connection_queue_remotePartyKey`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_connection_queue_remotePartyKey` ON `connection_queue` (`remotePartyKey`)")
+
+                // 2. Add 6-stage queue rotation & hash chain tracking columns
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `pendingSendQueueId` TEXT")
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `pendingRecvQueueId` TEXT")
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `rotationState` TEXT NOT NULL DEFAULT 'ACTIVE'")
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `rotationGracePeriodUntil` INTEGER")
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `lastCommittedHash` TEXT")
+
+                // 3. Add lookup indices on queue identifiers
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_connection_queue_sendQueueId` ON `connection_queue` (`sendQueueId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_connection_queue_recvQueueId` ON `connection_queue` (`recvQueueId`)")
+
+                // 4. Alter delivery_queue table: Add receipt timestamps and envelope hash
+                db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `deliveredAt` INTEGER")
+                db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `readAt` INTEGER")
+                db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `envelopeHash` TEXT")
             }
         }
     }

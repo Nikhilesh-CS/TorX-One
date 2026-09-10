@@ -41,6 +41,9 @@ data class DeliveryQueueEntity(
     /** SHA-256 hash of the previous envelope. */
     val previousMessageHash: String? = null,
 
+    /** SHA-256 hash of this envelope. */
+    val envelopeHash: String? = null,
+
     /** Message type enum name (stored as String). */
     val messageType: String,
 
@@ -68,6 +71,12 @@ data class DeliveryQueueEntity(
     /** Which transport delivered this (filled after success). */
     val transportUsed: String? = null,
 
+    /** Delivery receipt timestamp (when peer ACKed). */
+    val deliveredAt: Long? = null,
+
+    /** Read receipt timestamp (when peer emitted READ). */
+    val readAt: Long? = null,
+
     /** Target peer's signing key (for address resolution). */
     val recipientKey: String
 )
@@ -79,12 +88,15 @@ data class DeliveryQueueEntity(
  * Each connection has two unidirectional queues (A→B and B→A)
  * with independent sequence counters.
  *
- * Inspired by SimpleX's double-queue connection model.
+ * Identity != Connection != Queue != Transport Address
  */
 @Entity(
     tableName = "connection_queue",
     indices = [
-        Index(value = ["remotePartyKey"], unique = true),
+        Index(value = ["connectionId"], unique = true),
+        Index(value = ["remotePartyKey"]),
+        Index(value = ["sendQueueId"]),
+        Index(value = ["recvQueueId"]),
         Index(value = ["state"])
     ]
 )
@@ -103,13 +115,28 @@ data class ConnectionQueueEntity(
     /** Identifier for our receive queue (B→A). */
     val recvQueueId: String,
 
+    /** Proposed new outbound queue identifier during rotation. */
+    val pendingSendQueueId: String? = null,
+
+    /** Proposed new inbound queue identifier during rotation. */
+    val pendingRecvQueueId: String? = null,
+
+    /** 6-stage queue rotation state: ACTIVE, ROTATION_PROPOSED, ROTATION_AUTHENTICATED, NEW_QUEUE_ACTIVE, OLD_QUEUE_DRAINING, CLOSED */
+    val rotationState: String = "ACTIVE",
+
+    /** Timestamp until which messages on old queues are accepted during draining window. */
+    val rotationGracePeriodUntil: Long? = null,
+
     /** Last sequence number we sent. */
     val lastSendSeq: Long = 0,
 
-    /** Last sequence number we received and acknowledged. */
+    /** Last sequence number we received, decrypted, persisted, and acknowledged. */
     val lastRecvSeq: Long = 0,
 
-    /** Connection state. */
+    /** Hash of the last successfully committed envelope in this connection. */
+    val lastCommittedHash: String? = null,
+
+    /** Connection state (ACTIVE, SUSPENDED, CLOSED). */
     val state: String = "ACTIVE",
 
     /** When this connection was established. */
@@ -180,11 +207,11 @@ interface DeliveryQueueDao {
     """)
     suspend fun markAccepted(envelopeId: String, transport: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE delivery_queue SET state = 'DELIVERED' WHERE messageId = :messageId AND state IN ('ACCEPTED', 'TRANSMITTING', 'QUEUED')")
-    suspend fun markDelivered(messageId: String)
+    @Query("UPDATE delivery_queue SET state = 'DELIVERED', deliveredAt = :now WHERE messageId = :messageId AND state IN ('ACCEPTED', 'TRANSMITTING', 'QUEUED')")
+    suspend fun markDelivered(messageId: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE delivery_queue SET state = 'READ' WHERE messageId = :messageId AND state IN ('DELIVERED', 'ACCEPTED')")
-    suspend fun markRead(messageId: String)
+    @Query("UPDATE delivery_queue SET state = 'READ', readAt = :now WHERE messageId = :messageId AND state IN ('DELIVERED', 'ACCEPTED')")
+    suspend fun markRead(messageId: String, now: Long = System.currentTimeMillis())
 
     @Query("UPDATE delivery_queue SET state = 'FAILED' WHERE envelopeId = :envelopeId")
     suspend fun markFailed(envelopeId: String)
@@ -218,14 +245,29 @@ interface ConnectionQueueDao {
     @Query("SELECT * FROM connection_queue WHERE connectionId = :connectionId LIMIT 1")
     suspend fun getById(connectionId: String): ConnectionQueueEntity?
 
-    @Query("SELECT * FROM connection_queue WHERE remotePartyKey = :remoteKey LIMIT 1")
+    @Query("SELECT * FROM connection_queue WHERE remotePartyKey = :remoteKey ORDER BY CASE WHEN state = 'ACTIVE' THEN 0 ELSE 1 END, lastActiveAt DESC LIMIT 1")
     suspend fun getByRemoteKey(remoteKey: String): ConnectionQueueEntity?
+
+    @Query("SELECT * FROM connection_queue WHERE remotePartyKey = :remoteKey ORDER BY lastActiveAt DESC")
+    suspend fun getAllByRemoteKey(remoteKey: String): List<ConnectionQueueEntity>
+
+    @Query("SELECT * FROM connection_queue WHERE sendQueueId = :queueId OR recvQueueId = :queueId OR pendingSendQueueId = :queueId OR pendingRecvQueueId = :queueId LIMIT 1")
+    suspend fun getByQueueId(queueId: String): ConnectionQueueEntity?
+
+    @Query("SELECT * FROM connection_queue WHERE sendQueueId = :sendQueueId LIMIT 1")
+    suspend fun getBySendQueueId(sendQueueId: String): ConnectionQueueEntity?
+
+    @Query("SELECT * FROM connection_queue WHERE recvQueueId = :recvQueueId LIMIT 1")
+    suspend fun getByRecvQueueId(recvQueueId: String): ConnectionQueueEntity?
 
     @Query("SELECT * FROM connection_queue WHERE state = 'ACTIVE'")
     suspend fun getActiveConnections(): List<ConnectionQueueEntity>
 
     @Query("UPDATE connection_queue SET lastSendSeq = :seq, lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun updateSendSeq(connectionId: String, seq: Long, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE connection_queue SET lastRecvSeq = :seq, lastCommittedHash = :hash, lastActiveAt = :now WHERE connectionId = :connectionId")
+    suspend fun commitRecvSeq(connectionId: String, seq: Long, hash: String? = null, now: Long = System.currentTimeMillis())
 
     @Query("UPDATE connection_queue SET lastRecvSeq = :seq, lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun updateRecvSeq(connectionId: String, seq: Long, now: Long = System.currentTimeMillis())
@@ -238,6 +280,64 @@ interface ConnectionQueueDao {
 
     @Query("UPDATE connection_queue SET recvQueueId = :recvQueueId, lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun updateRecvQueueId(connectionId: String, recvQueueId: String, now: Long = System.currentTimeMillis())
+
+    @Query("""
+        UPDATE connection_queue 
+        SET rotationState = :rotationState, 
+            pendingSendQueueId = :pendingSend, 
+            pendingRecvQueueId = :pendingRecv, 
+            rotationGracePeriodUntil = :gracePeriod, 
+            lastActiveAt = :now 
+        WHERE connectionId = :connectionId
+    """)
+    suspend fun updateRotationState(
+        connectionId: String,
+        rotationState: String,
+        pendingSend: String?,
+        pendingRecv: String?,
+        gracePeriod: Long?,
+        now: Long = System.currentTimeMillis()
+    )
+
+    @Query("""
+        UPDATE connection_queue 
+        SET sendQueueId = :activeSend,
+            recvQueueId = :activeRecv,
+            rotationState = :rotationState, 
+            pendingSendQueueId = :drainingSend, 
+            pendingRecvQueueId = :drainingRecv, 
+            rotationGracePeriodUntil = :gracePeriod, 
+            lastActiveAt = :now 
+        WHERE connectionId = :connectionId
+    """)
+    suspend fun updateDrainingState(
+        connectionId: String,
+        activeSend: String,
+        activeRecv: String,
+        rotationState: String,
+        drainingSend: String?,
+        drainingRecv: String?,
+        gracePeriod: Long?,
+        now: Long = System.currentTimeMillis()
+    )
+
+    @Query("""
+        UPDATE connection_queue 
+        SET sendQueueId = :newSendQueueId, 
+            recvQueueId = :newRecvQueueId, 
+            pendingSendQueueId = NULL, 
+            pendingRecvQueueId = NULL, 
+            rotationState = 'ACTIVE', 
+            rotationGracePeriodUntil = NULL, 
+            lastActiveAt = :now 
+        WHERE connectionId = :connectionId
+    """)
+    suspend fun finalizeQueueRotation(
+        connectionId: String,
+        newSendQueueId: String,
+        newRecvQueueId: String,
+        now: Long = System.currentTimeMillis()
+    )
 
     @Query("UPDATE connection_queue SET lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun touchActive(connectionId: String, now: Long = System.currentTimeMillis())
