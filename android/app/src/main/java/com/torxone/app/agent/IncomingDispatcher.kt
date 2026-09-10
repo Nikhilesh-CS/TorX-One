@@ -11,6 +11,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentSkipListMap
+
+/**
+ * Buffered envelope stored during out-of-order sequence arrivals.
+ */
+data class BufferedEnvelope(
+    val envelope: ProtocolEnvelope,
+    val sourceAddress: String?,
+    val transportType: TransportType,
+    val receivedAt: Long = System.currentTimeMillis()
+)
 
 /**
  * TorX One 2.0 — Incoming Dispatcher
@@ -40,13 +52,16 @@ class IncomingDispatcher(
         private const val TAG = "IncomingDispatcher"
     }
 
+    /** Out-of-order sequence gap buffer per connection. Key: connectionId -> (sequenceNumber -> BufferedEnvelope) */
+    val sequenceGapBuffers = ConcurrentHashMap<String, ConcurrentSkipListMap<Long, BufferedEnvelope>>()
+
     // ─── Handler Registrations ───
 
     /** Handler for decrypted chat messages. */
     var onChatMessage: (suspend (senderKey: String, payload: JSONObject, transportType: TransportType) -> Unit)? = null
 
-    /** Handler for session-encrypted messages (Double Ratchet). */
-    var onSessionMessage: (suspend (sourceAddress: String?, payload: JSONObject, transportType: TransportType) -> Unit)? = null
+    /** Handler for session-encrypted messages (Double Ratchet). Returns true if decrypted & persisted. */
+    var onSessionMessage: (suspend (sourceAddress: String?, payload: JSONObject, transportType: TransportType) -> Boolean)? = null
 
     /** Handler for ACK receipts. */
     var onAckReceived: (suspend (payload: JSONObject, sourceAddress: String?) -> Unit)? = null
@@ -143,20 +158,18 @@ class IncomingDispatcher(
         }
     }
 
-    private suspend fun dispatchProtocolEnvelope(
+    internal suspend fun dispatchProtocolEnvelope(
         envelope: ProtocolEnvelope,
         sourceAddress: String?,
         transportType: TransportType
     ) {
         val connManager = agent.connectionManager
 
-        // Deduplication: connectionId:sequenceNumber
-        val dedupeKey = "${envelope.connectionId}:${envelope.sequenceNumber}"
-        if (agent.isAlreadyProcessed(dedupeKey)) {
-            Log.d(TAG, "[INCOMING_ENVELOPE] Duplicate envelope seq=${envelope.sequenceNumber} conn=${envelope.connectionId}, dropping")
+        // Connection validation
+        val conn = connManager.getConnectionById(envelope.connectionId) ?: run {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Unknown connectionId=${envelope.connectionId}")
             return
         }
-        agent.markProcessed(dedupeKey)
 
         // Queue validation: verify queue is currently accepted (active, pending, or draining)
         val isAccepted = connManager.isQueueAccepted(envelope.connectionId, envelope.queueId)
@@ -165,25 +178,70 @@ class IncomingDispatcher(
             return
         }
 
-        // Sequence validation (pre-commit check)
-        val seqValidation = connManager.validateRecvSequence(envelope.connectionId, envelope.sequenceNumber)
-        when (seqValidation) {
-            is com.torxone.app.connection.SequenceValidationResult.Replay,
-            is com.torxone.app.connection.SequenceValidationResult.Invalid -> {
-                Log.w(TAG, "[INCOMING_ENVELOPE] Sequence ${envelope.sequenceNumber} rejected by validator for conn=${envelope.connectionId}: $seqValidation")
-                return
-            }
-            is com.torxone.app.connection.SequenceValidationResult.ValidWithGap -> {
-                Log.w(TAG, "[INCOMING_ENVELOPE] Sequence gap detected: expected=${seqValidation.expected}, received=${seqValidation.received}")
-            }
-            is com.torxone.app.connection.SequenceValidationResult.Valid -> {
-                Log.d(TAG, "[INCOMING_ENVELOPE] Sequence ${envelope.sequenceNumber} valid")
-            }
+        // Sequence validation (pre-commit check against conn.lastRecvSeq)
+        if (envelope.sequenceNumber <= conn.lastRecvSeq) {
+            Log.d(TAG, "[INCOMING_ENVELOPE] Replay/duplicate sequence ${envelope.sequenceNumber} <= lastRecvSeq=${conn.lastRecvSeq} on conn=${envelope.connectionId}")
+            return
         }
 
+        if (envelope.sequenceNumber > conn.lastRecvSeq + 1) {
+            // Sequence gap detected: buffer until missing sequence arrives
+            Log.w(TAG, "[INCOMING_ENVELOPE] Sequence gap detected on conn=${envelope.connectionId}: expected=${conn.lastRecvSeq + 1}, received=${envelope.sequenceNumber}. Buffering in sequenceGapBuffer.")
+            val buffer = sequenceGapBuffers.computeIfAbsent(envelope.connectionId) { ConcurrentSkipListMap() }
+            if (buffer.size < 200) {
+                buffer[envelope.sequenceNumber] = BufferedEnvelope(envelope, sourceAddress, transportType)
+            } else {
+                Log.w(TAG, "[INCOMING_ENVELOPE] Gap buffer full (200) for conn=${envelope.connectionId}, dropping envelope seq=${envelope.sequenceNumber}")
+            }
+            return
+        }
+
+        // Exactly expected next sequence: envelope.sequenceNumber == conn.lastRecvSeq + 1
+        processAndDrainSequence(envelope, sourceAddress, transportType)
+    }
+
+    private suspend fun processAndDrainSequence(
+        initialEnvelope: ProtocolEnvelope,
+        initialSourceAddress: String?,
+        initialTransportType: TransportType
+    ) {
+        var currentEnvelope: ProtocolEnvelope? = initialEnvelope
+        var currentSource: String? = initialSourceAddress
+        var currentTransport: TransportType = initialTransportType
+
+        while (currentEnvelope != null) {
+            val success = processSingleEnvelope(currentEnvelope, currentSource, currentTransport)
+            if (!success) {
+                Log.w(TAG, "[INCOMING_ENVELOPE] Processing failed for seq=${currentEnvelope.sequenceNumber} on conn=${currentEnvelope.connectionId}. Cursor NOT advanced.")
+                break
+            }
+
+            // After successfully processing and committing currentEnvelope, check gap buffer for next consecutive sequence
+            val connId = currentEnvelope.connectionId
+            val nextExpectedSeq = currentEnvelope.sequenceNumber + 1
+            val buffer = sequenceGapBuffers[connId]
+            val nextBuffered = buffer?.remove(nextExpectedSeq)
+            if (nextBuffered != null) {
+                Log.i(TAG, "[GAP_BUFFER] Draining buffered envelope seq=$nextExpectedSeq for conn=$connId")
+                currentEnvelope = nextBuffered.envelope
+                currentSource = nextBuffered.sourceAddress
+                currentTransport = nextBuffered.transportType
+            } else {
+                currentEnvelope = null
+            }
+        }
+    }
+
+    private suspend fun processSingleEnvelope(
+        envelope: ProtocolEnvelope,
+        sourceAddress: String?,
+        transportType: TransportType
+    ): Boolean {
+        val connManager = agent.connectionManager
+        val conn = connManager.getConnectionById(envelope.connectionId) ?: return false
+
         // Validate hash chain continuity
-        val conn = connManager.getConnectionById(envelope.connectionId)
-        val continuity = ProtocolEnvelope.verifyContinuity(conn?.lastCommittedHash, envelope)
+        val continuity = ProtocolEnvelope.verifyContinuity(conn.lastCommittedHash, envelope)
         when (continuity) {
             is HashChainVerificationResult.Continuous -> {
                 Log.d(TAG, "[INCOMING_ENVELOPE] Hash chain continuous for conn=${envelope.connectionId} seq=${envelope.sequenceNumber}")
@@ -203,14 +261,38 @@ class IncomingDispatcher(
             ciphertext = envelope.ciphertext
         )
 
-        // Commit sequence cursor advancement after validation
+        // Attempt application dispatch FIRST
+        val dispatchOk = dispatchEnvelopePayload(envelope, conn, sourceAddress, transportType)
+        if (!dispatchOk) {
+            Log.e(TAG, "[INCOMING_ENVELOPE] Application dispatch failed for seq=${envelope.sequenceNumber} conn=${envelope.connectionId}. Cursor NOT committed.")
+            return false
+        }
+
+        // ONLY AFTER successful decryption and persistence:
+        // 1. Commit receive sequence and envelope hash in Room DB
         connManager.commitRecvSequence(envelope.connectionId, envelope.sequenceNumber, computedHash)
 
-        // Dispatch according to envelope type
-        when (envelope.messageType) {
+        // 2. Mark deduplication cache
+        val dedupeKey = "${envelope.connectionId}:${envelope.sequenceNumber}"
+        agent.markProcessed(dedupeKey)
+
+        Log.i(TAG, "[INCOMING_ENVELOPE] Successfully committed recvSeq=${envelope.sequenceNumber} (hash=$computedHash) for conn=${envelope.connectionId}")
+        return true
+    }
+
+    private suspend fun dispatchEnvelopePayload(
+        envelope: ProtocolEnvelope,
+        conn: com.torxone.app.agent.ConnectionQueueEntity,
+        sourceAddress: String?,
+        transportType: TransportType
+    ): Boolean {
+        return when (envelope.messageType) {
             ProtocolEnvelope.TYPE_MESSAGE -> {
                 val sessionJson = JSONObject().apply {
                     put("type", MeshProtocol.TYPE_SESSION_MSG)
+                    put("to", conn.localPartyKey)
+                    put("from", conn.remotePartyKey)
+                    put("connectionId", envelope.connectionId)
                     put("ciphertext", envelope.ciphertext)
                     envelope.cryptoMetadata?.let {
                         put("sessionId", it.sessionId)
@@ -220,7 +302,7 @@ class IncomingDispatcher(
                         it.signature?.let { sig -> put("signature", sig) }
                     }
                 }
-                onSessionMessage?.invoke(sourceAddress, sessionJson, transportType)
+                onSessionMessage?.invoke(sourceAddress, sessionJson, transportType) ?: false
             }
             ProtocolEnvelope.TYPE_ACK -> {
                 val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
@@ -229,6 +311,7 @@ class IncomingDispatcher(
                     agent.handleAck(ackMsgId)
                 }
                 onAckReceived?.invoke(json, sourceAddress)
+                true
             }
             ProtocolEnvelope.TYPE_READ -> {
                 val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
@@ -237,6 +320,7 @@ class IncomingDispatcher(
                     agent.handleRead(readMsgId)
                 }
                 onReadReceived?.invoke(json, sourceAddress)
+                true
             }
             ProtocolEnvelope.TYPE_CALL_OFFER,
             ProtocolEnvelope.TYPE_CALL_ANSWER,
@@ -245,14 +329,17 @@ class IncomingDispatcher(
             ProtocolEnvelope.TYPE_CALL_END -> {
                 val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
                 onCallSignal?.invoke(envelope.messageType, json, sourceAddress, transportType)
+                true
             }
             ProtocolEnvelope.TYPE_QUEUE_ROTATE_PROPOSE,
             ProtocolEnvelope.TYPE_QUEUE_ROTATE_ACK -> {
                 val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
                 onQueueRotation?.invoke(json)
+                true
             }
             else -> {
                 Log.d(TAG, "[INCOMING_ENVELOPE] Dispatched envelope type=${envelope.messageType}")
+                true
             }
         }
     }
@@ -360,7 +447,7 @@ class IncomingDispatcher(
             }
 
             // TorX One 2.0 Pairwise queue rotation
-            "queue_rotate" -> {
+            "queue_rotate", "QUEUE_ROTATE_PROPOSE", "ROTATE_PROPOSE", "QUEUE_ROTATE_ACK", "ROTATE_ACK" -> {
                 onQueueRotation?.invoke(json)
             }
 

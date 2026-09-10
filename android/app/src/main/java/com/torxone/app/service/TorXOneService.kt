@@ -209,7 +209,9 @@ class TorXOneService : Service() {
             deliveryQueueDao = db.deliveryQueueDao(),
             connectionManager = connectionManager,
             scope = serviceScope
-        )
+        ).apply {
+            identityProvider = { identityManager.loadIdentity() }
+        }
         deliveryTracker = com.torxone.app.agent.DeliveryTracker(
             db = db,
             agent = torXAgent,
@@ -354,7 +356,7 @@ class TorXOneService : Service() {
             messageRouter.handlePong(json)
         }
         incomingDispatcher.onQueueRotation = { json ->
-            connectionManager.handleQueueRotationNotice(json)
+            torXAgent.handleQueueRotationPayload(json)
         }
     }
 

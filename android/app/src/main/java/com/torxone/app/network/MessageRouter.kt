@@ -486,14 +486,17 @@ class MessageRouter(
 
     // ──────────────────────── DECRYPTION ────────────────────────
 
-    internal suspend fun handleSessionMessage(viaEndpoint: String?, json: JSONObject) {
+    internal suspend fun handleSessionMessage(viaEndpoint: String?, json: JSONObject): Boolean {
         val to = json.optString("to", "").trim().lowercase()
         val ttl = json.optInt("ttl", 3)
         val fromKey = json.optString("from", "").trim().lowercase()
         val messageId = json.optString("msgId", "")
         val senderOnion = json.optString("senderOnion", "")
         if (to == mySigningKeyHex) {
-            val sm = sessionManager ?: return
+            val sm = sessionManager ?: run {
+                Log.w(TAG, "[SESSION_RX] sessionManager is null; cannot decrypt message")
+                return false
+            }
             val contact = db.contactDao().getContact(fromKey)
             if (contact != null && senderOnion.isNotBlank() && contact.onionAddress != senderOnion) db.contactDao().insertContact(contact.copy(onionAddress = senderOnion))
 
@@ -501,7 +504,7 @@ class MessageRouter(
             if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
                 Log.d(TAG, "[SESSION_RX] Duplicate message $messageId already in DB from ${contact?.name ?: fromKey}; sending ACK")
                 sendAck(messageId, fromKey, viaEndpoint, senderOnion)
-                return
+                return true
             }
 
             val decrypted = try { 
@@ -510,20 +513,23 @@ class MessageRouter(
                 Log.w(TAG, "[SESSION_RX] Decrypt failed from ${contact?.name ?: fromKey}: ${e.message}")
                 if (messageId.isNotBlank() && db.messageDao().getMessageById(messageId) != null) {
                     sendAck(messageId, fromKey, viaEndpoint, senderOnion)
+                    return true
                 }
-                return 
+                return false 
             }
             Log.i(TAG, "[RX] id=$messageId decrypted=true")
             dispatchDecryptedMessage(contact, fromKey, decrypted.plaintext, decrypted.messageType, messageId, viaEndpoint, senderOnion)
-            return
+            return true
         }
         if (viaEndpoint != null && ttl > 1) {
             val fingerprint = "relay_session:$to:$messageId"
-            if (!rememberRelayFingerprint(fingerprint)) return
+            if (!rememberRelayFingerprint(fingerprint)) return false
             json.put("ttl", ttl - 1)
             val relayWire = MeshProtocol.encodeSessionRelay(dest = to, from = fromKey, sessionWireJson = json.toString(), ttl = ttl - 1, messageId = messageId, senderOnion = senderOnion.ifBlank { null })
             nearbyManager.connectedEndpoints.value.filter { it != viaEndpoint }.forEach { runCatching { nearbyManager.sendRaw(it, relayWire) } }
+            return true
         }
+        return false
     }
 
     internal suspend fun handleEncrypted(json: JSONObject, viaEndpoint: String?, messageType: String) {

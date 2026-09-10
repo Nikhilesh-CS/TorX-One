@@ -3,6 +3,7 @@ package com.torxone.app.connection
 import android.util.Log
 import com.torxone.app.agent.ConnectionQueueDao
 import com.torxone.app.agent.ConnectionQueueEntity
+import com.torxone.app.crypto.CryptoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
@@ -355,8 +356,212 @@ class ConnectionManager(
         Log.i(TAG, "[DELETE] Connection $connectionId deleted")
     }
 
+    // ─────────────────── Cryptographically Authenticated Rotation ───────────────────
+
     /**
-     * Encode a queue rotation notification frame to inform the remote peer of a new queue ID.
+     * Create a cryptographically signed ROTATE_PROPOSE payload.
+     * Signs: "ROTATE_PROPOSE:$connectionId:$oldQueueId:$newQueueId:$generation:$nonce:$timestamp"
+     */
+    fun createSignedRotationProposal(
+        connectionId: String,
+        oldQueueId: String,
+        newQueueId: String,
+        generation: Long,
+        nonce: String = UUID.randomUUID().toString(),
+        timestamp: Long = System.currentTimeMillis(),
+        signingSecretKey: ByteArray
+    ): String {
+        val messageToSign = "ROTATE_PROPOSE:$connectionId:$oldQueueId:$newQueueId:$generation:$nonce:$timestamp"
+        val signatureBytes = CryptoManager.sign(messageToSign.toByteArray(Charsets.UTF_8), signingSecretKey)
+        val signatureHex = CryptoManager.toHex(signatureBytes)
+
+        return JSONObject().apply {
+            put("type", "QUEUE_ROTATE_PROPOSE")
+            put("connectionId", connectionId)
+            put("oldQueueId", oldQueueId)
+            put("newQueueId", newQueueId)
+            put("generation", generation)
+            put("nonce", nonce)
+            put("timestamp", timestamp)
+            put("signature", signatureHex)
+        }.toString()
+    }
+
+    /**
+     * Create a cryptographically signed ROTATE_ACK payload.
+     * Signs: "ROTATE_ACK:$connectionId:$oldQueueId:$newQueueId:$nonce:$timestamp"
+     */
+    fun createSignedRotationAck(
+        connectionId: String,
+        oldQueueId: String,
+        newQueueId: String,
+        nonce: String,
+        timestamp: Long = System.currentTimeMillis(),
+        signingSecretKey: ByteArray
+    ): String {
+        val messageToSign = "ROTATE_ACK:$connectionId:$oldQueueId:$newQueueId:$nonce:$timestamp"
+        val signatureBytes = CryptoManager.sign(messageToSign.toByteArray(Charsets.UTF_8), signingSecretKey)
+        val signatureHex = CryptoManager.toHex(signatureBytes)
+
+        return JSONObject().apply {
+            put("type", "QUEUE_ROTATE_ACK")
+            put("connectionId", connectionId)
+            put("oldQueueId", oldQueueId)
+            put("newQueueId", newQueueId)
+            put("nonce", nonce)
+            put("timestamp", timestamp)
+            put("signature", signatureHex)
+        }.toString()
+    }
+
+    /**
+     * Result of handling an incoming signed queue rotation proposal.
+     */
+    data class RotationProposalHandlingResult(
+        val success: Boolean,
+        val connectionId: String? = null,
+        val remotePartyKey: String? = null,
+        val ackWireJson: String? = null,
+        val error: String? = null
+    )
+
+    /**
+     * Handle incoming cryptographically authenticated ROTATE_PROPOSE.
+     * Verifies signature against the connection's remotePartyKey.
+     * On success:
+     * - Staged in pendingRecvQueueId
+     * - Activates new queue for receiving
+     * - Drains old queue with grace period
+     * - If mySigningSecretKey provided, returns signed ROTATE_ACK payload
+     */
+    suspend fun handleSignedRotationProposal(
+        json: JSONObject,
+        mySigningSecretKey: ByteArray? = null
+    ): RotationProposalHandlingResult = withContext(Dispatchers.IO) {
+        val connId = json.optString("connectionId", "")
+        val oldQueueId = json.optString("oldQueueId", "")
+        val newQueueId = json.optString("newQueueId", "")
+        val generation = json.optLong("generation", 0L)
+        val nonce = json.optString("nonce", "")
+        val timestamp = json.optLong("timestamp", 0L)
+        val signatureHex = json.optString("signature", "")
+
+        if (newQueueId.isBlank() || signatureHex.isBlank()) {
+            return@withContext RotationProposalHandlingResult(false, error = "Missing required rotation fields")
+        }
+
+        val conn = (if (oldQueueId.isNotBlank()) connectionQueueDao.getByRecvQueueId(oldQueueId) else null)
+            ?: (if (connId.isNotBlank()) connectionQueueDao.getById(connId) else null)
+            ?: return@withContext RotationProposalHandlingResult(false, error = "Connection not found for proposal")
+
+        // Cryptographic signature verification using peer's signing public key
+        val remoteKeyBytes = CryptoManager.fromHexOrNull(conn.remotePartyKey, 32)
+            ?: return@withContext RotationProposalHandlingResult(false, error = "Invalid remote party key on connection")
+
+        val signatureBytes = CryptoManager.fromHexOrNull(signatureHex, 64)
+            ?: return@withContext RotationProposalHandlingResult(false, error = "Invalid signature format")
+
+        val messageToVerify = "ROTATE_PROPOSE:$connId:$oldQueueId:$newQueueId:$generation:$nonce:$timestamp"
+        val verified = CryptoManager.verify(messageToVerify.toByteArray(Charsets.UTF_8), signatureBytes, remoteKeyBytes)
+        if (!verified) {
+            Log.w(TAG, "[ROTATION] Signature verification FAILED for proposal on conn=${conn.connectionId}")
+            return@withContext RotationProposalHandlingResult(false, error = "Cryptographic signature verification failed")
+        }
+
+        // Validate oldQueueId matches active recvQueueId or draining queue
+        if (oldQueueId.isNotBlank() && conn.recvQueueId != oldQueueId && conn.pendingRecvQueueId != oldQueueId) {
+            Log.w(TAG, "[ROTATION] Proposal oldQueueId ($oldQueueId) != active recvQueueId (${conn.recvQueueId})")
+        }
+
+        // Authenticate, activate new receive queue, and drain old queue
+        authenticateQueueRotation(conn.connectionId, newQueueId)
+        activateNewQueue(conn.connectionId)
+        drainOldQueue(conn.connectionId)
+
+        Log.i(TAG, "[ROTATION] Successfully authenticated proposal from ${conn.remotePartyKey}: new recvQueueId=$newQueueId (draining old queue)")
+
+        val ackWire = if (mySigningSecretKey != null) {
+            createSignedRotationAck(
+                connectionId = connId.ifBlank { conn.connectionId },
+                oldQueueId = oldQueueId,
+                newQueueId = newQueueId,
+                nonce = nonce,
+                signingSecretKey = mySigningSecretKey
+            )
+        } else null
+
+        RotationProposalHandlingResult(
+            success = true,
+            connectionId = conn.connectionId,
+            remotePartyKey = conn.remotePartyKey,
+            ackWireJson = ackWire
+        )
+    }
+
+    /**
+     * Handle incoming cryptographically authenticated ROTATE_ACK.
+     * Verifies signature against the connection's remotePartyKey.
+     * On success:
+     * - Validates newQueueId matches pendingSendQueueId
+     * - Activates new queue for sending
+     * - Drains old queue with grace period
+     */
+    suspend fun handleSignedRotationAck(
+        json: JSONObject
+    ): Boolean = withContext(Dispatchers.IO) {
+        val connId = json.optString("connectionId", "")
+        val oldQueueId = json.optString("oldQueueId", "")
+        val newQueueId = json.optString("newQueueId", "")
+        val nonce = json.optString("nonce", "")
+        val timestamp = json.optLong("timestamp", 0L)
+        val signatureHex = json.optString("signature", "")
+
+        if (newQueueId.isBlank() || signatureHex.isBlank()) {
+            Log.w(TAG, "[ROTATION] Invalid ROTATE_ACK payload: missing fields")
+            return@withContext false
+        }
+
+        val conn = (if (oldQueueId.isNotBlank()) connectionQueueDao.getBySendQueueId(oldQueueId) else null)
+            ?: (if (connId.isNotBlank()) connectionQueueDao.getById(connId) else null)
+            ?: run {
+                Log.w(TAG, "[ROTATION] Connection not found for ROTATE_ACK (connId=$connId, oldQueueId=$oldQueueId)")
+                return@withContext false
+            }
+
+        val remoteKeyBytes = CryptoManager.fromHexOrNull(conn.remotePartyKey, 32)
+            ?: run {
+                Log.w(TAG, "[ROTATION] Invalid remotePartyKey on conn=${conn.connectionId}")
+                return@withContext false
+            }
+
+        val signatureBytes = CryptoManager.fromHexOrNull(signatureHex, 64)
+            ?: run {
+                Log.w(TAG, "[ROTATION] Invalid signature format on ROTATE_ACK")
+                return@withContext false
+            }
+
+        val messageToVerify = "ROTATE_ACK:$connId:$oldQueueId:$newQueueId:$nonce:$timestamp"
+        val verified = CryptoManager.verify(messageToVerify.toByteArray(Charsets.UTF_8), signatureBytes, remoteKeyBytes)
+        if (!verified) {
+            Log.w(TAG, "[ROTATION] Signature verification FAILED for ROTATE_ACK on conn=${conn.connectionId}")
+            return@withContext false
+        }
+
+        if (conn.pendingSendQueueId != null && conn.pendingSendQueueId != newQueueId) {
+            Log.w(TAG, "[ROTATION] ROTATE_ACK newQueueId ($newQueueId) does not match pendingSendQueueId (${conn.pendingSendQueueId})")
+            return@withContext false
+        }
+
+        // Activate new send queue and drain old queue
+        activateNewQueue(conn.connectionId)
+        drainOldQueue(conn.connectionId)
+
+        Log.i(TAG, "[ROTATION] ROTATE_ACK verified: sendQueueId transitioned to $newQueueId for conn=${conn.connectionId}")
+        true
+    }
+
+    /**
+     * Encode a queue rotation notification frame (legacy fallback).
      */
     fun encodeQueueRotationNotice(
         connectionId: String,
@@ -377,8 +582,7 @@ class ConnectionManager(
     }
 
     /**
-     * Handle a queue rotation notice received from the remote peer.
-     * When remote rotates their send queue, it becomes our receive queue, and vice-versa.
+     * Handle a queue rotation notice received from the remote peer (legacy fallback).
      */
     suspend fun handleQueueRotationNotice(json: JSONObject) = withContext(Dispatchers.IO) {
         val connId = json.optString("connId", "")
@@ -394,13 +598,11 @@ class ConnectionManager(
 
         if (conn != null && newQueueId.isNotBlank()) {
             if (role == "send") {
-                // Peer rotated their send queue -> authenticate incoming proposal, activate, and drain old queue
                 authenticateQueueRotation(conn.connectionId, newQueueId)
                 activateNewQueue(conn.connectionId)
                 drainOldQueue(conn.connectionId)
                 Log.i(TAG, "[ROTATE] Peer $fromKey rotated send queue -> our recvQueueId transitioned to $newQueueId (draining)")
             } else if (role == "recv") {
-                // Peer rotated their recv queue -> update our active send queue
                 connectionQueueDao.updateSendQueueId(conn.connectionId, newQueueId, System.currentTimeMillis())
                 Log.i(TAG, "[ROTATE] Peer $fromKey rotated recv queue -> our sendQueueId updated to $newQueueId")
             }

@@ -1,6 +1,8 @@
 package com.torxone.app.agent
 
 import android.util.Log
+import com.torxone.app.crypto.CryptoManager
+import com.torxone.app.crypto.Identity
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.data.ContactEntity
 import com.torxone.app.transport.TransportMetadata
@@ -9,6 +11,7 @@ import com.torxone.app.transport.TransportType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -39,6 +42,8 @@ class TorXAgent(
     val connectionManager: com.torxone.app.connection.ConnectionManager,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
+    /** Optional provider for local identity (signing secret key). */
+    var identityProvider: (() -> Identity?)? = null
     companion object {
         private const val TAG = "TorXAgent"
         private const val RETRY_BASE_MS = 3_000L
@@ -332,27 +337,85 @@ class TorXAgent(
 
     /**
      * Rotate send queue for forward secrecy / traffic decoupling.
+     * Deadlock-free two-way handshake:
+     * 1. Proposes new queue Q2, leaving active queue Q1 intact
+     * 2. Cryptographically signs ROTATE_PROPOSE(Q2) with local signing secret key
+     * 3. Sends proposal through current active queue Q1 (which peer is listening to)
+     * 4. Activation of Q2 occurs ONLY upon receiving authenticated ROTATE_ACK from peer!
      */
-    suspend fun rotateQueues(remoteKey: String, mySigningKey: String): Boolean {
-        val conn = connectionManager.getConnectionByRemoteKey(remoteKey) ?: return false
-        val proposal = connectionManager.proposeQueueRotation(conn.connectionId)
-        val notice = connectionManager.encodeQueueRotationNotice(
-            connectionId = conn.connectionId,
-            isSendQueue = true,
-            newQueueId = proposal.proposedSendQueueId,
-            fromKey = mySigningKey,
-            toKey = remoteKey
-        )
-        connectionManager.activateNewQueue(conn.connectionId)
-        connectionManager.drainOldQueue(conn.connectionId)
+    suspend fun rotateQueues(
+        remoteKey: String,
+        mySigningSecretKey: ByteArray? = null
+    ): Boolean {
+        val conn = connectionManager.getConnectionByRemoteKey(remoteKey) ?: run {
+            Log.w(TAG, "[ROTATE] Connection not found for $remoteKey")
+            return false
+        }
+        val secretKey = mySigningSecretKey ?: identityProvider?.invoke()?.signingSecretKey
+        if (secretKey == null) {
+            Log.w(TAG, "[ROTATE] Cannot rotate queues without signing secret key")
+            return false
+        }
 
+        // Propose new send queue (Q2) — stays staged in pendingSendQueueId
+        val proposal = connectionManager.proposeQueueRotation(conn.connectionId)
+
+        // Cryptographically sign proposal
+        val proposalWire = connectionManager.createSignedRotationProposal(
+            connectionId = conn.connectionId,
+            oldQueueId = conn.sendQueueId,
+            newQueueId = proposal.proposedSendQueueId,
+            generation = System.currentTimeMillis(),
+            signingSecretKey = secretKey
+        )
+
+        // Queue proposal for delivery through CURRENT active queue Q1 (deadlock prevention!)
         queueForDelivery(
             recipientKey = remoteKey,
             messageId = "rotate_${System.currentTimeMillis()}",
             messageType = EnvelopeType.MSG,
-            encryptedPayload = notice
+            encryptedPayload = proposalWire
         )
+        Log.i(TAG, "[ROTATION] Queued cryptographically signed ROTATE_PROPOSE for $remoteKey via active queue ${conn.sendQueueId}")
         return true
+    }
+
+    /** Legacy overload taking hex string signing key for backward compatibility. */
+    suspend fun rotateQueues(remoteKey: String, mySigningKey: String): Boolean {
+        val secretBytes = CryptoManager.fromHexOrNull(mySigningKey, 64)
+            ?: CryptoManager.fromHexOrNull(mySigningKey, 32)
+        return rotateQueues(remoteKey, secretBytes)
+    }
+
+    /**
+     * Handle queue rotation payloads (ROTATE_PROPOSE, ROTATE_ACK, or legacy notice).
+     */
+    suspend fun handleQueueRotationPayload(json: JSONObject) {
+        val type = json.optString("type", "")
+        when (type) {
+            "QUEUE_ROTATE_PROPOSE", "ROTATE_PROPOSE" -> {
+                val secretKey = identityProvider?.invoke()?.signingSecretKey
+                val result = connectionManager.handleSignedRotationProposal(json, secretKey)
+                if (result.success && result.ackWireJson != null && result.remotePartyKey != null) {
+                    // Send back cryptographically signed ROTATE_ACK to peer
+                    queueForDelivery(
+                        recipientKey = result.remotePartyKey,
+                        messageId = "rotate_ack_${System.currentTimeMillis()}",
+                        messageType = EnvelopeType.MSG,
+                        encryptedPayload = result.ackWireJson
+                    )
+                    Log.i(TAG, "[ROTATION] Sent signed ROTATE_ACK to ${result.remotePartyKey}")
+                }
+            }
+            "QUEUE_ROTATE_ACK", "ROTATE_ACK" -> {
+                val success = connectionManager.handleSignedRotationAck(json)
+                Log.i(TAG, "[ROTATION] Handled ROTATE_ACK: success=$success")
+            }
+            else -> {
+                // Fallback for legacy notice format
+                connectionManager.handleQueueRotationNotice(json)
+            }
+        }
     }
 
     private suspend fun resolvePeerAddresses(recipientKey: String): Map<TransportType, String> {
