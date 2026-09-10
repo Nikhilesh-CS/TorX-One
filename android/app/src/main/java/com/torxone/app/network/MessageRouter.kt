@@ -406,12 +406,29 @@ class MessageRouter(
         val members = db.groupDao().getGroupMembersSync(groupId)
         var sentToAnyMember = false
         var failedRecipients = 0
+        val agent = torXAgent
         members.filter { it.role != "invited" }.forEach { member ->
             if (member.memberKey != myKey) {
-                val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
-                if (result.success) sentToAnyMember = true else {
-                    failedRecipients++
-                    db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(eventId = messageId, groupId = groupId, recipientKey = member.memberKey, payload = finalPayload.toString(), eventType = MeshProtocol.TYPE_GROUP_MESSAGE, createdAt = System.currentTimeMillis(), nextRetryAt = System.currentTimeMillis() + 30_000L, expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L))
+                if (agent != null) {
+                    val wire = buildEncryptedWireFrame(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
+                    if (wire != null) {
+                        agent.queueForDelivery(
+                            recipientKey = member.memberKey,
+                            messageId = "${messageId}_${member.memberKey.take(8)}",
+                            messageType = com.torxone.app.agent.EnvelopeType.GROUP_MESSAGE,
+                            encryptedPayload = wire
+                        )
+                        sentToAnyMember = true
+                    } else {
+                        val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
+                        if (result.success) sentToAnyMember = true else failedRecipients++
+                    }
+                } else {
+                    val result = runCatching { sendRawPayload(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE) }.getOrElse { error -> SendResult(false, Transport.FAILED, error.message ?: "Group delivery failed") }
+                    if (result.success) sentToAnyMember = true else {
+                        failedRecipients++
+                        db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(eventId = messageId, groupId = groupId, recipientKey = member.memberKey, payload = finalPayload.toString(), eventType = MeshProtocol.TYPE_GROUP_MESSAGE, createdAt = System.currentTimeMillis(), nextRetryAt = System.currentTimeMillis() + 30_000L, expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L))
+                    }
                 }
             }
         }
@@ -501,8 +518,26 @@ class MessageRouter(
         if (action == "POLL") { val poll = JSONObject().put("type", "poll").put("question", inner.optString("question")).put("options", inner.optJSONArray("options") ?: JSONArray()).put("multipleChoice", inner.optBoolean("multipleChoice")); db.messageDao().insertMessage(MessageEntity(messageId = id, contactKey = groupId, conversationType = "group", senderKey = actor, text = "[Poll:JSON]$poll", messageType = "POLL", timestamp = System.currentTimeMillis(), direction = "sent", status = "pending")) }
         val encrypted = GroupCryptoManager.encrypt(key, inner.toString())
         val wire = JSONObject().put("type", MeshProtocol.TYPE_GROUP_MESSAGE).put("schemaVersion", 2).put("groupId", groupId).put("keyVersion", key.keyVersion).put("ciphertext", encrypted.ciphertextBase64).put("iv", encrypted.ivBase64).toString()
+        val agent = torXAgent
         var delivered = false
-        db.groupDao().getGroupMembersSync(groupId).filter { it.role != "invited" && it.memberKey != actor }.forEach { if (sendRawPayload(it.memberKey, wire, MeshProtocol.TYPE_GROUP_MESSAGE).success) delivered = true }
+        db.groupDao().getGroupMembersSync(groupId).filter { it.role != "invited" && it.memberKey != actor }.forEach { member ->
+            if (agent != null) {
+                val wireFrame = buildEncryptedWireFrame(member.memberKey, wire, MeshProtocol.TYPE_GROUP_MESSAGE)
+                if (wireFrame != null) {
+                    agent.queueForDelivery(
+                        recipientKey = member.memberKey,
+                        messageId = "${id}_${member.memberKey.take(8)}",
+                        messageType = com.torxone.app.agent.EnvelopeType.GROUP_MESSAGE,
+                        encryptedPayload = wireFrame
+                    )
+                    delivered = true
+                } else if (sendRawPayload(member.memberKey, wire, MeshProtocol.TYPE_GROUP_MESSAGE).success) {
+                    delivered = true
+                }
+            } else if (sendRawPayload(member.memberKey, wire, MeshProtocol.TYPE_GROUP_MESSAGE).success) {
+                delivered = true
+            }
+        }
         SendResult(delivered, if (delivered) Transport.NEARBY_RELAY else Transport.FAILED, if (delivered) null else "No group members are reachable")
     }
 

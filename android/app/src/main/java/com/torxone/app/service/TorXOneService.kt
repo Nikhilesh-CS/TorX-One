@@ -211,6 +211,7 @@ class TorXOneService : Service() {
         messageRouter.torXAgent = torXAgent
         messageRouter.deliveryTracker = deliveryTracker
         callManager.torXAgent = torXAgent
+        groupManager.torXAgent = torXAgent
 
         incomingDispatcher = com.torxone.app.agent.IncomingDispatcher(torXAgent, serviceScope)
         wireIncomingDispatcher()

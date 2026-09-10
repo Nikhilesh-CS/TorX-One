@@ -27,6 +27,7 @@ class GroupManager(
     private val identityManager: IdentityManager,
     private val messageRouter: MessageRouter
 ) {
+    var torXAgent: com.torxone.app.agent.TorXAgent? = null
     private val eventManager = GroupEventManager(db, identityManager)
 
     suspend fun cleanupExpiredMessages() = withContext(Dispatchers.IO) {
@@ -72,7 +73,7 @@ class GroupManager(
         val json = JSONObject(token)
         val payload = JSONObject().put("token", token).put("groupId", json.getString("groupId"))
             .put("memberKey", CryptoManager.toHex(identity.signingPublicKey)).toString()
-        messageRouter.sendRawPayload(json.getString("inviterKey"), payload, MeshProtocol.TYPE_GROUP_JOIN_REQUEST).success
+        sendGroupControl(json.getString("inviterKey"), payload, MeshProtocol.TYPE_GROUP_JOIN_REQUEST).success
     }
 
     suspend fun approveJoin(groupId: String, memberKey: String): Boolean = withContext(Dispatchers.IO) {
@@ -417,12 +418,12 @@ class GroupManager(
 
     private suspend fun requestSync(groupId: String, recipientKey: String, fromVersion: Long) {
         val payload = JSONObject().put("groupId", groupId).put("fromVersion", fromVersion).toString()
-        messageRouter.sendRawPayload(recipientKey, payload, MeshProtocol.TYPE_GROUP_SYNC_REQUEST)
+        sendGroupControl(recipientKey, payload, MeshProtocol.TYPE_GROUP_SYNC_REQUEST)
     }
 
     suspend fun requestMissingKey(groupId: String, recipientKey: String, keyVersion: Int) {
         val payload = JSONObject().put("groupId", groupId).put("keyVersion", keyVersion).toString()
-        messageRouter.sendRawPayload(recipientKey, payload, MeshProtocol.TYPE_GROUP_KEY_REQUEST)
+        sendGroupControl(recipientKey, payload, MeshProtocol.TYPE_GROUP_KEY_REQUEST)
     }
 
     private suspend fun handleSyncRequest(json: JSONObject, senderKey: String) {
@@ -437,7 +438,7 @@ class GroupManager(
                 event.targetKey?.let { put("targetKey", it) }; put("groupVersion", event.groupVersion); put("keyVersion", event.keyVersion); put("createdAt", event.createdAt); put("payload", JSONObject(event.payload)); put("signature", event.signature)
             })
         }
-        messageRouter.sendRawPayload(senderKey, JSONObject().put("groupId", groupId).put("events", events).toString(), MeshProtocol.TYPE_GROUP_SYNC_RESPONSE)
+        sendGroupControl(senderKey, JSONObject().put("groupId", groupId).put("events", events).toString(), MeshProtocol.TYPE_GROUP_SYNC_RESPONSE)
     }
 
     private suspend fun handleSyncResponse(json: JSONObject, senderKey: String) {
@@ -719,22 +720,38 @@ class GroupManager(
     }
 
     private suspend fun sendControl(groupId: String, recipientKey: String, payload: String, type: String): com.torxone.app.network.SendResult {
-        val result = messageRouter.sendRawPayload(recipientKey, payload, type)
-        if (!result.success) {
-            val json = runCatching { JSONObject(payload) }.getOrNull()
-            val eventId = json?.optString("eventId").orEmpty()
-            if (eventId.isNotBlank()) db.groupSyncDao().upsertPending(com.torxone.app.data.PendingGroupEventEntity(eventId, groupId, recipientKey, payload, type, createdAt = System.currentTimeMillis(), nextRetryAt = System.currentTimeMillis() + 30_000L, expiresAt = System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L))
+        return sendGroupControl(recipientKey, payload, type)
+    }
+
+    suspend fun sendGroupControl(recipientKey: String, payload: String, type: String): com.torxone.app.network.SendResult {
+        val agent = torXAgent ?: messageRouter.torXAgent
+        if (agent != null) {
+            val wire = messageRouter.buildEncryptedWireFrame(recipientKey, payload, type)
+            if (wire != null) {
+                val json = runCatching { JSONObject(payload) }.getOrNull()
+                val eventId = json?.optString("eventId").takeIf { !it.isNullOrBlank() }
+                    ?: json?.optString("messageId").takeIf { !it.isNullOrBlank() }
+                    ?: UUID.randomUUID().toString()
+                agent.queueForDelivery(
+                    recipientKey = recipientKey,
+                    messageId = eventId,
+                    messageType = com.torxone.app.agent.EnvelopeType.fromWireType(type),
+                    encryptedPayload = wire
+                )
+                return com.torxone.app.network.SendResult(true, com.torxone.app.network.Transport.PENDING)
+            }
         }
-        return result
+        return messageRouter.sendRawPayload(recipientKey, payload, type)
     }
 
     suspend fun retryPendingEvents() {
+        // TorX One 2.0: Unified TorXAgent delivery queue handles crash-safe
+        // persistent outbox retries with exponential backoff across all transports.
         val now = System.currentTimeMillis()
-        db.groupSyncDao().duePending(now).forEach { pending ->
-            val result = messageRouter.sendRawPayload(pending.recipientKey, pending.payload, pending.eventType)
-            if (result.success) db.groupSyncDao().deletePendingForRecipient(pending.eventId, pending.recipientKey)
-            else if (pending.retryCount >= 12 || pending.expiresAt <= now) db.groupSyncDao().deletePending(pending.eventId)
-            else db.groupSyncDao().reschedule(pending.eventId, pending.recipientKey, pending.retryCount + 1, now + (30_000L shl pending.retryCount.coerceAtMost(5)))
+        runCatching {
+            db.groupSyncDao().duePending(now).forEach { pending ->
+                db.groupSyncDao().deletePending(pending.eventId)
+            }
         }
     }
 
