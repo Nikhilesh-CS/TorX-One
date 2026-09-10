@@ -293,4 +293,11 @@ class FakeDeliveryQueueDao : DeliveryQueueDao {
                 .sortedBy { it.sequenceNumber }
         )
     }
+
+    override suspend fun getLatestEnvelopeHash(connectionId: String, queueId: String): String? {
+        return storage.values
+            .filter { it.connectionId == connectionId && it.queueId == queueId }
+            .maxByOrNull { it.sequenceNumber }
+            ?.envelopeHash
+    }
 }

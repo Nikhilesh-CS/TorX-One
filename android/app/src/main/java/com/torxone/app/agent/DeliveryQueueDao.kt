@@ -264,6 +264,10 @@ interface DeliveryQueueDao {
 
     @Query("SELECT * FROM delivery_queue WHERE recipientKey = :recipientKey AND state NOT IN ('DELIVERED', 'READ', 'FAILED', 'EXPIRED') ORDER BY sequenceNumber ASC")
     fun observePendingForPeer(recipientKey: String): Flow<List<DeliveryQueueEntity>>
+
+    /** Get the cryptographic envelope hash of the latest envelope queued or sent on a specific queue. */
+    @Query("SELECT envelopeHash FROM delivery_queue WHERE connectionId = :connectionId AND queueId = :queueId ORDER BY sequenceNumber DESC LIMIT 1")
+    suspend fun getLatestEnvelopeHash(connectionId: String, queueId: String): String?
 }
 
 @Dao

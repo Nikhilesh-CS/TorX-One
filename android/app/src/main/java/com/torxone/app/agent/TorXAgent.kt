@@ -135,7 +135,8 @@ class TorXAgent(
         val now = System.currentTimeMillis()
 
         // Compute genuine cryptographic hash chain: H(previousHash || connectionId || queueId || sequenceNumber || messageType || ciphertext)
-        val prevHash = connection.lastCommittedHash
+        val prevHash = deliveryQueueDao.getLatestEnvelopeHash(connection.connectionId, connection.sendQueueId)
+            ?: connection.lastCommittedHash
         val wireType = EnvelopeType.toWireType(messageType)
         val currentHash = com.torxone.app.protocol.ProtocolEnvelope.computeEnvelopeHash(
             previousHash = prevHash,
