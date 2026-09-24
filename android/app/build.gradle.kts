@@ -144,7 +144,7 @@ dependencies {
     
     // JSON
     implementation("com.google.code.gson:gson:2.10.1")
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:core:3.5.4")
 
     // QR scanning
     implementation("androidx.camera:camera-core:1.3.4")
