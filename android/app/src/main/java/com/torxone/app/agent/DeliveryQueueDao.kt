@@ -129,6 +129,9 @@ data class ConnectionQueueEntity(
     /** Last sequence number we sent. */
     val lastSendSeq: Long = 0,
 
+    /** Hash of the last atomically persisted outbound envelope. */
+    val lastSentHash: String? = null,
+
     /** Last sequence number we received, decrypted, persisted, and acknowledged. */
     val lastRecvSeq: Long = 0,
 
@@ -173,6 +176,21 @@ interface DeliveryQueueDao {
         LIMIT :limit
     """)
     suspend fun getPendingDeliveries(now: Long, limit: Int = 50): List<DeliveryQueueEntity>
+
+    /**
+     * Recover attempts that never received an authenticated recipient ACK.
+     * This also repairs TRANSMITTING rows left behind by process death.
+     */
+    @Query("""
+        UPDATE delivery_queue
+        SET state = 'QUEUED', retryCount = retryCount + 1,
+            nextRetryAt = :now, lastAttemptAt = :now
+        WHERE state IN ('TRANSMITTING', 'ACCEPTED', 'RELAY_ACCEPTED', 'DEVICE_RECEIVED')
+          AND lastAttemptAt IS NOT NULL
+          AND lastAttemptAt <= :staleBefore
+          AND expiresAt > :now
+    """)
+    suspend fun recoverUnacknowledged(staleBefore: Long, now: Long): Int
 
     /** Get all envelopes currently being transmitted. */
     @Query("SELECT * FROM delivery_queue WHERE state = 'TRANSMITTING'")
@@ -298,6 +316,9 @@ interface ConnectionQueueDao {
 
     @Query("UPDATE connection_queue SET lastSendSeq = :seq, lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun updateSendSeq(connectionId: String, seq: Long, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE connection_queue SET lastSendSeq = :seq, lastSentHash = :hash, lastActiveAt = :now WHERE connectionId = :connectionId")
+    suspend fun updateSendCursor(connectionId: String, seq: Long, hash: String, now: Long = System.currentTimeMillis())
 
     @Query("UPDATE connection_queue SET lastRecvSeq = :seq, lastCommittedHash = :hash, lastActiveAt = :now WHERE connectionId = :connectionId")
     suspend fun commitRecvSeq(connectionId: String, seq: Long, hash: String? = null, now: Long = System.currentTimeMillis())

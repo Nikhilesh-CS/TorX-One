@@ -89,7 +89,8 @@ android {
         kotlinCompilerExtensionVersion = "1.5.10"
     }
     lint {
-        abortOnError = false
+        abortOnError = true
+        checkReleaseBuilds = true
     }
     
     testOptions {

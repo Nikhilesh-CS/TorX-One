@@ -210,20 +210,20 @@ class CallSecurityTest {
     }
 
     @Test
-    fun `DefaultIceServerProvider with NORMAL policy returns TURN and STUN servers`() {
+    fun `DefaultIceServerProvider with NORMAL policy returns STUN without public demo TURN`() {
         val provider = DefaultIceServerProvider(CallPrivacyPolicy.NORMAL)
         val servers = kotlinx.coroutines.runBlocking { provider.getIceServers() }
         assertTrue("Should have ICE servers", servers.isNotEmpty())
         // NORMAL mode includes Google STUN for NAT traversal
         assertTrue("STUN should be present in NORMAL mode", servers.any { s -> s.urls.any { u -> u.contains("stun.l.google.com") } })
-        assertTrue("TURN should be present in NORMAL mode", servers.any { s -> s.urls.any { u -> u.contains("openrelay.metered.ca") } })
+        assertFalse("Public demo TURN must not ship", servers.any { s -> s.urls.any { u -> u.contains("openrelay.metered.ca") } })
     }
 
     @Test
-    fun `STRICT policy returns TURN only and no STUN servers`() {
+    fun `STRICT policy requires provisioned TURN and ships no public ICE servers`() {
         val provider = DefaultIceServerProvider(CallPrivacyPolicy.STRICT)
         val servers = kotlinx.coroutines.runBlocking { provider.getIceServers() }
-        assertTrue("STRICT should have TURN servers", servers.isNotEmpty())
+        assertTrue("STRICT has no server until trusted TURN is provisioned", servers.isEmpty())
         servers.forEach { server ->
             server.urls.forEach { url ->
                 assertFalse("No Google STUN allowed in STRICT: $url", url.contains("google"))

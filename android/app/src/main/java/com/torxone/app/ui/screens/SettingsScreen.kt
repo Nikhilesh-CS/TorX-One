@@ -334,8 +334,8 @@ fun SettingsScreen(
             item {
                 SettingsSwitchItem(
                     icon = Icons.Rounded.Lock,
-                    title = "App Lock",
-                    subtitle = "Require authentication to open",
+                    title = "Screen access lock",
+                    subtitle = "Require authentication to view the app; background delivery remains active",
                     checked = appLockEnabled,
                     onCheckedChange = { checked -> 
                         if (checked) {

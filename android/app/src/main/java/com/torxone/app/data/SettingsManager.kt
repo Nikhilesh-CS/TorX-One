@@ -27,7 +27,10 @@ class SettingsManager(private val context: Context) {
         val APP_LOCK_UPDATE_NOTIFIED = booleanPreferencesKey("app_lock_update_notified")
         val RELAY_ENABLED = booleanPreferencesKey("relay_enabled")
         val RELAY_SERVER_URL = stringPreferencesKey("relay_server_url")
-        const val DEFAULT_RELAY_URL = "ws://10.0.2.2:3000"
+        // No production relay is silently assumed. 10.0.2.2 is emulator-only.
+        // Users/builds must explicitly configure an authenticated wss:// relay.
+        const val DEFAULT_RELAY_URL = ""
+        private const val LEGACY_EMULATOR_RELAY_URL = "ws://10.0.2.2:3000"
     }
 
     val torEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
@@ -119,11 +122,13 @@ class SettingsManager(private val context: Context) {
     }
 
     val relayEnabledFlow: Flow<Boolean> = context.dataStore.data.map { preferences ->
-        preferences[RELAY_ENABLED] ?: true
+        preferences[RELAY_ENABLED] ?: false
     }
 
     val relayServerUrlFlow: Flow<String> = context.dataStore.data.map { preferences ->
-        preferences[RELAY_SERVER_URL] ?: DEFAULT_RELAY_URL
+        preferences[RELAY_SERVER_URL]
+            ?.takeUnless { it == LEGACY_EMULATOR_RELAY_URL }
+            ?: DEFAULT_RELAY_URL
     }
 
     suspend fun setRelayEnabled(enabled: Boolean) {

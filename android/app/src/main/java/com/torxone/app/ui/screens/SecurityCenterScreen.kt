@@ -100,8 +100,8 @@ fun SecurityCenterScreen(
             )
 
             SecurityCard(
-                title = "App Lock",
-                value = if (appLockEnabled) "Active - Biometrics / PIN" else "Disabled",
+                title = "Screen access lock",
+                value = if (appLockEnabled) "UI locked - background messaging remains active" else "Disabled",
                 statusColor = if (appLockEnabled) SuccessGreen else TextMuted,
                 icon = Icons.Rounded.Lock
             )

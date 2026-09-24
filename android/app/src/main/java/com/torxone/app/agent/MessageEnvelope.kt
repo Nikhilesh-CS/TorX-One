@@ -128,11 +128,13 @@ enum class EnvelopeType {
     PING,
     PONG,
     HELLO,
-    RELAY;
+    RELAY,
+    QUEUE_ROTATE_PROPOSE,
+    QUEUE_ROTATE_ACK;
 
     companion object {
         /** Map legacy MeshProtocol type strings to EnvelopeType. */
-        fun fromWireType(wireType: String): EnvelopeType = when (wireType) {
+        fun fromWireTypeOrNull(wireType: String): EnvelopeType? = when (wireType) {
             "msg" -> MSG
             "reaction" -> REACTION
             "poll_vote" -> POLL_VOTE
@@ -169,8 +171,14 @@ enum class EnvelopeType {
             "pong" -> PONG
             "hello" -> HELLO
             "relay" -> RELAY
-            else -> MSG // Fallback
+            "queue_rotate_propose", "QUEUE_ROTATE_PROPOSE", "ROTATE_PROPOSE" -> QUEUE_ROTATE_PROPOSE
+            "queue_rotate_ack", "QUEUE_ROTATE_ACK", "ROTATE_ACK" -> QUEUE_ROTATE_ACK
+            else -> null
         }
+
+        fun fromWireType(wireType: String): EnvelopeType =
+            fromWireTypeOrNull(wireType)
+                ?: throw IllegalArgumentException("Unsupported envelope type: $wireType")
 
         /** Convert back to legacy wire type string for compatibility. */
         fun toWireType(type: EnvelopeType): String = when (type) {
@@ -210,6 +218,8 @@ enum class EnvelopeType {
             PONG -> "pong"
             HELLO -> "hello"
             RELAY -> "relay"
+            QUEUE_ROTATE_PROPOSE -> "queue_rotate_propose"
+            QUEUE_ROTATE_ACK -> "queue_rotate_ack"
         }
     }
 }

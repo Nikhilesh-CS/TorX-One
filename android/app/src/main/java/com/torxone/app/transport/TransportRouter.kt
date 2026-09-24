@@ -3,7 +3,9 @@ package com.torxone.app.transport
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -15,7 +17,7 @@ import kotlinx.coroutines.launch
  * delivering an encrypted envelope to a specific peer. Implements
  * the priority-based failover chain:
  *
- *   Nearby Direct → Wi-Fi Direct → LAN → Nearby Relay → Tor → Offline Relay
+ *   Nearby Direct → Wi-Fi Direct → Tor → Offline Relay
  *
  * **Key principle**: The router receives already-encrypted envelopes.
  * It never sees plaintext. If one transport fails, the same envelope
@@ -35,6 +37,7 @@ class TransportRouter(
     private var nearbyTransport: NearbyTransport? = null
     private var torTransport: TorTransport? = null
     private var relayTransport: RelayTransport? = null
+    private val statusJobs = mutableMapOf<Transport, Job>()
 
     private val _activeTransports = MutableStateFlow<List<TransportStatus>>(emptyList())
     val activeTransports: StateFlow<List<TransportStatus>> = _activeTransports
@@ -49,6 +52,14 @@ class TransportRouter(
         }
         // Sort by priority (lower = higher priority)
         transports.sortBy { it.type.priority }
+        statusJobs.remove(transport)?.cancel()
+        statusJobs[transport] = scope.launch {
+            combine(transport.isAvailable, transport.statusText) { available, status ->
+                available to status
+            }.collect {
+                updateStatus()
+            }
+        }
         updateStatus()
         Log.d(TAG, "[REGISTER] ${transport.name} (priority=${transport.type.priority})")
     }

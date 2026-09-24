@@ -1,6 +1,7 @@
 package com.torxone.app.service
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.torxone.app.agent.EnvelopeType
 import com.torxone.app.agent.TorXAgent
 import com.torxone.app.crypto.CryptoManager
@@ -40,7 +41,10 @@ class ChatMessageService(
     private val torXAgent: TorXAgent,
     private val sessionCryptoService: SessionCryptoService?,
     private val identityProvider: () -> Identity?,
-    private val onionAddressProvider: () -> String = { "" }
+    private val onionAddressProvider: () -> String = { "" },
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
+        db.withTransaction { block() }
+    }
 ) {
     companion object {
         private const val TAG = "ChatMessageService"
@@ -83,8 +87,7 @@ class ChatMessageService(
         )
 
         val messageId = UUID.randomUUID().toString()
-        db.messageDao().insertMessage(
-            MessageEntity(
+        val messageEntity = MessageEntity(
                 messageId = messageId,
                 contactKey = contactKey,
                 text = text,
@@ -96,30 +99,36 @@ class ChatMessageService(
                 replyToSender = replyToSender,
                 replyToType = replyToType
             )
-        )
-        Log.i(TAG, "[MSG] id=$messageId state=SENDING")
 
-        val sessionPayload = try {
-            sessionCryptoService?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG, messageId)
+        try {
+            // The visible message, ratchet advance and durable delivery envelope
+            // are one Room transaction. A crash cannot consume a ratchet counter
+            // without also leaving its ciphertext in the outbox.
+            transactionRunner {
+                db.messageDao().insertMessage(messageEntity)
+                val sessionPayload = sessionCryptoService?.encrypt(
+                    contact,
+                    wireText,
+                    MeshProtocol.TYPE_MSG,
+                    messageId
+                ) ?: throw IllegalStateException("SESSION_NOT_READY")
+                torXAgent.queueForDelivery(
+                    recipientKey = contactKey,
+                    messageId = messageId,
+                    messageType = EnvelopeType.MSG,
+                    encryptedPayload = sessionPayload.wireJsonString
+                )
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "[SEND] Session encryption unavailable", e)
-            null
-        }
-
-        if (sessionPayload == null) {
+            db.messageDao().insertMessage(messageEntity.copy(status = "failed"))
             db.messageDao().updateMessageStatus(messageId, "failed")
             return@withContext SendResult(false, Transport.FAILED, "SESSION_NOT_READY")
         }
-        val wireJson = sessionPayload.wireJsonString
 
-        torXAgent.queueForDelivery(
-            recipientKey = contactKey,
-            messageId = messageId,
-            messageType = EnvelopeType.MSG,
-            encryptedPayload = wireJson
-        )
+        Log.i(TAG, "[MSG] id=$messageId state=QUEUED")
 
         SendResult(true, Transport.PENDING)
     }
@@ -161,9 +170,52 @@ class ChatMessageService(
             groupKey = newKey
         }
         if (groupKey == null) {
+            db.messageDao().updateMessageStatus(messageId, "waiting_key")
             com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, 1)
             return@withContext SendResult(false, Transport.PENDING, "Waiting for group key distribution")
         }
+
+        val (queuedCount, recipientCount) = queueGroupMessageEntity(group, groupKey, entity, myKey)
+        val finalStatus = groupDeliveryStatus(queuedCount, recipientCount)
+        db.messageDao().updateMessageStatus(messageId, finalStatus)
+        if (recipientCount == 0) {
+            return@withContext SendResult(false, Transport.FAILED, "Group has no active remote recipients")
+        }
+        if (queuedCount == 0) {
+            return@withContext SendResult(false, Transport.FAILED, "No active member session was ready")
+        }
+        SendResult(true, Transport.PENDING, if (queuedCount < recipientCount) "Queued $queuedCount of $recipientCount recipients" else null)
+    }
+
+    /** Replays durable outgoing messages that were waiting for a group key. */
+    suspend fun retryWaitingGroupMessages(groupId: String) = withContext(Dispatchers.IO) {
+        val identity = identityProvider() ?: return@withContext
+        val myKey = CryptoManager.toHex(identity.signingPublicKey)
+        val group = db.groupDao().getGroup(groupId) ?: return@withContext
+        val key = db.groupKeyDao().getLatestKey(groupId) ?: return@withContext
+        db.messageDao().getOutgoingMessagesByStatus(groupId, "group", "waiting_key").forEach { entity ->
+            val (queued, recipients) = queueGroupMessageEntity(group, key, entity, myKey)
+            db.messageDao().updateMessageStatus(entity.messageId, groupDeliveryStatus(queued, recipients))
+        }
+    }
+
+    private fun groupDeliveryStatus(queuedCount: Int, recipientCount: Int): String = when {
+        recipientCount == 0 -> "failed"
+        queuedCount == recipientCount -> "sent"
+        queuedCount > 0 -> "partially_sent"
+        else -> "failed"
+    }
+
+    private suspend fun queueGroupMessageEntity(
+        group: com.torxone.app.data.GroupEntity,
+        groupKey: com.torxone.app.data.GroupKeyEntity,
+        entity: MessageEntity,
+        myKey: String
+    ): Pair<Int, Int> {
+        val groupId = group.groupId
+        val messageId = entity.messageId
+        val text = entity.text
+        val replyToId = entity.replyToId
 
         val replyTarget = replyToId?.let { db.messageDao().getMessageById(it) }
         val innerPayload = JSONObject().apply {
@@ -172,8 +224,8 @@ class ChatMessageService(
             put("type", "TEXT")
             put("messageId", messageId)
             put("senderKey", myKey)
-            put("timestamp", System.currentTimeMillis())
-            put("text", text.trim())
+            put("timestamp", entity.timestamp)
+            put("text", text)
             replyTarget?.let { target ->
                 put("reply", JSONObject().apply {
                     put("originalMessageId", target.messageId)
@@ -205,7 +257,8 @@ class ChatMessageService(
 
         val members = db.groupDao().getGroupMembersSync(groupId)
         var queuedCount = 0
-        members.filter { it.role != "invited" && it.memberKey != myKey }.forEach { member ->
+        val recipients = members.filter { GroupPermission.isActive(it) && it.memberKey != myKey }
+        recipients.forEach { member ->
             val wire = buildEncryptedWireFrame(member.memberKey, finalPayload.toString(), MeshProtocol.TYPE_GROUP_MESSAGE)
             if (wire != null) {
                 torXAgent.queueForDelivery(
@@ -218,9 +271,7 @@ class ChatMessageService(
             }
         }
 
-        val finalStatus = if (queuedCount > 0 || members.count { it.role != "invited" } <= 1) "sent" else "pending"
-        db.messageDao().updateMessageStatus(messageId, finalStatus)
-        SendResult(true, Transport.PENDING)
+        return queuedCount to recipients.size
     }
 
     suspend fun sendRawPayload(contactKey: String, rawText: String, messageType: String = MeshProtocol.TYPE_MSG): SendResult = withContext(Dispatchers.IO) {
@@ -251,11 +302,16 @@ class ChatMessageService(
         val contact = db.contactDao().getContact(contactKey) ?: return@withContext null
         if (CryptoManager.fromHexOrNull(contact.encryptionPublicKey, 32) == null) return@withContext null
 
-        val messageId = UUID.randomUUID().toString()
+        val logicalMessageId = runCatching {
+            val json = JSONObject(rawText)
+            sequenceOf("signalId", "eventId", "messageId", "reactionId")
+                .map(json::optString)
+                .firstOrNull { it.isNotBlank() }
+        }.getOrNull() ?: UUID.randomUUID().toString()
 
         // 1. Try Double Ratchet session encryption
         val sessionPayload = try {
-            sessionCryptoService?.encrypt(contact, rawText, messageType, messageId)
+            sessionCryptoService?.encrypt(contact, rawText, messageType, logicalMessageId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

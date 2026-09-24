@@ -10,6 +10,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -58,20 +59,31 @@ class ConnectionManager(
         localPartyKey: String = ""
     ): ConnectionQueueEntity = withContext(Dispatchers.IO) {
         val normalizedRemote = remotePartyKey.trim().lowercase()
-        val existing = connectionQueueDao.getByRemoteKey(normalizedRemote)
+        val normalizedLocal = localPartyKey.trim().lowercase()
+        val canonicalId = if (normalizedLocal.isNotBlank()) {
+            deriveConnectionId(normalizedLocal, normalizedRemote)
+        } else null
+        val existing = if (canonicalId != null) {
+            connectionQueueDao.getById(canonicalId)
+        } else {
+            connectionQueueDao.getByRemoteKey(normalizedRemote)
+        }
         if (existing != null) {
             connectionQueueDao.touchActive(existing.connectionId, System.currentTimeMillis())
             return@withContext existing
         }
 
+        require(normalizedLocal.isNotBlank()) {
+            "Local signing key is required to establish a v2 connection"
+        }
         val now = System.currentTimeMillis()
-        val connectionId = UUID.randomUUID().toString()
+        val connectionId = canonicalId!!
         val newConnection = ConnectionQueueEntity(
             connectionId = connectionId,
-            localPartyKey = localPartyKey.trim().lowercase(),
+            localPartyKey = normalizedLocal,
             remotePartyKey = normalizedRemote,
-            sendQueueId = UUID.randomUUID().toString(),
-            recvQueueId = UUID.randomUUID().toString(),
+            sendQueueId = deriveDirectionalQueueId(normalizedLocal, normalizedRemote),
+            recvQueueId = deriveDirectionalQueueId(normalizedRemote, normalizedLocal),
             lastSendSeq = 0,
             lastRecvSeq = 0,
             rotationState = ROTATION_ACTIVE,
@@ -83,6 +95,68 @@ class ConnectionManager(
         Log.i(TAG, "[CONNECTION] Created new connection $connectionId for $normalizedRemote")
         newConnection
     }
+
+    /**
+     * Accept the first authenticated v2 envelope for a pair. Initial queue IDs
+     * are deterministic from both identity keys, so simultaneous initiation
+     * converges to the same connection and crossed unidirectional queues.
+     */
+    suspend fun acceptAuthenticatedConnection(
+        connectionId: String,
+        localPartyKey: String,
+        remotePartyKey: String,
+        remoteSendQueueId: String,
+        remoteReplyQueueId: String
+    ): ConnectionQueueEntity? = withContext(Dispatchers.IO) {
+        val local = localPartyKey.trim().lowercase()
+        val remote = remotePartyKey.trim().lowercase()
+        val expectedConnectionId = deriveConnectionId(local, remote)
+        val expectedRecvQueue = deriveDirectionalQueueId(remote, local)
+        val expectedSendQueue = deriveDirectionalQueueId(local, remote)
+        if (connectionId != expectedConnectionId ||
+            remoteSendQueueId != expectedRecvQueue ||
+            remoteReplyQueueId != expectedSendQueue
+        ) {
+            Log.w(TAG, "[BOOTSTRAP] Rejected non-canonical initial connection/queues from $remote")
+            return@withContext null
+        }
+
+        val existing = connectionQueueDao.getById(connectionId)
+        if (existing != null) {
+            if (existing.localPartyKey != local || existing.remotePartyKey != remote) return@withContext null
+            return@withContext existing
+        }
+
+        val now = System.currentTimeMillis()
+        val accepted = ConnectionQueueEntity(
+            connectionId = connectionId,
+            localPartyKey = local,
+            remotePartyKey = remote,
+            sendQueueId = expectedSendQueue,
+            recvQueueId = expectedRecvQueue,
+            state = STATE_ACTIVE,
+            createdAt = now,
+            lastActiveAt = now
+        )
+        connectionQueueDao.upsert(accepted)
+        Log.i(TAG, "[BOOTSTRAP] Accepted authenticated v2 connection $connectionId from $remote")
+        accepted
+    }
+
+    fun deriveConnectionId(localPartyKey: String, remotePartyKey: String): String {
+        val parties = listOf(localPartyKey.trim().lowercase(), remotePartyKey.trim().lowercase()).sorted()
+        return digestId("torxone-v2-connection|${parties[0]}|${parties[1]}")
+    }
+
+    fun deriveDirectionalQueueId(fromPartyKey: String, toPartyKey: String): String =
+        digestId("torxone-v2-queue|${fromPartyKey.trim().lowercase()}|${toPartyKey.trim().lowercase()}")
+
+    fun deriveDirectionalQueueCapability(fromPartyKey: String, toPartyKey: String): String =
+        digestId("torxone-v2-queue-capability|${fromPartyKey.trim().lowercase()}|${toPartyKey.trim().lowercase()}")
+
+    private fun digestId(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 
     /**
      * Look up a connection by its unique connection ID.
@@ -339,6 +413,21 @@ class ConnectionManager(
             }
         }
         queueIds
+    }
+
+    suspend fun getActiveRelaySubscriptions(): Map<String, String> = withContext(Dispatchers.IO) {
+        val result = linkedMapOf<String, String>()
+        val now = System.currentTimeMillis()
+        for (conn in connectionQueueDao.getActiveConnections()) {
+            val capability = deriveDirectionalQueueCapability(conn.remotePartyKey, conn.localPartyKey)
+            result[conn.recvQueueId] = capability
+            if (!conn.pendingRecvQueueId.isNullOrBlank() &&
+                (conn.rotationState != ROTATION_OLD_QUEUE_DRAINING || now <= (conn.rotationGracePeriodUntil ?: 0L))
+            ) {
+                result[conn.pendingRecvQueueId] = capability
+            }
+        }
+        result
     }
 
     /**

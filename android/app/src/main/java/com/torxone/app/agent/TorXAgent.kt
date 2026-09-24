@@ -6,6 +6,7 @@ import com.torxone.app.crypto.CryptoManager
 import com.torxone.app.crypto.Identity
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.data.ContactEntity
+import com.torxone.app.protocol.ProtocolEnvelope
 import com.torxone.app.transport.TransportMetadata
 import com.torxone.app.transport.TransportRouter
 import com.torxone.app.transport.TransportType
@@ -50,6 +51,7 @@ class TorXAgent(
         private const val RETRY_BASE_MS = 3_000L
         private const val RETRY_MAX_MS = 300_000L  // 5 minutes max backoff
         private const val DELIVERY_LOOP_INTERVAL_MS = 2_000L
+        private const val RECIPIENT_ACK_TIMEOUT_MS = 30_000L
         private const val PRUNE_INTERVAL_MS = 60 * 60 * 1000L  // 1 hour
     }
 
@@ -58,6 +60,21 @@ class TorXAgent(
 
     private val _pendingCount = MutableStateFlow(0)
     val pendingCount: StateFlow<Int> = _pendingCount
+
+    /** Best currently usable signaling route for higher-level realtime features. */
+    fun preferredSignalingTransport(contact: ContactEntity): com.torxone.app.network.Transport {
+        if (contact.endpointId.isNotBlank() && transportRouter.getConnectedEndpoints().contains(contact.endpointId)) {
+            return com.torxone.app.network.Transport.NEARBY_DIRECT
+        }
+        if (contact.onionAddress.isNotBlank() && transportRouter.isTorReady()) {
+            return com.torxone.app.network.Transport.TOR
+        }
+        if (transportRouter.isRelayAvailable()) {
+            // Relay is only the signaling path; WebRTC still negotiates its media path.
+            return com.torxone.app.network.Transport.PENDING
+        }
+        return com.torxone.app.network.Transport.FAILED
+    }
 
     /** Track processed incoming message IDs for deduplication. */
     private val processedIncoming = java.util.Collections.synchronizedSet(
@@ -132,10 +149,8 @@ class TorXAgent(
             val localKey = identityProvider?.invoke()?.signingPublicKey?.let(CryptoManager::toHex).orEmpty()
             val connection = connectionManager.getOrCreateConnection(normalizedKey, localKey)
             val seq = connection.lastSendSeq + 1
-            db.connectionQueueDao().updateSendSeq(connection.connectionId, seq)
             val now = System.currentTimeMillis()
-            // lastCommittedHash belongs to the receive direction; never use it here.
-            val prevHash = deliveryQueueDao.getLatestEnvelopeHash(connection.connectionId, connection.sendQueueId)
+            val prevHash = connection.lastSentHash
             val wireType = EnvelopeType.toWireType(messageType)
             val currentHash = com.torxone.app.protocol.ProtocolEnvelope.computeEnvelopeHash(
                 previousHash = prevHash,
@@ -145,6 +160,7 @@ class TorXAgent(
                 messageType = wireType,
                 ciphertext = encryptedPayload
             )
+            db.connectionQueueDao().updateSendCursor(connection.connectionId, seq, currentHash, now)
             DeliveryQueueEntity(
                 envelopeId = UUID.randomUUID().toString(),
                 connectionId = connection.connectionId,
@@ -244,6 +260,14 @@ class TorXAgent(
     private suspend fun processDeliveryQueue() {
         val now = System.currentTimeMillis()
 
+        val recovered = deliveryQueueDao.recoverUnacknowledged(
+            staleBefore = now - RECIPIENT_ACK_TIMEOUT_MS,
+            now = now
+        )
+        if (recovered > 0) {
+            Log.w(TAG, "[DELIVERY_LOOP] Re-queued $recovered unacknowledged or interrupted deliveries")
+        }
+
         // Get pending envelopes ready for delivery
         val pending = deliveryQueueDao.getPendingDeliveries(now, limit = 30)
         _pendingCount.value = pending.size
@@ -269,7 +293,41 @@ class TorXAgent(
         deliveryQueueDao.markTransmitting(entity.envelopeId)
 
         // Resolve peer addresses for transport router
-        val peerAddresses = resolvePeerAddresses(entity.recipientKey)
+        val connection = connectionManager.getConnectionById(entity.connectionId)
+        val identity = identityProvider?.invoke()
+        if (connection == null || identity == null) {
+            val backoff = calculateBackoff(entity.retryCount)
+            deliveryQueueDao.scheduleRetry(entity.envelopeId, System.currentTimeMillis() + backoff)
+            Log.w(TAG, "[DELIVER] Missing connection or unlocked signing identity for ${entity.envelopeId}")
+            return
+        }
+
+        val senderKey = CryptoManager.toHex(identity.signingPublicKey).lowercase()
+        if (connection.localPartyKey != senderKey || connection.remotePartyKey != entity.recipientKey) {
+            deliveryQueueDao.markFailed(entity.envelopeId)
+            Log.e(TAG, "[DELIVER] Connection identity mismatch for ${entity.envelopeId}")
+            return
+        }
+
+        val unsignedEnvelope = ProtocolEnvelope(
+            envelopeId = entity.envelopeId,
+            connectionId = entity.connectionId,
+            queueId = entity.queueId,
+            replyQueueId = connection.recvQueueId,
+            sequenceNumber = entity.sequenceNumber,
+            previousHash = entity.previousMessageHash,
+            timestamp = entity.createdAt,
+            messageType = entity.messageType,
+            ciphertext = entity.encryptedPayload,
+            senderKey = senderKey,
+            recipientKey = entity.recipientKey,
+            signature = ""
+        )
+        val wireEnvelope = ProtocolEnvelope.toJson(
+            ProtocolEnvelope.sign(unsignedEnvelope, identity.signingSecretKey)
+        )
+
+        val peerAddresses = resolvePeerAddresses(entity)
 
         if (peerAddresses.isEmpty()) {
             // No transports available — schedule retry (offline is normal)
@@ -285,11 +343,15 @@ class TorXAgent(
         val metadata = TransportMetadata(
             messageId = entity.messageId,
             envelopeId = entity.envelopeId,
+            queueCapability = connectionManager.deriveDirectionalQueueCapability(
+                connection.localPartyKey,
+                connection.remotePartyKey
+            ),
             isRetry = entity.retryCount > 0,
             attemptNumber = entity.retryCount + 1
         )
 
-        val result = transportRouter.deliver(peerAddresses, entity.encryptedPayload, metadata)
+        val result = transportRouter.deliver(peerAddresses, wireEnvelope, metadata)
 
         if (result.success) {
             val isRelay = result.transportType == TransportType.OFFLINE_RELAY
@@ -370,7 +432,7 @@ class TorXAgent(
         queueForDelivery(
             recipientKey = remoteKey,
             messageId = "rotate_${System.currentTimeMillis()}",
-            messageType = EnvelopeType.MSG,
+            messageType = EnvelopeType.QUEUE_ROTATE_PROPOSE,
             encryptedPayload = proposalWire
         )
         Log.i(TAG, "[ROTATION] Queued cryptographically signed ROTATE_PROPOSE for $remoteKey via active queue ${conn.sendQueueId}")
@@ -398,7 +460,7 @@ class TorXAgent(
                     queueForDelivery(
                         recipientKey = result.remotePartyKey,
                         messageId = "rotate_ack_${System.currentTimeMillis()}",
-                        messageType = EnvelopeType.MSG,
+                        messageType = EnvelopeType.QUEUE_ROTATE_ACK,
                         encryptedPayload = result.ackWireJson
                     )
                     Log.i(TAG, "[ROTATION] Sent signed ROTATE_ACK to ${result.remotePartyKey}")
@@ -415,8 +477,9 @@ class TorXAgent(
         }
     }
 
-    private suspend fun resolvePeerAddresses(recipientKey: String): Map<TransportType, String> {
+    private suspend fun resolvePeerAddresses(entity: DeliveryQueueEntity): Map<TransportType, String> {
         val addresses = mutableMapOf<TransportType, String>()
+        val recipientKey = entity.recipientKey
 
         // Check Nearby direct connection
         val contact = db.contactDao().getContact(recipientKey)
@@ -434,12 +497,47 @@ class TorXAgent(
 
             // Offline relay store-and-forward fallback if relay is available (strictly opaque queue-addressed)
             if (transportRouter.isRelayAvailable()) {
-                val conn = connectionManager.getOrCreateConnection(recipientKey)
-                addresses[TransportType.OFFLINE_RELAY] = conn.sendQueueId
+                addresses[TransportType.OFFLINE_RELAY] = entity.queueId
             }
         }
 
         return addresses
+    }
+
+    /** Authenticate the outer v2 envelope before any routing or cursor mutation. */
+    suspend fun authenticateEnvelope(envelope: ProtocolEnvelope): ConnectionQueueEntity? {
+        val identity = identityProvider?.invoke() ?: return null
+        val localKey = CryptoManager.toHex(identity.signingPublicKey).lowercase()
+        if (envelope.recipientKey != localKey) {
+            Log.w(TAG, "[AUTH] Envelope ${envelope.envelopeId} addressed to another identity")
+            return null
+        }
+        if (!ProtocolEnvelope.verifySignature(envelope)) {
+            Log.w(TAG, "[AUTH] Invalid v2 envelope signature ${envelope.envelopeId}")
+            return null
+        }
+        if (db.contactDao().getContact(envelope.senderKey) == null) {
+            Log.w(TAG, "[AUTH] Envelope sender is not an accepted contact: ${envelope.senderKey}")
+            return null
+        }
+
+        val existing = connectionManager.getConnectionById(envelope.connectionId)
+        val connection = existing ?: connectionManager.acceptAuthenticatedConnection(
+            connectionId = envelope.connectionId,
+            localPartyKey = localKey,
+            remotePartyKey = envelope.senderKey,
+            remoteSendQueueId = envelope.queueId,
+            remoteReplyQueueId = envelope.replyQueueId
+        ) ?: return null
+
+        if (connection.localPartyKey != localKey ||
+            connection.remotePartyKey != envelope.senderKey ||
+            connection.sendQueueId != envelope.replyQueueId
+        ) {
+            Log.w(TAG, "[AUTH] Envelope connection parties/return queue do not match persisted state")
+            return null
+        }
+        return connection
     }
 
     private fun calculateBackoff(retryCount: Int): Long {

@@ -42,7 +42,8 @@ class WebRtcCallEngine(
         supportedTransports = setOf(
             Transport.NEARBY_DIRECT,
             Transport.NEARBY_RELAY,
-            Transport.TOR
+            Transport.TOR,
+            Transport.PENDING
         )
     )
 
@@ -71,7 +72,9 @@ class WebRtcCallEngine(
     @Volatile
     var currentGeneration: Long = 0L
 
-    override fun isAvailable(context: CallRouteContext): Boolean = true
+    override fun isAvailable(context: CallRouteContext): Boolean =
+        context.transport in capabilities.supportedTransports &&
+            context.transport != Transport.FAILED
 
     override suspend fun startOutgoing(
         callId: String,

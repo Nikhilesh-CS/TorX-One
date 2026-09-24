@@ -50,14 +50,7 @@ class DeliveryTracker(
         // 1. Update TorX Agent delivery queue
         agent.handleAck(messageId)
 
-        // 2. Update Room MessageEntity status to "delivered"
-        val existing = db.messageDao().getMessageById(messageId)
-        if (existing != null && existing.direction == "sent") {
-            db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "delivered")
-            Log.i(TAG, "[ACK] messageId=$messageId marked DELIVERED in DB")
-        }
-
-        // 3. Update contact onion address if attached
+        // 2. Update contact onion address if attached. Delivery state belongs to TorXAgent.
         val senderOnion = json.optString("senderOnion", "")
         if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)
@@ -84,14 +77,7 @@ class DeliveryTracker(
         // 1. Update TorX Agent delivery queue
         agent.handleRead(messageId)
 
-        // 2. Update Room MessageEntity status to "read"
-        val existing = db.messageDao().getMessageById(messageId)
-        if (existing != null && existing.direction == "sent") {
-            db.messageDao().updateSentMessageStatus(messageId, existing.contactKey, "read")
-            Log.i(TAG, "[READ] messageId=$messageId marked READ in DB")
-        }
-
-        // 3. Update contact onion address if attached
+        // 2. Update contact onion address if attached. Read state belongs to TorXAgent.
         val senderOnion = json.optString("senderOnion", "")
         if (senderOnion.isNotBlank()) {
             val contact = db.contactDao().getContact(senderKey)

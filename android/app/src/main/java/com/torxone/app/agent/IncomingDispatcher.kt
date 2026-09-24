@@ -4,6 +4,7 @@ import android.util.Log
 import com.torxone.app.network.MeshProtocol
 import com.torxone.app.protocol.HashChainVerificationResult
 import com.torxone.app.protocol.ProtocolEnvelope
+import com.torxone.app.transport.DurableTransportIncomingListener
 import com.torxone.app.transport.TransportIncomingListener
 import com.torxone.app.transport.TransportType
 import kotlinx.coroutines.CoroutineScope
@@ -46,7 +47,7 @@ data class BufferedEnvelope(
 class IncomingDispatcher(
     private val agent: TorXAgent,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-) : TransportIncomingListener {
+) : DurableTransportIncomingListener {
 
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -110,9 +111,25 @@ class IncomingDispatcher(
      * This is the single entry point for ALL incoming data.
      */
     override fun onPayloadReceived(sourceAddress: String?, payload: String, transportType: TransportType) {
+        scope.launch(Dispatchers.IO) {
+            processIncomingPayload(sourceAddress, payload, transportType)
+        }
+    }
+
+    override suspend fun onPayloadReceivedDurably(
+        sourceAddress: String?,
+        payload: String,
+        transportType: TransportType
+    ): Boolean = processIncomingPayload(sourceAddress, payload, transportType)
+
+    private suspend fun processIncomingPayload(
+        sourceAddress: String?,
+        payload: String,
+        transportType: TransportType
+    ): Boolean {
         val json = MeshProtocol.parse(payload) ?: run {
             Log.w(TAG, "[INCOMING] Dropped unparseable payload from $sourceAddress via $transportType (len=${payload.length})")
-            return
+            return false
         }
 
         // Check for TorX One 2.0 ProtocolEnvelope (Version 2)
@@ -124,37 +141,31 @@ class IncomingDispatcher(
                 null
             }
             if (envelope != null) {
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        dispatchProtocolEnvelope(envelope, sourceAddress, transportType)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "[INCOMING] Error dispatching ProtocolEnvelope: ${e.message}", e)
-                    }
+                return try {
+                    dispatchProtocolEnvelope(envelope, sourceAddress, transportType)
+                } catch (e: Exception) {
+                    Log.e(TAG, "[INCOMING] Error dispatching ProtocolEnvelope: ${e.message}", e)
+                    false
                 }
-                return
             }
         }
 
         val type = json.optString("type", "")
         Log.d(TAG, "[INCOMING] type=$type from=$sourceAddress via=$transportType")
 
-        // Deduplication check
-        val msgId = json.optString("msgId", "")
-        if (msgId.isNotBlank() && agent.isAlreadyProcessed(msgId)) {
-            Log.d(TAG, "[INCOMING] Duplicate msgId=$msgId, dropping")
-            return
+        // The Nearby hello is the only pre-envelope bootstrap packet. Every
+        // state-changing packet must arrive inside a signed v2 envelope; do not
+        // retain a second unauthenticated/legacy receive wire alongside v2.
+        if (type != MeshProtocol.TYPE_HELLO) {
+            Log.w(TAG, "[INCOMING] Rejected non-envelope packet type=$type")
+            return false
         }
-        if (msgId.isNotBlank()) {
-            agent.markProcessed(msgId)
-        }
-
-        // Route based on message type
-        scope.launch(Dispatchers.IO) {
-            try {
-                dispatch(type, json, sourceAddress, transportType)
-            } catch (e: Exception) {
-                Log.e(TAG, "[INCOMING] Error dispatching type=$type: ${e.message}", e)
-            }
+        return try {
+            dispatch(type, json, sourceAddress, transportType)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "[INCOMING] Error dispatching bootstrap type=$type: ${e.message}", e)
+            false
         }
     }
 
@@ -162,26 +173,26 @@ class IncomingDispatcher(
         envelope: ProtocolEnvelope,
         sourceAddress: String?,
         transportType: TransportType
-    ) {
+    ): Boolean {
         val connManager = agent.connectionManager
 
-        // Connection validation
-        val conn = connManager.getConnectionById(envelope.connectionId) ?: run {
-            Log.w(TAG, "[INCOMING_ENVELOPE] Unknown connectionId=${envelope.connectionId}")
-            return
+        // Signature, recipient, contact and authenticated bootstrap validation.
+        val conn = agent.authenticateEnvelope(envelope) ?: run {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Authentication failed for ${envelope.envelopeId}")
+            return false
         }
 
         // Queue validation: verify queue is currently accepted (active, pending, or draining)
         val isAccepted = connManager.isQueueAccepted(envelope.connectionId, envelope.queueId)
         if (!isAccepted) {
             Log.w(TAG, "[INCOMING_ENVELOPE] Queue ${envelope.queueId} is not accepted for conn=${envelope.connectionId}")
-            return
+            return false
         }
 
         // Sequence validation (pre-commit check against conn.lastRecvSeq)
         if (envelope.sequenceNumber <= conn.lastRecvSeq) {
             Log.d(TAG, "[INCOMING_ENVELOPE] Replay/duplicate sequence ${envelope.sequenceNumber} <= lastRecvSeq=${conn.lastRecvSeq} on conn=${envelope.connectionId}")
-            return
+            return true
         }
 
         if (envelope.sequenceNumber > conn.lastRecvSeq + 1) {
@@ -193,18 +204,18 @@ class IncomingDispatcher(
             } else {
                 Log.w(TAG, "[INCOMING_ENVELOPE] Gap buffer full (200) for conn=${envelope.connectionId}, dropping envelope seq=${envelope.sequenceNumber}")
             }
-            return
+            return false
         }
 
         // Exactly expected next sequence: envelope.sequenceNumber == conn.lastRecvSeq + 1
-        processAndDrainSequence(envelope, sourceAddress, transportType)
+        return processAndDrainSequence(envelope, sourceAddress, transportType)
     }
 
     private suspend fun processAndDrainSequence(
         initialEnvelope: ProtocolEnvelope,
         initialSourceAddress: String?,
         initialTransportType: TransportType
-    ) {
+    ): Boolean {
         var currentEnvelope: ProtocolEnvelope? = initialEnvelope
         var currentSource: String? = initialSourceAddress
         var currentTransport: TransportType = initialTransportType
@@ -213,7 +224,7 @@ class IncomingDispatcher(
             val success = processSingleEnvelope(currentEnvelope, currentSource, currentTransport)
             if (!success) {
                 Log.w(TAG, "[INCOMING_ENVELOPE] Processing failed for seq=${currentEnvelope.sequenceNumber} on conn=${currentEnvelope.connectionId}. Cursor NOT advanced.")
-                break
+                return false
             }
 
             // After successfully processing and committing currentEnvelope, check gap buffer for next consecutive sequence
@@ -230,6 +241,7 @@ class IncomingDispatcher(
                 currentEnvelope = null
             }
         }
+        return true
     }
 
     private suspend fun processSingleEnvelope(
@@ -247,7 +259,8 @@ class IncomingDispatcher(
                 Log.d(TAG, "[INCOMING_ENVELOPE] Hash chain continuous for conn=${envelope.connectionId} seq=${envelope.sequenceNumber}")
             }
             is HashChainVerificationResult.GapDetected -> {
-                Log.w(TAG, "[INCOMING_ENVELOPE] Non-fatal hash chain gap for conn=${envelope.connectionId} seq=${envelope.sequenceNumber}: ${continuity.reason} (expected=${continuity.expectedPrevHash}, actual=${continuity.actualPrevHash})")
+                Log.e(TAG, "[INCOMING_ENVELOPE] Rejecting broken hash chain for conn=${envelope.connectionId} seq=${envelope.sequenceNumber}: ${continuity.reason} (expected=${continuity.expectedPrevHash}, actual=${continuity.actualPrevHash})")
+                return false
             }
         }
 
@@ -286,62 +299,43 @@ class IncomingDispatcher(
         sourceAddress: String?,
         transportType: TransportType
     ): Boolean {
-        return when (envelope.messageType) {
-            ProtocolEnvelope.TYPE_MESSAGE -> {
-                val sessionJson = JSONObject().apply {
-                    put("type", MeshProtocol.TYPE_SESSION_MSG)
-                    put("to", conn.localPartyKey)
-                    put("from", conn.remotePartyKey)
-                    put("connectionId", envelope.connectionId)
-                    put("ciphertext", envelope.ciphertext)
-                    envelope.cryptoMetadata?.let {
-                        put("sessionId", it.sessionId)
-                        put("msgNum", it.msgNum)
-                        put("ratchetPub", it.ratchetPub)
-                        it.iv?.let { iv -> put("iv", iv) }
-                        it.signature?.let { sig -> put("signature", sig) }
-                    }
-                }
-                onSessionMessage?.invoke(sourceAddress, sessionJson, transportType) ?: false
-            }
-            ProtocolEnvelope.TYPE_ACK -> {
-                val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
-                val ackMsgId = json.optString("msgId", "")
-                if (ackMsgId.isNotBlank()) {
-                    agent.handleAck(ackMsgId)
-                }
-                onAckReceived?.invoke(json, sourceAddress)
-                true
-            }
-            ProtocolEnvelope.TYPE_READ -> {
-                val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
-                val readMsgId = json.optString("msgId", "")
-                if (readMsgId.isNotBlank()) {
-                    agent.handleRead(readMsgId)
-                }
-                onReadReceived?.invoke(json, sourceAddress)
-                true
-            }
-            ProtocolEnvelope.TYPE_CALL_OFFER,
-            ProtocolEnvelope.TYPE_CALL_ANSWER,
-            ProtocolEnvelope.TYPE_ICE_CANDIDATE,
-            ProtocolEnvelope.TYPE_CALL_ACK,
-            ProtocolEnvelope.TYPE_CALL_END -> {
-                val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
-                onCallSignal?.invoke(envelope.messageType, json, sourceAddress, transportType)
-                true
-            }
-            ProtocolEnvelope.TYPE_QUEUE_ROTATE_PROPOSE,
-            ProtocolEnvelope.TYPE_QUEUE_ROTATE_ACK -> {
-                val json = try { JSONObject(envelope.ciphertext) } catch (_: Exception) { JSONObject() }
-                onQueueRotation?.invoke(json)
-                true
-            }
-            else -> {
-                Log.d(TAG, "[INCOMING_ENVELOPE] Dispatched envelope type=${envelope.messageType}")
-                true
-            }
+        val outerType = EnvelopeType.fromWireTypeOrNull(envelope.messageType) ?: run {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Unsupported outer type=${envelope.messageType}")
+            return false
         }
+        val json = try {
+            JSONObject(envelope.ciphertext)
+        } catch (e: Exception) {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Ciphertext field is not a valid inner wire frame", e)
+            return false
+        }
+        val innerType = json.optString("type", "")
+        val innerFrom = json.optString("from", "").trim().lowercase()
+        val innerTo = json.optString("to", "").trim().lowercase()
+        if (innerFrom.isNotBlank() && innerFrom != conn.remotePartyKey) {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Inner sender does not match authenticated connection")
+            return false
+        }
+        if (innerTo.isNotBlank() && innerTo != conn.localPartyKey) {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Inner recipient does not match authenticated connection")
+            return false
+        }
+        if (innerType == MeshProtocol.TYPE_SESSION_MSG) {
+            return onSessionMessage?.invoke(sourceAddress, json, transportType) ?: false
+        }
+
+        if (outerType == EnvelopeType.QUEUE_ROTATE_PROPOSE || outerType == EnvelopeType.QUEUE_ROTATE_ACK) {
+            onQueueRotation?.invoke(json) ?: return false
+            return true
+        }
+
+        val expectedInnerType = EnvelopeType.toWireType(outerType)
+        if (innerType != expectedInnerType) {
+            Log.w(TAG, "[INCOMING_ENVELOPE] Type mismatch outer=$expectedInnerType inner=$innerType")
+            return false
+        }
+        dispatch(innerType, json, sourceAddress, transportType)
+        return true
     }
 
     private suspend fun dispatch(
@@ -452,8 +446,7 @@ class IncomingDispatcher(
             }
 
             else -> {
-                Log.w(TAG, "[INCOMING] Unknown type=$type, attempting legacy handler")
-                onLegacyEncrypted?.invoke(json, sourceAddress, type)
+                Log.w(TAG, "[INCOMING] Rejected unsupported type=$type")
             }
         }
     }

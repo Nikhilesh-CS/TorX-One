@@ -37,6 +37,9 @@ class ChatViewModel(
     private val _groupRole = MutableStateFlow<String?>(null)
     val groupRole: StateFlow<String?> = _groupRole
 
+    private val _sendErrors = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val sendErrors: SharedFlow<String> = _sendErrors.asSharedFlow()
+
     val unreadCount: StateFlow<Int> = db.messageDao()
         .getUnreadCountForConversation(contactKey, conversationType)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
@@ -172,10 +175,10 @@ class ChatViewModel(
             val replyTarget = replyToId?.let { id ->
                 conversationEngine.messages.value.firstOrNull { it.id == id }
             }
-            if (conversationType == "group") {
+            val result = if (conversationType == "group") {
                 chatMessageService.sendGroupMessage(contactKey, text, replyToId)
             } else {
-                val result = chatMessageService.sendMessage(
+                chatMessageService.sendMessage(
                     contactKey = contactKey,
                     text = text,
                     replyToId = replyTarget?.id,
@@ -183,6 +186,9 @@ class ChatViewModel(
                     replyToSender = replyTarget?.senderId,
                     replyToType = replyTarget?.messageType
                 )
+            }
+            if (!result.success) {
+                _sendErrors.emit(result.error ?: "Message could not be queued securely")
             }
         }
     }

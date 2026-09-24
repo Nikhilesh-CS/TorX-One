@@ -176,6 +176,22 @@ class FakeDeliveryQueueDao : DeliveryQueueDao {
             .take(limit)
     }
 
+    override suspend fun recoverUnacknowledged(staleBefore: Long, now: Long): Int {
+        val stale = storage.values.filter {
+            it.state in setOf("TRANSMITTING", "ACCEPTED", "RELAY_ACCEPTED", "DEVICE_RECEIVED") &&
+                it.lastAttemptAt != null && it.lastAttemptAt!! <= staleBefore && it.expiresAt > now
+        }
+        stale.forEach {
+            storage[it.envelopeId] = it.copy(
+                state = "QUEUED",
+                retryCount = it.retryCount + 1,
+                nextRetryAt = now,
+                lastAttemptAt = now
+            )
+        }
+        return stale.size
+    }
+
     override suspend fun getTransmitting(): List<DeliveryQueueEntity> {
         return storage.values.filter { it.state == "TRANSMITTING" }
     }

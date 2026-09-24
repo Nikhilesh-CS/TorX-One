@@ -13,8 +13,10 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.kotlin.mock
+import org.mockito.kotlin.any
 import org.mockito.kotlin.whenever
 import org.robolectric.RobolectricTestRunner
+import org.json.JSONObject
 import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -70,19 +72,29 @@ class IncomingDispatcherDeferredCommitTest {
         )
         kotlinx.coroutines.runBlocking {
             fakeDao.upsert(entity)
+            whenever(mockAgent.authenticateEnvelope(any())).thenReturn(entity)
         }
     }
 
     private fun createEnvelope(seq: Long, prevHash: String? = null): ProtocolEnvelope {
+        val sessionFrame = JSONObject()
+            .put("type", "session_msg")
+            .put("ciphertext", "cipher_data_for_seq_$seq")
+            .toString()
         return ProtocolEnvelope(
             version = 2,
+            envelopeId = "env-$seq",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "queue-tx-789",
             sequenceNumber = seq,
             previousHash = prevHash,
             timestamp = System.currentTimeMillis(),
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
-            ciphertext = "cipher_data_for_seq_$seq"
+            messageType = "msg",
+            ciphertext = sessionFrame,
+            senderKey = remoteKey,
+            recipientKey = localKey,
+            signature = "test-signature"
         )
     }
 
@@ -128,7 +140,16 @@ class IncomingDispatcherDeferredCommitTest {
     @Test
     fun testSequenceGapBuffering_buffersAndDrainsInOrder() = runTest(testDispatcher) {
         // Initial lastRecvSeq = 10
-        val env12 = createEnvelope(12L) // Gap! (11 missing)
+        val env11 = createEnvelope(11L)
+        val hash11 = ProtocolEnvelope.computeEnvelopeHash(
+            previousHash = env11.previousHash,
+            connectionId = env11.connectionId,
+            queueId = env11.queueId,
+            sequenceNumber = env11.sequenceNumber,
+            messageType = env11.messageType,
+            ciphertext = env11.ciphertext
+        )
+        val env12 = createEnvelope(12L, hash11) // Gap! (11 missing)
 
         val processedSequences = mutableListOf<Long>()
         dispatcher.onSessionMessage = { _, json, _ ->
@@ -148,7 +169,6 @@ class IncomingDispatcherDeferredCommitTest {
         assertTrue("Sequence 12 must not have been dispatched to app yet", processedSequences.isEmpty())
 
         // Now deliver missing packet 11
-        val env11 = createEnvelope(11L)
         dispatcher.dispatchProtocolEnvelope(env11, "endpoint-1", TransportType.NEARBY_DIRECT)
 
         // Both 11 and 12 must now be processed in strict sequential order!
@@ -160,5 +180,24 @@ class IncomingDispatcherDeferredCommitTest {
 
         // Buffer should now be empty
         assertEquals(0, dispatcher.sequenceGapBuffers[connId]?.size ?: 0)
+    }
+
+    @Test
+    fun testLegacyStateChangingPacket_isRejectedOutsideSignedEnvelope() = runTest(testDispatcher) {
+        var legacyHandlerCalled = false
+        dispatcher.onLegacyEncrypted = { _, _, _ -> legacyHandlerCalled = true }
+
+        val accepted = dispatcher.onPayloadReceivedDurably(
+            sourceAddress = "endpoint-legacy",
+            payload = JSONObject()
+                .put("type", "msg")
+                .put("msgId", "legacy-message-id")
+                .put("ciphertext", "untrusted")
+                .toString(),
+            transportType = TransportType.NEARBY_DIRECT
+        )
+
+        assertFalse("Legacy state-changing packets must fail closed", accepted)
+        assertFalse("Legacy handler must not receive unauthenticated packets", legacyHandlerCalled)
     }
 }

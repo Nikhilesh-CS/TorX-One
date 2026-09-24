@@ -10,6 +10,9 @@ import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 
 data class NearbyDevice(
     val endpointId: String,
@@ -29,6 +32,7 @@ class NearbyConnectionManager(private val context: Context) {
     }
 
     private val connectionsClient by lazy { Nearby.getConnectionsClient(context) }
+    private val pendingPayloadTransfers = ConcurrentHashMap<Long, CompletableDeferred<Boolean>>()
 
     private val _nearbyDevices = MutableStateFlow<List<NearbyDevice>>(emptyList())
     val nearbyDevices: StateFlow<List<NearbyDevice>> = _nearbyDevices
@@ -140,6 +144,29 @@ class NearbyConnectionManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send raw payload to $endpointId", e)
             return false
+        }
+    }
+
+    /**
+     * Completes only after Google Nearby reports that the byte payload was
+     * transferred successfully. Task acceptance alone is not delivery.
+     */
+    suspend fun sendRawConfirmed(endpointId: String, data: String, timeoutMs: Long = 30_000L): Boolean {
+        val payload = Payload.fromBytes(data.toByteArray(Charsets.UTF_8))
+        val completion = CompletableDeferred<Boolean>()
+        pendingPayloadTransfers[payload.id] = completion
+        try {
+            connectionsClient.sendPayload(endpointId, payload)
+                .addOnFailureListener { error ->
+                    Log.w(TAG, "Nearby rejected payload ${payload.id} for $endpointId", error)
+                    pendingPayloadTransfers.remove(payload.id)?.complete(false)
+                }
+            return withTimeoutOrNull(timeoutMs) { completion.await() } ?: false
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send confirmed payload to $endpointId", e)
+            return false
+        } finally {
+            pendingPayloadTransfers.remove(payload.id)
         }
     }
 
@@ -262,7 +289,14 @@ class NearbyConnectionManager(private val context: Context) {
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Transfer updates
+            when (update.status) {
+                PayloadTransferUpdate.Status.SUCCESS ->
+                    pendingPayloadTransfers.remove(update.payloadId)?.complete(true)
+                PayloadTransferUpdate.Status.FAILURE,
+                PayloadTransferUpdate.Status.CANCELED ->
+                    pendingPayloadTransfers.remove(update.payloadId)?.complete(false)
+                PayloadTransferUpdate.Status.IN_PROGRESS -> Unit
+            }
         }
     }
 }

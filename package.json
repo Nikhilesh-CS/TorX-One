@@ -5,7 +5,8 @@
   "description": "TorX One Phase 1 — Relay server for E2E encrypted iOS/Android chat",
   "scripts": {
     "start": "node relay/server.js",
-    "relay": "node relay/server.js"
+    "relay": "node relay/server.js",
+    "test:relay": "node relay/server.test.js"
   },
   "dependencies": {
     "tweetnacl": "^1.0.3",

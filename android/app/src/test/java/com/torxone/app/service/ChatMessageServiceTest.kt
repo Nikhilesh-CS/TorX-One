@@ -68,7 +68,8 @@ class ChatMessageServiceTest {
             torXAgent = torXAgent,
             sessionCryptoService = sessionCryptoService,
             identityProvider = { identity },
-            onionAddressProvider = { "alice.onion" }
+            onionAddressProvider = { "alice.onion" },
+            transactionRunner = { block -> block() }
         )
     }
 

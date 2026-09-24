@@ -39,7 +39,10 @@ data class ContactEntity(
     val muteUntil: Long = 0L
 )
 
-@Entity(tableName = "messages")
+@Entity(
+    tableName = "messages",
+    indices = [androidx.room.Index(value = ["messageId", "contactKey", "conversationType"], unique = true)]
+)
 data class MessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val messageId: String,
@@ -133,7 +136,7 @@ data class GroupKeyEntity(
 
 @Entity(
     tableName = "group_events",
-    indices = [androidx.room.Index(value = ["groupId", "groupVersion"]), androidx.room.Index(value = ["groupId", "createdAt"])]
+    indices = [androidx.room.Index(value = ["groupId", "groupVersion"], unique = true), androidx.room.Index(value = ["groupId", "createdAt"])]
 )
 data class GroupEventEntity(
     @PrimaryKey val eventId: String,
@@ -418,6 +421,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE direction = 'sent' AND (status = 'pending' OR status = 'sent' OR status = 'in_transit') AND retryCount < 40")
     fun getPendingMessages(): List<MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE contactKey = :contactKey AND conversationType = :conversationType AND direction = 'sent' AND status = :status ORDER BY timestamp")
+    fun getOutgoingMessagesByStatus(contactKey: String, conversationType: String, status: String): List<MessageEntity>
+
     @Query("UPDATE messages SET retryCount = retryCount + 1 WHERE messageId = :messageId")
     fun incrementRetryCount(messageId: String)
 
@@ -654,8 +660,8 @@ interface MusicNoteDao {
 }
 
 @Database(
-    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class, DeliveryQueueEntity::class, ConnectionQueueEntity::class],
-    version = 27,
+    entities = [ContactEntity::class, MessageEntity::class, ConnectionRequestEntity::class, ReactionOutboxEntity::class, MediaTransferEntity::class, ProfileEntity::class, MusicNoteEntity::class, PendingEncryptedPayload::class, PendingGroupCiphertextEntity::class, GroupEntity::class, GroupMemberEntity::class, GroupKeyEntity::class, GroupEventEntity::class, ProcessedGroupEventEntity::class, PendingGroupEventEntity::class, GroupSyncStateEntity::class, GroupInviteEntity::class, SessionEntity::class, SessionReplayEntity::class, SkippedMessageKeyEntity::class, ReceiptOutboxEntity::class, MessageOutboxEntity::class, CallSignalingOutboxEntity::class, DeliveryQueueEntity::class, ConnectionQueueEntity::class],
+    version = 29,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -667,6 +673,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun profileDao(): ProfileDao
     abstract fun musicNoteDao(): MusicNoteDao
     abstract fun pendingEncryptedPayloadDao(): PendingEncryptedPayloadDao
+    abstract fun pendingGroupCiphertextDao(): PendingGroupCiphertextDao
     abstract fun groupDao(): GroupDao
     abstract fun groupKeyDao(): GroupKeyDao
     abstract fun groupEventDao(): GroupEventDao
@@ -1148,6 +1155,23 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `deliveredAt` INTEGER")
                 db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `readAt` INTEGER")
                 db.execSQL("ALTER TABLE `delivery_queue` ADD COLUMN `envelopeHash` TEXT")
+            }
+        }
+
+        val MIGRATION_27_28 = object : androidx.room.migration.Migration(27, 28) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `connection_queue` ADD COLUMN `lastSentHash` TEXT")
+            }
+        }
+
+        val MIGRATION_28_29 = object : androidx.room.migration.Migration(28, 29) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM `messages` WHERE `id` NOT IN (SELECT MIN(`id`) FROM `messages` GROUP BY `messageId`, `contactKey`, `conversationType`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_messages_messageId_contactKey_conversationType` ON `messages` (`messageId`, `contactKey`, `conversationType`)")
+                db.execSQL("DELETE FROM `group_events` WHERE rowid NOT IN (SELECT MIN(rowid) FROM `group_events` GROUP BY `groupId`, `groupVersion`)")
+                db.execSQL("DROP INDEX IF EXISTS `index_group_events_groupId_groupVersion`")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_group_events_groupId_groupVersion` ON `group_events` (`groupId`, `groupVersion`)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `pending_group_ciphertexts` (`groupId` TEXT NOT NULL, `senderKey` TEXT NOT NULL, `outerMessageId` TEXT NOT NULL, `keyVersion` INTEGER NOT NULL, `rawJson` TEXT NOT NULL, `senderOnion` TEXT, `receivedAt` INTEGER NOT NULL, `expiresAt` INTEGER NOT NULL, PRIMARY KEY(`groupId`, `senderKey`, `outerMessageId`))")
             }
         }
     }

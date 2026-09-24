@@ -33,6 +33,8 @@ obj/
 # Node/Relay files
 node_modules/
 relay/node_modules/
+relay/relay-queue-store.json
+relay/relay-queue-store.json.tmp
 .npm/
 
 # OS generated files

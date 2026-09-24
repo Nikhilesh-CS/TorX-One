@@ -74,8 +74,9 @@ class CallSignalingQueueMigrationTest {
             encryptedPayload = argThat { contains("call_offer") }
         )
 
-        // Verifies duplicate legacy outbox insertion was bypassed
-        verify(outboxDao, never()).insertSignal(any())
+        // Critical signaling remains durable until the peer ACKs it, even when
+        // the TorXAgent accepted the immediate delivery attempt.
+        verify(outboxDao).insertSignal(argThat { this.signalId == signalId && signalType == "OFFER" })
     }
 
     @Test
@@ -97,7 +98,7 @@ class CallSignalingQueueMigrationTest {
             encryptedPayload = argThat { contains("call_answer") }
         )
 
-        verify(outboxDao, never()).insertSignal(any())
+        verify(outboxDao).insertSignal(argThat { this.signalId == signalId && signalType == "ANSWER" })
     }
 
     @Test
@@ -119,7 +120,7 @@ class CallSignalingQueueMigrationTest {
             encryptedPayload = argThat { contains("ice_candidate") }
         )
 
-        verify(outboxDao, never()).insertSignal(any())
+        verify(outboxDao).insertSignal(argThat { this.signalId == signalId && signalType == "ICE" })
     }
 
     @Test
@@ -140,7 +141,7 @@ class CallSignalingQueueMigrationTest {
             encryptedPayload = argThat { contains("call_end") }
         )
 
-        verify(outboxDao, never()).insertSignal(any())
+        verify(outboxDao).insertSignal(argThat { this.signalId == signalId && signalType == "END" })
     }
 
     @Test

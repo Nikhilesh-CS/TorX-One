@@ -1,5 +1,6 @@
 package com.torxone.app.protocol
 
+import com.torxone.app.crypto.CryptoManager
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,13 +32,18 @@ class ProtocolEnvelopeHashChainTest {
         )
         val original = ProtocolEnvelope(
             version = 2,
+            envelopeId = "env-42",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "reply-queue",
             sequenceNumber = 42L,
             previousHash = "prev_hash_987",
             timestamp = 1788960000000L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "encrypted_payload_bytes_base64",
+            senderKey = "sender-key",
+            recipientKey = "recipient-key",
+            signature = "signature",
             cryptoMetadata = crypto
         )
 
@@ -51,7 +57,7 @@ class ProtocolEnvelopeHashChainTest {
         assertEquals(42L, parsed.sequenceNumber)
         assertEquals("prev_hash_987", parsed.previousHash)
         assertEquals(1788960000000L, parsed.timestamp)
-        assertEquals(ProtocolEnvelope.TYPE_MESSAGE, parsed.messageType)
+        assertEquals("msg", parsed.messageType)
         assertEquals("encrypted_payload_bytes_base64", parsed.ciphertext)
 
         assertNotNull(parsed.cryptoMetadata)
@@ -69,7 +75,7 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "hello world"
         )
         assertNotNull(hash1)
@@ -81,7 +87,7 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "hello world"
         )
         assertEquals(hash1, hash1Reproduction)
@@ -92,7 +98,7 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "hello world!"
         )
         assertNotEquals(hash1, tamperedCipher)
@@ -103,7 +109,7 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 2L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "hello world"
         )
         assertNotEquals(hash1, tamperedSeq)
@@ -114,7 +120,7 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = "other_queue_id",
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "hello world"
         )
         assertNotEquals(hash1, tamperedQueue)
@@ -128,16 +134,22 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "first message"
         )
         val env1 = ProtocolEnvelope(
+            envelopeId = "env-1",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "reply-queue",
             sequenceNumber = 1L,
             previousHash = null,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
-            ciphertext = "first message"
+            timestamp = 1L,
+            messageType = "msg",
+            ciphertext = "first message",
+            senderKey = "sender-key",
+            recipientKey = "recipient-key",
+            signature = "signature"
         )
         val res1 = ProtocolEnvelope.verifyContinuity(lastCommittedHash = null, envelope = env1)
         assertTrue("Genesis message must be continuous", res1 is HashChainVerificationResult.Continuous)
@@ -148,16 +160,22 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 2L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "second message"
         )
         val env2 = ProtocolEnvelope(
+            envelopeId = "env-2",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "reply-queue",
             sequenceNumber = 2L,
             previousHash = h1,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
-            ciphertext = "second message"
+            timestamp = 2L,
+            messageType = "msg",
+            ciphertext = "second message",
+            senderKey = "sender-key",
+            recipientKey = "recipient-key",
+            signature = "signature"
         )
         val res2 = ProtocolEnvelope.verifyContinuity(lastCommittedHash = h1, envelope = env2)
         assertTrue("Linked message 2 must be continuous", res2 is HashChainVerificationResult.Continuous)
@@ -168,17 +186,23 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 3L,
-            messageType = ProtocolEnvelope.TYPE_ACK,
+            messageType = "ack",
             ciphertext = "ack message"
         )
         assertNotNull(h3)
         val env3 = ProtocolEnvelope(
+            envelopeId = "env-3",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "reply-queue",
             sequenceNumber = 3L,
             previousHash = h2,
-            messageType = ProtocolEnvelope.TYPE_ACK,
-            ciphertext = "ack message"
+            timestamp = 3L,
+            messageType = "ack",
+            ciphertext = "ack message",
+            senderKey = "sender-key",
+            recipientKey = "recipient-key",
+            signature = "signature"
         )
         val res3 = ProtocolEnvelope.verifyContinuity(lastCommittedHash = h2, envelope = env3)
         assertTrue("Linked message 3 must be continuous", res3 is HashChainVerificationResult.Continuous)
@@ -191,18 +215,24 @@ class ProtocolEnvelopeHashChainTest {
             connectionId = connId,
             queueId = queueId,
             sequenceNumber = 1L,
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
+            messageType = "msg",
             ciphertext = "msg1"
         )
 
         // Envelope 3 arrives out-of-order before envelope 2 was committed
         val env3OutOfOrder = ProtocolEnvelope(
+            envelopeId = "env-out-of-order",
             connectionId = connId,
             queueId = queueId,
+            replyQueueId = "reply-queue",
             sequenceNumber = 3L,
             previousHash = "some_future_h2_hash",
-            messageType = ProtocolEnvelope.TYPE_MESSAGE,
-            ciphertext = "msg3"
+            timestamp = 3L,
+            messageType = "msg",
+            ciphertext = "msg3",
+            senderKey = "sender-key",
+            recipientKey = "recipient-key",
+            signature = "signature"
         )
 
         // Local state has only committed up to h1
@@ -212,5 +242,30 @@ class ProtocolEnvelopeHashChainTest {
         val gap = res as HashChainVerificationResult.GapDetected
         assertEquals(h1, gap.expectedPrevHash)
         assertEquals("some_future_h2_hash", gap.actualPrevHash)
+    }
+
+    @Test
+    fun testOuterSignatureBindsRoutingAndCiphertext() {
+        val identity = CryptoManager.generateIdentity("sender")
+        val unsigned = ProtocolEnvelope(
+            envelopeId = "env-signed",
+            connectionId = connId,
+            queueId = queueId,
+            replyQueueId = "reply-queue",
+            sequenceNumber = 1,
+            previousHash = null,
+            timestamp = 1234L,
+            messageType = "msg",
+            ciphertext = "{\"type\":\"session_msg\",\"ciphertext\":\"abc\"}",
+            senderKey = CryptoManager.toHex(identity.signingPublicKey),
+            recipientKey = "recipient-key",
+            signature = ""
+        )
+        val signed = ProtocolEnvelope.sign(unsigned, identity.signingSecretKey)
+
+        assertTrue(ProtocolEnvelope.verifySignature(signed))
+        assertFalse(ProtocolEnvelope.verifySignature(signed.copy(queueId = "attacker-queue")))
+        assertFalse(ProtocolEnvelope.verifySignature(signed.copy(sequenceNumber = 2)))
+        assertFalse(ProtocolEnvelope.verifySignature(signed.copy(ciphertext = "tampered")))
     }
 }

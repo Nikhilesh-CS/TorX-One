@@ -2,6 +2,7 @@ package com.torxone.app.transport
 
 import android.util.Log
 import com.torxone.app.crypto.CryptoManager
+import com.torxone.app.crypto.Identity
 import com.torxone.app.data.SettingsManager
 import com.torxone.app.identity.IdentityManager
 import kotlinx.coroutines.CompletableDeferred
@@ -67,6 +68,7 @@ class RelayTransport(
         .build()
 
     private var webSocket: WebSocket? = null
+    private var relayAuthIdentity: Identity? = null
     private var incomingListener: TransportIncomingListener? = null
     private var isStarted = false
     private var reconnectJob: Job? = null
@@ -74,7 +76,7 @@ class RelayTransport(
     private var settingsJob: Job? = null
 
     private var currentUrl: String = SettingsManager.DEFAULT_RELAY_URL
-    private var isEnabled: Boolean = true
+    private var isEnabled: Boolean = false
 
     // Tracks in-flight sends awaiting {"type":"sent", "id": "..."}
     private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
@@ -143,8 +145,8 @@ class RelayTransport(
             return TransportResult.failure(type, "Relay not connected")
         }
 
-        // Correlate a single attempt, including concurrent retries of one envelope.
-        val sendId = UUID.randomUUID().toString()
+        // Stable envelope ID lets the relay deduplicate sender retries.
+        val sendId = metadata?.envelopeId ?: UUID.randomUUID().toString()
         val deferred = CompletableDeferred<Boolean>()
         pendingAcks[sendId] = deferred
 
@@ -156,6 +158,7 @@ class RelayTransport(
                 put("type", "message")
                 put("id", sendId)
                 put("queueId", targetQueue)
+                put("queueToken", metadata?.queueCapability ?: "")
                 put("to", targetQueue) // backward compatibility with legacy relay inspect
                 put("payload", payload)
                 // Also provide ciphertext hex for backward compatibility with older relay/inspect tools
@@ -194,14 +197,20 @@ class RelayTransport(
         if (!isEnabled || !isStarted) return
         reconnectJob?.cancel()
 
-        val identity = identityManager.loadIdentity()
-        if (identity == null) {
-            _statusText.value = "Waiting for identity"
-            Log.d(TAG, "[CONNECT] Postponing relay connection until identity is loaded")
+        val url = currentUrl.ifBlank { SettingsManager.DEFAULT_RELAY_URL }
+        if (url.isBlank()) {
+            _isAvailable.value = false
+            _statusText.value = "Not configured"
             return
         }
-
-        val url = currentUrl.ifBlank { SettingsManager.DEFAULT_RELAY_URL }
+        val localDevelopmentUrl = url.startsWith("ws://10.0.2.2:") ||
+            url.startsWith("ws://127.0.0.1:") || url.startsWith("ws://localhost:")
+        if (!url.startsWith("wss://") && !localDevelopmentUrl) {
+            _isAvailable.value = false
+            _statusText.value = "Secure wss:// URL required"
+            Log.e(TAG, "[CONNECT] Refusing cleartext non-local relay URL")
+            return
+        }
         _statusText.value = "Connecting..."
         Log.i(TAG, "[CONNECT] Connecting to relay: $url")
 
@@ -213,6 +222,7 @@ class RelayTransport(
             return
         }
 
+        relayAuthIdentity = CryptoManager.generateIdentity("relay-session")
         webSocket = okHttpClient.newWebSocket(request, createWebSocketListener())
     }
 
@@ -225,6 +235,7 @@ class RelayTransport(
             Log.w(TAG, "[DISCONNECT] Error closing websocket: ${e.message}")
         }
         webSocket = null
+        relayAuthIdentity = null
         _isAvailable.value = false
         _statusText.value = if (isEnabled) "Disconnected" else "Disabled"
         pendingAcks.values.forEach { it.complete(false) }
@@ -320,9 +331,9 @@ class RelayTransport(
             return
         }
 
-        val identity = identityManager.loadIdentity()
+        val identity = relayAuthIdentity
         if (identity == null) {
-            Log.e(TAG, "[AUTH] No identity available to sign challenge")
+            Log.e(TAG, "[AUTH] No ephemeral relay identity available")
             return
         }
 
@@ -338,7 +349,7 @@ class RelayTransport(
             }
 
             ws.send(authMessage.toString())
-            Log.d(TAG, "[AUTH] Dispatched auth response for ${myPubKeyHex.take(12)}…")
+            Log.d(TAG, "[AUTH] Dispatched unlinkable per-connection auth response")
         } catch (e: Exception) {
             Log.e(TAG, "[AUTH] Failed to sign challenge: ${e.message}", e)
         }
@@ -357,7 +368,7 @@ class RelayTransport(
     /**
      * Subscribe to a specific queue ID on the connected relay.
      */
-    fun subscribeQueue(queueId: String) {
+    fun subscribeQueue(queueId: String, queueToken: String) {
         val ws = webSocket
         if (ws != null && _isAvailable.value) {
             val clean = queueId.trim()
@@ -365,6 +376,7 @@ class RelayTransport(
                 val msg = JSONObject().apply {
                     put("type", "subscribe")
                     put("queueId", clean)
+                    put("queueToken", queueToken)
                 }
                 ws.send(msg.toString())
                 Log.d(TAG, "[WS] Subscribed to queue: ${clean.take(8)}…")
@@ -379,14 +391,18 @@ class RelayTransport(
         val ws = webSocket ?: return
         if (!_isAvailable.value) return
         val manager = connectionManager ?: return
-        val queues = manager.getActiveRecvQueueIds()
-        if (queues.isNotEmpty()) {
+        val subscriptions = manager.getActiveRelaySubscriptions()
+        if (subscriptions.isNotEmpty()) {
             val msg = JSONObject().apply {
                 put("type", "subscribe")
-                put("queues", org.json.JSONArray(queues))
+                put("subscriptions", org.json.JSONArray().apply {
+                    subscriptions.forEach { (queueId, token) ->
+                        put(JSONObject().put("queueId", queueId).put("queueToken", token))
+                    }
+                })
             }
             ws.send(msg.toString())
-            Log.i(TAG, "[WS] Subscribed to ${queues.size} active receive queue(s)")
+            Log.i(TAG, "[WS] Subscribed to ${subscriptions.size} authorized receive queue(s)")
         }
     }
 
@@ -395,16 +411,6 @@ class RelayTransport(
         val queueId = json.optString("queueId")
         val payload = json.optString("payload")
         val ciphertextHex = json.optString("ciphertext")
-
-        // Acknowledge receipt back to relay server so it doesn't hold it
-        if (id.isNotBlank()) {
-            val ackJson = JSONObject().apply {
-                put("type", "ack")
-                put("id", id)
-                if (queueId.isNotBlank()) put("queueId", queueId)
-            }
-            ws.send(ackJson.toString())
-        }
 
         // Extract the envelope JSON string
         val wireString = if (payload.isNotBlank()) {
@@ -422,10 +428,40 @@ class RelayTransport(
 
         val source = if (queueId.isNotBlank()) queueId else json.optString("from", "")
         Log.i(TAG, "[INCOMING] Received envelope on queue ${source.take(12)}… via relay (len=${wireString.length})")
-        incomingListener?.onPayloadReceived(
-            sourceAddress = source,
-            payload = wireString,
-            transportType = TransportType.OFFLINE_RELAY
-        )
+        val listener = incomingListener
+        if (listener !is DurableTransportIncomingListener) {
+            Log.e(TAG, "[INCOMING] Durable dispatcher unavailable; relay item retained")
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            val durablyProcessed = try {
+                listener.onPayloadReceivedDurably(
+                    sourceAddress = source,
+                    payload = wireString,
+                    transportType = TransportType.OFFLINE_RELAY
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "[INCOMING] Durable processing failed; relay item retained", e)
+                false
+            }
+            if (durablyProcessed && id.isNotBlank() && queueId.isNotBlank()) {
+                val connection = connectionManager?.getConnectionByQueueId(queueId)
+                val queueToken = connection?.let {
+                    connectionManager?.deriveDirectionalQueueCapability(it.remotePartyKey, it.localPartyKey)
+                }
+                if (queueToken.isNullOrBlank()) {
+                    Log.e(TAG, "[INCOMING] Missing queue capability; relay item retained")
+                    return@launch
+                }
+                val ackJson = JSONObject().apply {
+                    put("type", "ack")
+                    put("id", id)
+                    put("queueId", queueId)
+                    put("queueToken", queueToken)
+                }
+                ws.send(ackJson.toString())
+                Log.d(TAG, "[INCOMING] ACKed durable relay item ${id.take(12)}…")
+            }
+        }
     }
 }

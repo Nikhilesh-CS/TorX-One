@@ -61,12 +61,14 @@ class CallManager(
         }
 
     private fun buildRouteContext(contact: ContactEntity): CallRouteContext {
-        val transport = messageRouter.getBestTransport(contact)
+        val transport = runCatching { torXAgent?.preferredSignalingTransport(contact) }.getOrNull()
+            ?: messageRouter.getBestTransport(contact)
         return CallRouteContext(
             peerKey = contact.signingPublicKey,
             peerName = contact.name,
             transport = transport,
-            privacyRequiresRelay = transport == com.torxone.app.network.Transport.TOR
+            privacyRequiresRelay = transport == com.torxone.app.network.Transport.TOR ||
+                transport == com.torxone.app.network.Transport.PENDING
         )
     }
 

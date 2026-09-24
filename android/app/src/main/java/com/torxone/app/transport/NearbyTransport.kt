@@ -64,7 +64,7 @@ class NearbyTransport(
 
         val startMs = System.currentTimeMillis()
         return try {
-            val ok = nearbyManager.sendRaw(destination, payload)
+            val ok = nearbyManager.sendRawConfirmed(destination, payload)
             val elapsed = System.currentTimeMillis() - startMs
             if (ok) {
                 Log.d(TAG, "[SEND] id=${metadata?.messageId ?: "?"} → $destination (${elapsed}ms)")
@@ -93,7 +93,7 @@ class NearbyTransport(
 
         val startMs = System.currentTimeMillis()
         val relayed = connected.any { endpoint ->
-            runCatching { nearbyManager.sendRaw(endpoint, relayPayload) }.getOrDefault(false)
+            runCatching { nearbyManager.sendRawConfirmed(endpoint, relayPayload) }.getOrDefault(false)
         }
 
         val elapsed = System.currentTimeMillis() - startMs

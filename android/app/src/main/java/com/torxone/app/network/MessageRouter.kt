@@ -6,6 +6,7 @@ import com.torxone.app.crypto.Identity
 import com.torxone.app.data.AppDatabase
 import com.torxone.app.data.ContactEntity
 import com.torxone.app.data.MessageEntity
+import com.torxone.app.data.PendingGroupCiphertextEntity
 import com.torxone.app.data.ReactionOutboxEntity
 import kotlinx.coroutines.*
 import org.json.JSONObject
@@ -630,11 +631,32 @@ class MessageRouter(
         if (groupId.isBlank() || keyVersion <= 0 || ciphertext.isBlank() || iv.isBlank()) return
         val group = db.groupDao().getGroup(groupId) ?: return
         val myKey = mySigningKeyHex.ifBlank { identity?.signingPublicKey?.let { CryptoManager.toHex(it) }.orEmpty() }
-        if (db.groupDao().getGroupMember(groupId, myKey) == null) return
+        if (!GroupPermission.isActive(db.groupDao().getGroupMember(groupId, myKey))) return
         val senderMember = db.groupDao().getGroupMember(groupId, senderKey)
-        if (senderMember == null || senderMember.role == "invited") return
-        val key = db.groupKeyDao().getKey(groupId, keyVersion) ?: run { com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, keyVersion); return }
-        if (db.groupKeyDao().getLatestKey(groupId)?.keyVersion != keyVersion) return
+        if (!GroupPermission.isActive(senderMember)) return
+        val key = db.groupKeyDao().getKey(groupId, keyVersion) ?: run {
+            if (messageId.isNotBlank()) {
+                val now = System.currentTimeMillis()
+                db.pendingGroupCiphertextDao().insert(
+                    PendingGroupCiphertextEntity(
+                        groupId = groupId,
+                        senderKey = senderKey,
+                        outerMessageId = messageId,
+                        keyVersion = keyVersion,
+                        rawJson = jsonStr,
+                        senderOnion = senderOnion,
+                        receivedAt = now,
+                        expiresAt = now + 7L * 24 * 60 * 60 * 1000
+                    )
+                )
+            }
+            com.torxone.app.service.TorXOneService.getInstance()?.groupManager?.requestMissingKey(groupId, group.creatorKey, keyVersion)
+            return
+        }
+        // Accept a small retained-key window for legitimately reordered packets.
+        // Removed members still cannot decrypt newer versions they never received.
+        val latestVersion = db.groupKeyDao().getLatestKey(groupId)?.keyVersion ?: return
+        if (keyVersion > latestVersion || keyVersion < latestVersion - 2) return
         val inner = try { JSONObject(GroupCryptoManager.decrypt(key, ciphertext, iv)) } catch (_: Exception) { return }
         val innerSenderKey = inner.optString("senderKey")
         val innerMessageId = inner.optString("messageId")
@@ -657,6 +679,22 @@ class MessageRouter(
             else { val unreadMsgs = db.messageDao().getUnreadMessagesSync(groupId, "group"); val grp = db.groupDao().getGroup(groupId); val isMuted = grp?.muteUntil == -1L || (grp?.muteUntil ?: 0L) > System.currentTimeMillis(); if (grp != null && !isMuted) com.torxone.app.service.NotificationHelper.showMessageNotification(service, ContactEntity(signingPublicKey = groupId, encryptionPublicKey = "", name = grp.name), unreadMsgs, "group") }
         }
         if (messageId.isNotBlank()) sendAck(messageId, senderKey, viaEndpoint, senderOnion)
+    }
+
+    suspend fun processPendingGroupCiphertexts(groupId: String, keyVersion: Int) {
+        db.pendingGroupCiphertextDao().deleteExpired()
+        db.pendingGroupCiphertextDao().getForKey(groupId, keyVersion).forEach { pending ->
+            runCatching {
+                handleGroupMessage(
+                    pending.rawJson,
+                    pending.senderKey,
+                    pending.outerMessageId,
+                    null,
+                    pending.senderOnion
+                )
+            }.onFailure { Log.w(TAG, "Failed to replay pending group ciphertext ${pending.outerMessageId}", it) }
+            db.pendingGroupCiphertextDao().delete(groupId, pending.senderKey, pending.outerMessageId)
+        }
     }
 
     // ──────────────────────── ENCRYPTION ────────────────────────

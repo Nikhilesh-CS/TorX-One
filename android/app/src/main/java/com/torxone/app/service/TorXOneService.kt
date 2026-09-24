@@ -160,7 +160,9 @@ class TorXOneService : Service() {
                 AppDatabase.MIGRATION_23_24,
                 AppDatabase.MIGRATION_24_25,
                 AppDatabase.MIGRATION_25_26,
-                AppDatabase.MIGRATION_26_27
+                AppDatabase.MIGRATION_26_27,
+                AppDatabase.MIGRATION_27_28,
+                AppDatabase.MIGRATION_28_29
             )
             .build()
 
@@ -322,11 +324,9 @@ class TorXOneService : Service() {
         }
         incomingDispatcher.onAckReceived = { json, endpointId ->
             deliveryTracker.handleAck(json, endpointId)
-            messageRouter.handleAck(json, endpointId)
         }
         incomingDispatcher.onReadReceived = { json, endpointId ->
             deliveryTracker.handleRead(json, endpointId)
-            messageRouter.handleRead(json, endpointId)
         }
         incomingDispatcher.onCallSignal = { type, json, endpointId, _ ->
             messageRouter.handleEncrypted(json, endpointId, type)

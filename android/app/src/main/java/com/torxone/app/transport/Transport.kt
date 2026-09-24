@@ -99,6 +99,7 @@ enum class TransportType(val priority: Int) {
 data class TransportMetadata(
     val messageId: String? = null,
     val envelopeId: String? = null,
+    val queueCapability: String? = null,
     val isRetry: Boolean = false,
     val attemptNumber: Int = 1
 )
@@ -129,4 +130,16 @@ fun interface TransportIncomingListener {
      * @param transportType Which transport received this payload.
      */
     fun onPayloadReceived(sourceAddress: String?, payload: String, transportType: TransportType)
+}
+
+/**
+ * Relay transports use this extension so a buffered item is acknowledged only
+ * after protocol validation, decryption, and persistence have completed.
+ */
+interface DurableTransportIncomingListener : TransportIncomingListener {
+    suspend fun onPayloadReceivedDurably(
+        sourceAddress: String?,
+        payload: String,
+        transportType: TransportType
+    ): Boolean
 }

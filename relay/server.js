@@ -3,8 +3,8 @@
  *
  * Implements the Opaque Queue-Addressed Offline Relay Protocol:
  *   1. Routes and buffers strictly by opaque queueId (Identity != Connection != Queue != Transport Address)
- *   2. No public key exposure: neither sender nor recipient public keys are stored or routed
- *   3. Ephemeral challenge-response authentication for connection gating
+ *   2. No long-term identity exposure: clients authenticate with per-connection ephemeral keys
+ *   3. Queue capability tokens authorize publish/subscribe access
  *   4. Clients subscribe to their pairwise receive queueIds ({ type: 'subscribe', queues: [...] })
  *   5. Exposes GET /inspect to verify opaque queue indexing with zero plaintexts or identity keys
  *
@@ -14,13 +14,19 @@
 
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { WebSocketServer } = require('ws');
 const nacl = require('tweetnacl');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
-const MAX_QUEUE_PER_RECIPIENT = 100;
+const MAX_QUEUE_PER_RECIPIENT = parseInt(process.env.RELAY_MAX_QUEUE, 10) || 100;
+const MESSAGE_TTL_MS = parseInt(process.env.RELAY_MESSAGE_TTL_MS, 10) || 7 * 24 * 60 * 60 * 1000;
+const DATA_FILE = process.env.RELAY_DATA_FILE || path.join(__dirname, 'relay-queue-store.json');
+const INSPECT_ENABLED = process.env.RELAY_INSPECT_ENABLED === 'true';
+const INSPECT_TOKEN = process.env.RELAY_INSPECT_TOKEN || '';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
@@ -30,11 +36,16 @@ const queueSubscribers = new Map();
 /** @type {Map<WebSocket, Set<string>>} WebSocket -> Set<queueId> */
 const wsSubscriptions = new Map();
 
-/** @type {Map<string, WebSocket>} Legacy fallback: ed25519PubKeyHex -> WebSocket */
+/** @type {Map<string, WebSocket>} ephemeral Ed25519 session key -> WebSocket */
 const clients = new Map();
 
 /** @type {Map<string, Array<{id:string, queueId:string, payload:string, ciphertext:string, timestamp:number}>>} */
 const queues = new Map();
+
+/** @type {Map<string, string>} queueId -> SHA-256(queue capability) */
+const queueCapabilities = new Map();
+
+loadQueues();
 
 // ─── Hex Utilities ───────────────────────────────────────────────────────────
 
@@ -66,6 +77,15 @@ const httpServer = http.createServer((req, res) => {
 
   // ── /inspect endpoint ──────────────────────────────────────────────────
   if (req.url === '/inspect' || req.url === '/inspect/') {
+    const authorized = INSPECT_ENABLED && (
+      !INSPECT_TOKEN || req.headers.authorization === `Bearer ${INSPECT_TOKEN}`
+    );
+    if (!authorized) {
+      res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+      return;
+    }
+    pruneExpired();
     const snapshot = {};
     for (const [queueId, messages] of queues) {
       snapshot[queueId] = messages.map(m => ({
@@ -83,7 +103,7 @@ const httpServer = http.createServer((req, res) => {
       bufferedQueues: queues.size,
       totalBufferedMessages: [...queues.values()].reduce((sum, q) => sum + q.length, 0),
       queues: snapshot,
-      note: 'The relay is an opaque message buffer indexed by queueId. It routes strictly by opaque queue identifier and holds encrypted payloads. No public keys, identities, or plaintexts are exposed.',
+      note: 'Development-only queue diagnostics. The relay stores opaque encrypted envelopes and per-connection ephemeral authentication keys; it does not receive long-term TorX identity keys or plaintext.',
     }, null, 2);
 
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -150,8 +170,6 @@ wss.on('connection', (ws, req) => {
         send(ws, { type: 'auth_ok' });
         log(`✓ Authenticated: ${shortKey(clientPubKey)}`);
 
-        // Flush legacy queue if any
-        flushQueue(clientPubKey, ws);
       });
       return;
     }
@@ -172,13 +190,16 @@ wss.on('connection', (ws, req) => {
 
       case 'ack':
         // Acknowledged receipt from client
-        if (msg.queueId && msg.id) {
+        if (msg.queueId && msg.id && authorizeQueue(String(msg.queueId), String(msg.queueToken || ''), false)) {
           const queue = queues.get(msg.queueId);
           if (queue) {
             const idx = queue.findIndex(m => m.id === msg.id);
             if (idx !== -1) queue.splice(idx, 1);
             if (queue.length === 0) queues.delete(msg.queueId);
+            persistQueues();
           }
+        } else {
+          send(ws, { type: 'error', message: 'Invalid queue ACK capability' });
         }
         break;
 
@@ -241,11 +262,11 @@ function handleAuth(ws, msg, challengeNonce, onSuccess) {
 // ─── Subscription Handlers ───────────────────────────────────────────────────
 
 function handleSubscribe(ws, msg) {
-  const queueIds = [];
-  if (Array.isArray(msg.queues)) {
-    queueIds.push(...msg.queues);
+  const subscriptions = [];
+  if (Array.isArray(msg.subscriptions)) {
+    subscriptions.push(...msg.subscriptions);
   } else if (typeof msg.queueId === 'string' && msg.queueId) {
-    queueIds.push(msg.queueId);
+    subscriptions.push({ queueId: msg.queueId, queueToken: msg.queueToken });
   }
 
   if (!wsSubscriptions.has(ws)) {
@@ -254,10 +275,17 @@ function handleSubscribe(ws, msg) {
   const userSubs = wsSubscriptions.get(ws);
 
   let flushedCount = 0;
-  for (const qId of queueIds) {
-    const cleanId = String(qId).trim();
+  let acceptedCount = 0;
+  for (const subscription of subscriptions) {
+    const cleanId = String(subscription.queueId || '').trim();
+    const queueToken = String(subscription.queueToken || '');
     if (!cleanId) continue;
+    if (!authorizeQueue(cleanId, queueToken, true)) {
+      send(ws, { type: 'error', message: 'Invalid queue capability' });
+      continue;
+    }
     userSubs.add(cleanId);
+    acceptedCount++;
 
     if (!queueSubscribers.has(cleanId)) {
       queueSubscribers.set(cleanId, new Set());
@@ -268,8 +296,8 @@ function handleSubscribe(ws, msg) {
     flushedCount += flushQueue(cleanId, ws);
   }
 
-  send(ws, { type: 'subscribed', count: queueIds.length, flushed: flushedCount });
-  log(`✓ Subscribed to ${queueIds.length} queue(s) (flushed ${flushedCount})`);
+  send(ws, { type: 'subscribed', count: acceptedCount, flushed: flushedCount });
+  log(`✓ Subscribed to ${acceptedCount} authorized queue(s) (offered ${flushedCount})`);
 }
 
 function handleUnsubscribe(ws, msg) {
@@ -299,14 +327,19 @@ function handleUnsubscribe(ws, msg) {
 
 function handleMessage(ws, senderPubKey, msg) {
   const targetQueueId = (msg.queueId || msg.to || '').trim();
+  const queueToken = String(msg.queueToken || '');
   if (!targetQueueId || (!msg.ciphertext && !msg.payload)) {
     send(ws, { type: 'error', message: 'Missing queueId (or to), or ciphertext/payload' });
+    return;
+  }
+  if (!authorizeQueue(targetQueueId, queueToken, true)) {
+    send(ws, { type: 'error', message: 'Invalid queue capability' });
     return;
   }
 
   const payload = msg.payload || msg.ciphertext || '';
   const envelope = {
-    id: generateId(),
+    id: String(msg.id || generateId()),
     queueId: targetQueueId,
     payload: payload,
     ciphertext: msg.ciphertext || '',
@@ -315,9 +348,21 @@ function handleMessage(ws, senderPubKey, msg) {
     timestamp: Date.now(),
   };
 
-  const subscribers = queueSubscribers.get(targetQueueId);
-  const legacyWs = clients.get(targetQueueId);
+  pruneExpired();
+  if (!queues.has(targetQueueId)) queues.set(targetQueueId, []);
+  const queue = queues.get(targetQueueId);
+  const duplicate = queue.find(m => m.id === envelope.id);
+  if (!duplicate) {
+    if (queue.length >= MAX_QUEUE_PER_RECIPIENT) {
+      send(ws, { type: 'error', message: `Queue full (max ${MAX_QUEUE_PER_RECIPIENT})` });
+      return;
+    }
+    queue.push(envelope);
+    persistQueues();
+  }
+  const storedEnvelope = duplicate || envelope;
 
+  const subscribers = queueSubscribers.get(targetQueueId);
   let forwarded = false;
 
   if (subscribers && subscribers.size > 0) {
@@ -325,54 +370,33 @@ function handleMessage(ws, senderPubKey, msg) {
       if (subWs.readyState === 1 && subWs !== ws) {
         send(subWs, {
           type: 'message',
-          id: envelope.id,
+          id: storedEnvelope.id,
           queueId: targetQueueId,
-          payload: envelope.payload,
-          ciphertext: envelope.ciphertext,
-          timestamp: envelope.timestamp,
+          payload: storedEnvelope.payload,
+          ciphertext: storedEnvelope.ciphertext,
+          timestamp: storedEnvelope.timestamp,
         });
         forwarded = true;
       }
     }
   }
 
-  if (!forwarded && legacyWs && legacyWs.readyState === 1 && legacyWs !== ws) {
-    send(legacyWs, {
-      type: 'message',
-      id: envelope.id,
-      queueId: targetQueueId,
-      payload: envelope.payload,
-      ciphertext: envelope.ciphertext,
-      timestamp: envelope.timestamp,
-    });
-    forwarded = true;
-  }
-
   if (forwarded) {
-    log(`→ Relayed ${shortId(envelope.id)} on queue ${shortId(targetQueueId)}`);
+    log(`→ Relayed stored ${shortId(storedEnvelope.id)} on queue ${shortId(targetQueueId)}; awaiting recipient ACK`);
   } else {
-    // Offline recipient -> queue buffer
-    if (!queues.has(targetQueueId)) queues.set(targetQueueId, []);
-    const queue = queues.get(targetQueueId);
-
-    if (queue.length >= MAX_QUEUE_PER_RECIPIENT) {
-      send(ws, { type: 'error', message: 'Queue full (max 100)' });
-      return;
-    }
-
-    queue.push(envelope);
-    log(`⏳ Queued ${shortId(envelope.id)} for offline queue ${shortId(targetQueueId)} (${queue.length} buffered)`);
+    log(`⏳ Stored ${shortId(storedEnvelope.id)} for offline queue ${shortId(targetQueueId)} (${queue.length} buffered)`);
   }
 
   // Acknowledge receipt to sender
   // Sender request ID is distinct from the relay's stored-message ID.
   // Echo it exactly; clients must never guess which concurrent send was accepted.
-  send(ws, { type: 'sent', id: msg.id || envelope.id });
+  send(ws, { type: 'sent', id: envelope.id });
 }
 
 // ─── Queue Flush ─────────────────────────────────────────────────────────────
 
 function flushQueue(queueId, ws) {
+  pruneExpired();
   const queue = queues.get(queueId);
   if (!queue || queue.length === 0) return 0;
 
@@ -388,9 +412,67 @@ function flushQueue(queueId, ws) {
     };
     send(ws, out);
   }
-  log(`  Flushed ${count} queued message(s) on queue ${shortId(queueId)}`);
-  queues.delete(queueId);
+  log(`  Offered ${count} queued message(s) on queue ${shortId(queueId)}; retaining until ACK`);
   return count;
+}
+
+function loadQueues() {
+  try {
+    if (!fs.existsSync(DATA_FILE)) return;
+    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    if (!parsed || typeof parsed !== 'object') return;
+    const persistedQueues = parsed.queues && typeof parsed.queues === 'object' ? parsed.queues : parsed;
+    for (const [queueId, messages] of Object.entries(persistedQueues)) {
+      if (Array.isArray(messages)) queues.set(queueId, messages);
+    }
+    if (parsed.capabilities && typeof parsed.capabilities === 'object') {
+      for (const [queueId, tokenHash] of Object.entries(parsed.capabilities)) {
+        if (typeof tokenHash === 'string') queueCapabilities.set(queueId, tokenHash);
+      }
+    }
+    pruneExpired(false);
+  } catch (err) {
+    console.error(`Failed to load relay queue store: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+function persistQueues() {
+  const parent = path.dirname(DATA_FILE);
+  fs.mkdirSync(parent, { recursive: true });
+  const tmp = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({
+    queues: Object.fromEntries(queues),
+    capabilities: Object.fromEntries(queueCapabilities),
+  }), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmp, DATA_FILE);
+}
+
+function authorizeQueue(queueId, queueToken, allowRegistration) {
+  if (!queueToken) return false;
+  const tokenHash = crypto.createHash('sha256').update(queueToken, 'utf8').digest('hex');
+  const expected = queueCapabilities.get(queueId);
+  if (!expected && allowRegistration) {
+    queueCapabilities.set(queueId, tokenHash);
+    persistQueues();
+    return true;
+  }
+  if (!expected) return false;
+  const a = Buffer.from(expected, 'hex');
+  const b = Buffer.from(tokenHash, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function pruneExpired(persist = true) {
+  const cutoff = Date.now() - MESSAGE_TTL_MS;
+  let changed = false;
+  for (const [queueId, messages] of queues) {
+    const retained = messages.filter(m => Number(m.timestamp) >= cutoff);
+    if (retained.length !== messages.length) changed = true;
+    if (retained.length === 0) queues.delete(queueId);
+    else queues.set(queueId, retained);
+  }
+  if (changed && persist) persistQueues();
 }
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
@@ -425,7 +507,7 @@ httpServer.listen(PORT, () => {
   ║   Status    :  http://localhost:${String(PORT).padEnd(5)}             ║
   ║                                                   ║
   ║   Routes strictly by opaque queueId.              ║
-  ║   The relay NEVER sees plaintext or public keys.  ║
+  ║   No plaintext or long-term identity keys exposed. ║
   ║                                                   ║
   ╚═══════════════════════════════════════════════════╝
   `);

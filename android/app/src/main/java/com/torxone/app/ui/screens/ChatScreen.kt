@@ -104,6 +104,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -203,6 +205,11 @@ fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val viewModel = remember(contactKey, conversationType, chatMessageService) { ChatViewModel(contactKey, conversationType, db, messageRouter, chatMessageService) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.sendErrors.collect { error -> snackbarHostState.showSnackbar(error) }
+    }
 
     DisposableEffect(contactKey, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -441,6 +448,7 @@ fun ChatScreen(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         modifier = Modifier.imePadding(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             ChatHeader(
                 contactName = contactName,

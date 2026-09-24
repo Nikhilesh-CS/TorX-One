@@ -239,6 +239,12 @@ class FakeConnectionQueueDao : ConnectionQueueDao {
         }
     }
 
+    override suspend fun updateSendCursor(connectionId: String, seq: Long, hash: String, now: Long) {
+        storage[connectionId]?.let {
+            storage[connectionId] = it.copy(lastSendSeq = seq, lastSentHash = hash, lastActiveAt = now)
+        }
+    }
+
     override suspend fun commitRecvSeq(connectionId: String, seq: Long, hash: String?, now: Long) {
         storage[connectionId]?.let {
             storage[connectionId] = it.copy(lastRecvSeq = seq, lastCommittedHash = hash, lastActiveAt = now)

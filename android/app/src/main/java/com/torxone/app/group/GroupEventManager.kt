@@ -7,6 +7,9 @@ import com.torxone.app.data.ProcessedGroupEventEntity
 import com.torxone.app.identity.IdentityManager
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Immutable local audit log plus persistent control-event replay guard. */
 class GroupEventManager(
@@ -14,22 +17,28 @@ class GroupEventManager(
     private val identityManager: IdentityManager
 ) {
     data class SignedEvent(val eventId: String, val groupVersion: Long, val json: JSONObject)
+    private val groupVersionLocks = ConcurrentHashMap<String, Mutex>()
 
     suspend fun createLocalEvent(groupId: String, type: String, targetKey: String? = null, keyVersion: Int = 0, payload: JSONObject = JSONObject()): SignedEvent? {
-        val identity = identityManager.loadIdentity() ?: return null
-        val actor = CryptoManager.toHex(identity.signingPublicKey)
-        val id = UUID.randomUUID().toString()
-        val version = db.groupEventDao().getLatestVersion(groupId) + 1
-        val body = canonical(id, groupId, type, actor, targetKey, version, keyVersion, payload)
-        val signature = CryptoManager.toHex(CryptoManager.sign(body.toByteArray(Charsets.UTF_8), identity.signingSecretKey))
-        val event = JSONObject().apply {
-            put("eventId", id); put("groupId", groupId); put("eventType", type)
-            put("actorKey", actor); if (targetKey != null) put("targetKey", targetKey)
-            put("groupVersion", version); put("keyVersion", keyVersion)
-            put("createdAt", System.currentTimeMillis()); put("payload", payload); put("signature", signature)
+        return groupVersionLocks.computeIfAbsent(groupId) { Mutex() }.withLock {
+            val identity = identityManager.loadIdentity() ?: return@withLock null
+            val actor = CryptoManager.toHex(identity.signingPublicKey)
+            val id = UUID.randomUUID().toString()
+            val version = db.groupEventDao().getLatestVersion(groupId) + 1
+            val body = canonical(id, groupId, type, actor, targetKey, version, keyVersion, payload)
+            val signature = CryptoManager.toHex(CryptoManager.sign(body.toByteArray(Charsets.UTF_8), identity.signingSecretKey))
+            val now = System.currentTimeMillis()
+            val event = JSONObject().apply {
+                put("eventId", id); put("groupId", groupId); put("eventType", type)
+                put("actorKey", actor); if (targetKey != null) put("targetKey", targetKey)
+                put("groupVersion", version); put("keyVersion", keyVersion)
+                put("createdAt", now); put("payload", payload); put("signature", signature)
+            }
+            val inserted = db.groupEventDao().insertEvent(
+                GroupEventEntity(id, groupId, type, actor, targetKey, version, keyVersion, now, payload.toString(), signature)
+            )
+            if (inserted <= 0L) null else SignedEvent(id, version, event)
         }
-        db.groupEventDao().insertEvent(GroupEventEntity(id, groupId, type, actor, targetKey, version, keyVersion, System.currentTimeMillis(), payload.toString(), signature))
-        return SignedEvent(id, version, event)
     }
 
     suspend fun recordLocal(groupId: String, type: String, targetKey: String? = null, keyVersion: Int = 0, payload: JSONObject = JSONObject()): String {

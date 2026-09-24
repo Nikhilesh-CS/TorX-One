@@ -256,10 +256,6 @@ class CallSignalingHandler(
         rawPayload: String,
         messageType: String
     ) = withContext(ioDispatcher) {
-        val agentInstance = agent ?: messageRouter.torXAgent
-        // If TorXAgent is active, persistence is handled by TorXAgent DeliveryQueueDao
-        if (agentInstance != null) return@withContext
-
         db?.callSignalingOutboxDao()?.insertSignal(
             CallSignalingOutboxEntity(
                 signalId = signalId,
@@ -403,6 +399,8 @@ class CallSignalingHandler(
 
     private suspend fun sendRawCallSignal(peerKey: String, rawText: String, messageType: String) {
         withContext(ioDispatcher) {
+            val logicalMessageId = runCatching { JSONObject(rawText).optString("signalId") }
+                .getOrNull()?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
             val agentInstance = agent ?: messageRouter.torXAgent
             if (agentInstance != null) {
                 val wire = messageRouter.buildEncryptedWireFrame(peerKey, rawText, messageType)
@@ -410,7 +408,7 @@ class CallSignalingHandler(
                     val envelopeType = com.torxone.app.agent.EnvelopeType.fromWireType(messageType)
                     agentInstance.queueForDelivery(
                         recipientKey = peerKey,
-                        messageId = UUID.randomUUID().toString(),
+                        messageId = logicalMessageId,
                         messageType = envelopeType,
                         encryptedPayload = wire
                     )
@@ -418,7 +416,18 @@ class CallSignalingHandler(
                     return@withContext
                 }
             }
-            messageRouter.sendRawPayload(peerKey, rawText, messageType)
+            val fallback = messageRouter.sendRawPayload(peerKey, rawText, messageType)
+            if (fallback?.success != true) {
+                // OFFER/ANSWER/ICE/END are already in the durable signaling
+                // outbox. An immediate transport miss must not crash the call
+                // state machine (especially during teardown); the retry worker
+                // will deliver the same signalId when a route becomes available.
+                Log.w(
+                    TAG,
+                    "[CALL_SIG] Immediate delivery unavailable for $messageType; retained in outbox: " +
+                        (fallback?.error ?: "no transport result")
+                )
+            }
         }
     }
 }

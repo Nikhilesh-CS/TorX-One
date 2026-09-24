@@ -107,6 +107,10 @@ class SessionManager(
     private suspend fun decryptLocked(normalizedSender: String, json: JSONObject): DecryptedResult {
         val id = identity ?: throw IllegalStateException("Identity not available")
         val mySigKeyHex = CryptoManager.toHex(id.signingPublicKey)
+        val schemaVersion = json.getInt("schemaVersion")
+        if (schemaVersion != SCHEMA_VERSION) {
+            throw SecurityException("Unsupported session schema version: $schemaVersion")
+        }
         val to = json.optString("to", "").trim().lowercase()
         if (to != mySigKeyHex) throw SecurityException("Message addressed to another identity ($to)")
         val sessionId = json.getString("sessionId")
@@ -117,19 +121,17 @@ class SessionManager(
         val ivBase64 = json.getString("iv")
         val signatureHex = json.getString("signature")
         val fromEnc = json.optString("fromEnc", "")
-        val timestamp = json.optLong("timestamp", 0L)
-        if (timestamp > 0L && Math.abs(System.currentTimeMillis() - timestamp) > MAX_TIMESTAMP_DRIFT_MS) throw SecurityException("Message timestamp drift rejected")
+        val timestamp = json.getLong("timestamp")
+        if (timestamp <= 0L || timestamp > System.currentTimeMillis() + MAX_TIMESTAMP_DRIFT_MS) {
+            throw SecurityException("Message timestamp rejected")
+        }
         val senderEncPubHex = if (fromEnc.isNotBlank()) fromEnc else contactDao?.getContact(normalizedSender)?.encryptionPublicKey ?: ""
         if (senderEncPubHex.isBlank()) throw SecurityException("Missing sender encryption public key")
         val senderSigPub = CryptoManager.fromHexOrNull(normalizedSender, 32) ?: throw SecurityException("Invalid sender signing key format")
         val signatureBytes = CryptoManager.fromHexOrNull(signatureHex, 64) ?: throw SecurityException("Invalid signature format")
         val signatureBodyWithTs = buildSignatureBody(normalizedSender, senderEncPubHex, mySigKeyHex, innerType, sessionId, msgNum, remoteRatchetPubHex, ciphertextBase64, ivBase64, timestamp)
         if (!CryptoManager.verify(signatureBodyWithTs, signatureBytes, senderSigPub)) {
-            val signatureBodyNoTs = buildSignatureBody(normalizedSender, senderEncPubHex, mySigKeyHex, innerType, sessionId, msgNum, remoteRatchetPubHex, ciphertextBase64, ivBase64, 0L)
-            if (!CryptoManager.verify(signatureBodyNoTs, signatureBytes, senderSigPub)) {
-                val legacyBody = "$normalizedSender|$mySigKeyHex|$innerType|$sessionId|$msgNum|$remoteRatchetPubHex|$ciphertextBase64|$ivBase64".toByteArray(Charsets.UTF_8)
-                if (!CryptoManager.verify(legacyBody, signatureBytes, senderSigPub)) throw SecurityException("Digital signature verification failed for session message")
-            }
+            throw SecurityException("Digital signature verification failed for session message")
         }
 
         // 3. Retrieve or Initialize Responder Session (Two-Slot in-flight safe arbitration)
@@ -228,11 +230,12 @@ class SessionManager(
                 updatedRecvChain = nextRecvChain
                 updatedRecvCount = working.recvMsgCount + 1
             }
-            val plaintext = try {
-                SessionCipher.decrypt(messageKey.clone(), ciphertextBase64, ivBase64, SessionCipher.buildAad(sessionId, msgNum, normalizedSender, mySigKeyHex, timestamp))
-            } catch (e: Exception) {
-                SessionCipher.decrypt(messageKey, ciphertextBase64, ivBase64, SessionCipher.buildAad(sessionId, msgNum, normalizedSender, mySigKeyHex, 0L))
-            }
+            val plaintext = SessionCipher.decrypt(
+                messageKey,
+                ciphertextBase64,
+                ivBase64,
+                SessionCipher.buildAad(sessionId, msgNum, normalizedSender, mySigKeyHex, timestamp)
+            )
             return Pair(plaintext, working.copy(recvChainKeyHex = CryptoManager.toHex(updatedRecvChain), recvMsgCount = updatedRecvCount, lastActiveAt = System.currentTimeMillis()))
         }
         val firstSession = session

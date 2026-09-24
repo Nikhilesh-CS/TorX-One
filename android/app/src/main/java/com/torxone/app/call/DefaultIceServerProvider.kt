@@ -7,12 +7,11 @@ import org.webrtc.PeerConnection
  * Provides ICE servers for WebRTC peer connections.
  *
  * Phase 5 Security Change:
- * - Removed all Google STUN servers (stun.l.google.com) which leaked the user's
- *   public IP address, ISP, and call timing to Google on every call attempt.
+ * Public STUN is used only when the selected privacy policy permits srflx
+ * candidates. No shared public TURN credential is shipped in production code.
  * - ICE server list is now controlled by CallPrivacyPolicy:
- *   - NORMAL: TURN relay available for NAT traversal.
- *   - PRIVACY: TURN relay preferred, direct P2P limited.
- *   - STRICT: Relay-only mode, no host/srflx candidates.
+ *   - NORMAL/PRIVACY: policy-controlled host/srflx candidates.
+ *   - STRICT: requires a separately provisioned authenticated TURN service.
  *
  * TODO (Phase 6): Fetch temporary TURN credentials from an authenticated TorX backend.
  */
@@ -27,21 +26,9 @@ class DefaultIceServerProvider(
     override suspend fun getIceServers(): List<PeerConnection.IceServer> {
         val servers = mutableListOf<PeerConnection.IceServer>()
 
-        // Only add TURN relay servers when relay candidates are permitted
-        if (privacyPolicy.allowRelayCandidates) {
-            servers.add(
-                PeerConnection.IceServer.builder("turn:openrelay.metered.ca:80")
-                    .setUsername("openrelayproject")
-                    .setPassword("openrelayproject")
-                    .createIceServer()
-            )
-            servers.add(
-                PeerConnection.IceServer.builder("turn:openrelay.metered.ca:443")
-                    .setUsername("openrelayproject")
-                    .setPassword("openrelayproject")
-                    .createIceServer()
-            )
-        }
+        // TURN must use short-lived credentials provisioned by a trusted TorX
+        // backend. Shipping public demo credentials silently relays call metadata
+        // through an uncontrolled third party and is intentionally forbidden.
 
         // STUN configuration based on privacy policy:
         // Documented trade-off: in NORMAL & PRIVACY modes, public STUN servers provide
