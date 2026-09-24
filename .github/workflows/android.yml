@@ -28,7 +28,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: set up JDK 17
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v6
       with:
         java-version: '17'
         distribution: 'temurin'
@@ -71,7 +71,7 @@ jobs:
       TORXONE_RELEASE_CERT_SHA256: ${{ secrets.TORXONE_RELEASE_CERT_SHA256 }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-java@v4
+    - uses: actions/setup-java@v6
       with:
         java-version: '17'
         distribution: 'temurin'
