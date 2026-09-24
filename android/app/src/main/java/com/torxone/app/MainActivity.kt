@@ -399,7 +399,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                                 db = service.db,
                                 nearbyManager = service.nearbyManager,
                                 messageRouter = service.messageRouter,
-                                mediaTransferManager = service.mediaTransferManager
+                                mediaTransferManager = service.mediaTransferManager,
+                                chatMessageService = service.chatMessageService
                             )
                         }
                         composable("contact_profile/{contactKey}") { backStackEntry ->

@@ -15,6 +15,7 @@ import com.torxone.app.network.SendResult
 import com.torxone.app.network.Transport
 import com.torxone.app.security.session.SessionCryptoService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -26,7 +27,7 @@ import java.util.UUID
  *
  * Dedicated service that encapsulates:
  * 1. Chat message creation, persistent DB insertion, and state transitions
- * 2. Cryptographic session encryption (Double Ratchet with legacy fallback)
+ * 2. Cryptographic session encryption (fail closed when unavailable)
  * 3. Group chat encryption and pairwise member queue distribution
  * 4. Reaction & poll vote operations
  *
@@ -100,22 +101,18 @@ class ChatMessageService(
 
         val sessionPayload = try {
             sessionCryptoService?.encrypt(contact, wireText, MeshProtocol.TYPE_MSG, messageId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.w(TAG, "[SEND] Session encryption error, falling back to legacy: ${e.message}")
+            Log.w(TAG, "[SEND] Session encryption unavailable", e)
             null
         }
 
-        val legacyPayload = if (sessionPayload == null) {
-            buildEncryptedPayload(identity, contact, wireText)
-                ?: run {
-                    db.messageDao().updateMessageStatus(messageId, "failed")
-                    return@withContext SendResult(false, Transport.FAILED, "Encryption failed")
-                }
-        } else null
-
-        val myOnion = onionAddressProvider()
-        val wireJson = sessionPayload?.wireJsonString
-            ?: MeshProtocol.encodeDirectMessage(legacyPayload!!, messageId, myOnion, MeshProtocol.TYPE_MSG)
+        if (sessionPayload == null) {
+            db.messageDao().updateMessageStatus(messageId, "failed")
+            return@withContext SendResult(false, Transport.FAILED, "SESSION_NOT_READY")
+        }
+        val wireJson = sessionPayload.wireJsonString
 
         torXAgent.queueForDelivery(
             recipientKey = contactKey,
@@ -259,7 +256,10 @@ class ChatMessageService(
         // 1. Try Double Ratchet session encryption
         val sessionPayload = try {
             sessionCryptoService?.encrypt(contact, rawText, messageType, messageId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            Log.w(TAG, "[SEND] Session encryption unavailable", e)
             null
         }
 
@@ -267,10 +267,8 @@ class ChatMessageService(
             return@withContext sessionPayload.wireJsonString
         }
 
-        // 2. Fallback to legacy asymmetric curve25519 payload
-        val payload = buildEncryptedPayload(identity, contact, rawText) ?: return@withContext null
-        val myOnion = onionAddressProvider()
-        MeshProtocol.encodeDirectMessage(payload, messageId, myOnion, messageType)
+        // Never silently downgrade a failed session to the legacy cipher.
+        null
     }
 
     suspend fun toggleReaction(contactKey: String, targetMessageId: String, emoji: String): SendResult = withContext(Dispatchers.IO) {

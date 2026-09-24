@@ -365,7 +365,9 @@ function handleMessage(ws, senderPubKey, msg) {
   }
 
   // Acknowledge receipt to sender
-  send(ws, { type: 'sent', id: envelope.id });
+  // Sender request ID is distinct from the relay's stored-message ID.
+  // Echo it exactly; clients must never guess which concurrent send was accepted.
+  send(ws, { type: 'sent', id: msg.id || envelope.id });
 }
 
 // ─── Queue Flush ─────────────────────────────────────────────────────────────

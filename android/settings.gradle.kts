@@ -18,9 +18,11 @@ dependencyResolutionManagement {
 rootProject.name = "TorX One"
 include(":app")
 
-// Keep Gradle intermediates out of the OneDrive-synchronised working tree.
-// Windows/OneDrive can otherwise hold packaging files open during release builds.
-val localBuildRoot = File(System.getenv("LOCALAPPDATA"), "TorXOneGradleBuild")
-gradle.beforeProject {
-    layout.buildDirectory.set(localBuildRoot.resolve(name))
+// Use standard project-local outputs by default. Synced-folder users can opt into
+// an external directory without forcing every checkout to share an AppData cache.
+val externalBuildRoot = System.getenv("TORXONE_BUILD_ROOT")?.takeIf { it.isNotBlank() }
+if (externalBuildRoot != null) {
+    gradle.beforeProject {
+        layout.buildDirectory.set(File(externalBuildRoot).resolve(name))
+    }
 }

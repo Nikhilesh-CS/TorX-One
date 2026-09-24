@@ -73,6 +73,32 @@ class ChatMessageServiceTest {
     }
 
     @Test
+    fun sessionFailureDoesNotQueueLegacyCiphertext() = runTest(testDispatcher) {
+        whenever(contactDao.getContact(peerKey)).thenReturn(peerContact)
+        whenever(sessionCryptoService.encrypt(eq(peerContact), any(), eq(MeshProtocol.TYPE_MSG), any()))
+            .thenThrow(IllegalStateException("session unavailable"))
+
+        val result = chatMessageService.sendMessage(peerKey, "Must not downgrade")
+
+        org.junit.Assert.assertFalse(result.success)
+        assertEquals("SESSION_NOT_READY", result.error)
+        verify(messageDao).updateMessageStatus(any(), eq("failed"), anyOrNull())
+        verifyNoInteractions(torXAgent)
+    }
+
+    @Test
+    fun rawPayloadSessionFailureDoesNotQueueLegacyCiphertext() = runTest(testDispatcher) {
+        whenever(contactDao.getContact(peerKey)).thenReturn(peerContact)
+        whenever(sessionCryptoService.encrypt(eq(peerContact), any(), eq(MeshProtocol.TYPE_PRESENCE), any()))
+            .thenThrow(IllegalStateException("session unavailable"))
+
+        val result = chatMessageService.sendRawPayload(peerKey, "presence", MeshProtocol.TYPE_PRESENCE)
+
+        org.junit.Assert.assertFalse(result.success)
+        verifyNoInteractions(torXAgent)
+    }
+
+    @Test
     fun testSendMessageQueuesDirectlyInTorXAgent() = runTest(testDispatcher) {
         whenever(contactDao.getContact(peerKey)).thenReturn(peerContact)
         val mockWireJson = "{\"type\":\"session_msg\",\"ciphertext\":\"abc\"}"

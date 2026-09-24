@@ -196,12 +196,13 @@ fun ChatScreen(
     db: AppDatabase,
     nearbyManager: NearbyConnectionManager,
     messageRouter: MessageRouter,
-    mediaTransferManager: MediaTransferManager
+    mediaTransferManager: MediaTransferManager,
+    chatMessageService: com.torxone.app.service.ChatMessageService
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val viewModel = remember(contactKey, conversationType) { ChatViewModel(contactKey, conversationType, db, messageRouter) }
+    val viewModel = remember(contactKey, conversationType, chatMessageService) { ChatViewModel(contactKey, conversationType, db, messageRouter, chatMessageService) }
 
     DisposableEffect(contactKey, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->

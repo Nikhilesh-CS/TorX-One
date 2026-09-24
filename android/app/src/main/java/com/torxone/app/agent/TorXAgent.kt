@@ -1,6 +1,7 @@
 package com.torxone.app.agent
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.torxone.app.crypto.CryptoManager
 import com.torxone.app.crypto.Identity
 import com.torxone.app.data.AppDatabase
@@ -126,53 +127,48 @@ class TorXAgent(
     ): String {
         val normalizedKey = recipientKey.trim().lowercase()
 
-        // Ensure connection exists via ConnectionManager
-        val connection = connectionManager.getOrCreateConnection(normalizedKey)
-        val seq = connectionManager.nextSendSequence(connection.connectionId)
+        // Sequence allocation and outbox insertion must commit or roll back together.
+        val entity = db.withTransaction {
+            val localKey = identityProvider?.invoke()?.signingPublicKey?.let(CryptoManager::toHex).orEmpty()
+            val connection = connectionManager.getOrCreateConnection(normalizedKey, localKey)
+            val seq = connection.lastSendSeq + 1
+            db.connectionQueueDao().updateSendSeq(connection.connectionId, seq)
+            val now = System.currentTimeMillis()
+            // lastCommittedHash belongs to the receive direction; never use it here.
+            val prevHash = deliveryQueueDao.getLatestEnvelopeHash(connection.connectionId, connection.sendQueueId)
+            val wireType = EnvelopeType.toWireType(messageType)
+            val currentHash = com.torxone.app.protocol.ProtocolEnvelope.computeEnvelopeHash(
+                previousHash = prevHash,
+                connectionId = connection.connectionId,
+                queueId = connection.sendQueueId,
+                sequenceNumber = seq,
+                messageType = wireType,
+                ciphertext = encryptedPayload
+            )
+            DeliveryQueueEntity(
+                envelopeId = UUID.randomUUID().toString(),
+                connectionId = connection.connectionId,
+                messageId = messageId,
+                queueId = connection.sendQueueId,
+                sequenceNumber = seq,
+                previousMessageHash = prevHash,
+                envelopeHash = currentHash,
+                messageType = wireType,
+                encryptedPayload = encryptedPayload,
+                state = "QUEUED",
+                createdAt = now,
+                nextRetryAt = now,
+                expiresAt = now + MessageEnvelope.DEFAULT_TTL_MS,
+                recipientKey = normalizedKey
+            ).also { deliveryQueueDao.insert(it) }
+        }
 
-        // Generate envelope
-        val envelopeId = UUID.randomUUID().toString()
-        val now = System.currentTimeMillis()
-
-        // Compute genuine cryptographic hash chain: H(previousHash || connectionId || queueId || sequenceNumber || messageType || ciphertext)
-        val prevHash = deliveryQueueDao.getLatestEnvelopeHash(connection.connectionId, connection.sendQueueId)
-            ?: connection.lastCommittedHash
-        val wireType = EnvelopeType.toWireType(messageType)
-        val currentHash = com.torxone.app.protocol.ProtocolEnvelope.computeEnvelopeHash(
-            previousHash = prevHash,
-            connectionId = connection.connectionId,
-            queueId = connection.sendQueueId,
-            sequenceNumber = seq,
-            messageType = wireType,
-            ciphertext = encryptedPayload
-        )
-
-        val entity = DeliveryQueueEntity(
-            envelopeId = envelopeId,
-            connectionId = connection.connectionId,
-            messageId = messageId,
-            queueId = connection.sendQueueId,
-            sequenceNumber = seq,
-            previousMessageHash = prevHash,
-            envelopeHash = currentHash,
-            messageType = wireType,
-            encryptedPayload = encryptedPayload,
-            state = "QUEUED",
-            createdAt = now,
-            nextRetryAt = now, // Immediate first attempt
-            expiresAt = now + MessageEnvelope.DEFAULT_TTL_MS,
-            recipientKey = normalizedKey
-        )
-
-        // Persist BEFORE any send attempt (crash-safe invariant)
-        deliveryQueueDao.insert(entity)
-
-        Log.i(TAG, "[QUEUE] envelopeId=$envelopeId msgId=$messageId type=${messageType.name} seq=$seq → $normalizedKey")
+        Log.i(TAG, "[QUEUE] envelopeId=${entity.envelopeId} msgId=$messageId type=${messageType.name} seq=${entity.sequenceNumber}")
 
         // Attempt immediate delivery
         scope.launch { attemptDelivery(entity) }
 
-        return envelopeId
+        return entity.envelopeId
     }
 
     // ──────────────────────── INCOMING ────────────────────────

@@ -15,7 +15,8 @@ class ChatViewModel(
     val contactKey: String,
     val conversationType: String,
     private val db: AppDatabase,
-    private val messageRouter: MessageRouter
+    private val messageRouter: MessageRouter,
+    private val chatMessageService: com.torxone.app.service.ChatMessageService
 ) : ViewModel() {
 
     val conversationEngine = ConversationEngine()
@@ -172,9 +173,9 @@ class ChatViewModel(
                 conversationEngine.messages.value.firstOrNull { it.id == id }
             }
             if (conversationType == "group") {
-                messageRouter.sendGroupMessage(contactKey, text, replyToId)
+                chatMessageService.sendGroupMessage(contactKey, text, replyToId)
             } else {
-                val result = messageRouter.sendMessage(
+                val result = chatMessageService.sendMessage(
                     contactKey = contactKey,
                     text = text,
                     replyToId = replyTarget?.id,

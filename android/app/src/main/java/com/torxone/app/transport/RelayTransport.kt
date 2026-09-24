@@ -143,7 +143,8 @@ class RelayTransport(
             return TransportResult.failure(type, "Relay not connected")
         }
 
-        val sendId = metadata?.envelopeId ?: UUID.randomUUID().toString()
+        // Correlate a single attempt, including concurrent retries of one envelope.
+        val sendId = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<Boolean>()
         pendingAcks[sendId] = deferred
 
@@ -153,6 +154,7 @@ class RelayTransport(
             val targetQueue = destination.trim()
             val msg = JSONObject().apply {
                 put("type", "message")
+                put("id", sendId)
                 put("queueId", targetQueue)
                 put("to", targetQueue) // backward compatibility with legacy relay inspect
                 put("payload", payload)
@@ -178,6 +180,8 @@ class RelayTransport(
             } else {
                 TransportResult.failure(type, "Relay ack timeout (${ACK_TIMEOUT_MS}ms)")
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "[SEND] Error sending via relay: ${e.message}", e)
             TransportResult.failure(type, e.message ?: "Relay send error")
@@ -298,7 +302,6 @@ class RelayTransport(
                 Log.d(TAG, "[WS] Message send acknowledged by relay: $id")
                 // Complete any pending send waiting for ack
                 pendingAcks.remove(id)?.complete(true)
-                    ?: pendingAcks.values.firstOrNull()?.complete(true)
             }
             "error" -> {
                 val errorMsg = json.optString("message", "Unknown relay error")
