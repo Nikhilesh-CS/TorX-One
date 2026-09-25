@@ -82,9 +82,15 @@ class TorXAgent(
 
     /**
      * Trigger immediate retry (e.g. when Nearby connects).
+     * Resets waiting retry items so they transmit immediately without waiting for backoff timers.
      */
     fun triggerImmediateRetry() {
-        sendSignal.trySend(Unit)
+        scope.launch {
+            try {
+                recoverStaleOutboxItems()
+            } catch (_: Exception) {}
+            sendSignal.trySend(Unit)
+        }
     }
 
     /**
@@ -109,8 +115,10 @@ class TorXAgent(
             val now = System.currentTimeMillis()
             for (item in pending) {
                 if (item.status == DeliveryStatus.TRANSMITTING ||
+                    item.status == DeliveryStatus.RETRY_WAIT ||
                     (item.status == DeliveryStatus.TRANSPORT_ACCEPTED && now - item.updatedAt > baseRetryDelayMs)
                 ) {
+                    outboxStore.updateRetry(item.deliveryId, item.attemptCount, now)
                     outboxStore.updateStatus(item.deliveryId, DeliveryStatus.QUEUED)
                 }
             }

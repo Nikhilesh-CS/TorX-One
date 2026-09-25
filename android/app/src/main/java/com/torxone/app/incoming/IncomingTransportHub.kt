@@ -5,10 +5,10 @@ import com.torxone.app.transport.TransportType
 /**
  * Single incoming funnel for all transports.
  */
-class IncomingTransportHub(
-    var dispatcher: IncomingDispatcher
+open class IncomingTransportHub(
+    var dispatcher: IncomingDispatcher? = null
 ) {
-    suspend fun onRawFrameReceived(rawBytes: ByteArray, transportType: TransportType): Boolean {
-        return dispatcher.dispatch(rawBytes, transportType)
+    open suspend fun onRawFrameReceived(rawBytes: ByteArray, transportType: TransportType): Boolean {
+        return dispatcher?.dispatch(rawBytes, transportType) ?: false
     }
 }

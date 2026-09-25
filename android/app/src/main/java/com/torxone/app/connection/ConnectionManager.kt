@@ -76,6 +76,10 @@ class ConnectionManager {
         return connectionsBySendQueue[sendQueueId]
     }
 
+    fun getAllActiveConnections(): List<Connection> {
+        return connectionsByRelationship.values.toList()
+    }
+
     fun closeConnection(relationshipId: String) {
         val conn = connectionsByRelationship.remove(relationshipId) ?: return
         connectionsByRecvQueue.remove(conn.recvQueueId)

@@ -123,7 +123,12 @@ class TorXOneApplication : Application() {
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
         // 8. Nearby Transport
-        nearbyTransport = NearbyTransport(this, incomingTransportHub)
+        nearbyTransport = NearbyTransport(
+            context = this,
+            incomingTransportHub = incomingTransportHub,
+            connectionManager = connectionManager,
+            agent = agent
+        )
         transportRouter.registerTransport(nearbyTransport)
 
         // 9. Chat Feature Service
