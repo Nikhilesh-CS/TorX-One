@@ -83,7 +83,7 @@ interface ContactDao {
 
 @Dao
 interface OutboxDao {
-    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY created_at ASC")
+    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY priority DESC, created_at ASC")
     suspend fun getPending(now: Long = System.currentTimeMillis()): List<OutboxEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -140,6 +140,9 @@ interface ConnectionDao {
     @Query("SELECT * FROM connections WHERE send_queue_id = :sendQueueId")
     suspend fun getBySendQueue(sendQueueId: String): ConnectionDbEntity?
 
+    @Query("SELECT * FROM connections WHERE state = 'ACTIVE'")
+    suspend fun getAllActive(): List<ConnectionDbEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(connection: ConnectionDbEntity)
 
@@ -175,5 +178,23 @@ interface SkippedKeyDao {
 
     @Query("DELETE FROM skipped_message_keys WHERE session_id = :sessionId")
     suspend fun deleteKeysForSession(sessionId: String)
+}
+
+@Dao
+interface PendingInviteDao {
+    @Query("SELECT * FROM pending_invites WHERE invite_id = :inviteId")
+    suspend fun getById(inviteId: String): PendingInviteEntity?
+
+    @Query("SELECT * FROM pending_invites WHERE ephemeral_public_key = :publicKey")
+    suspend fun getByPublicKey(publicKey: ByteArray): PendingInviteEntity?
+
+    @Query("SELECT * FROM pending_invites ORDER BY created_at DESC LIMIT 1")
+    suspend fun getLatest(): PendingInviteEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(invite: PendingInviteEntity)
+
+    @Query("DELETE FROM pending_invites WHERE invite_id = :inviteId")
+    suspend fun delete(inviteId: String)
 }
 

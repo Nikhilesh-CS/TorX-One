@@ -27,7 +27,8 @@ class ContactsViewModel(
     private val database: TorXDatabase,
     private val identityRepository: IdentityRepository,
     private val sessionCrypto: SessionCrypto,
-    private val connectionManager: ConnectionManager
+    private val connectionManager: ConnectionManager,
+    private val agent: com.torxone.app.agent.TorXAgent? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -148,14 +149,13 @@ class ContactsViewModel(
                 database.connectionDao().upsert(connectionDbEntity)
 
                 // 4. Initialize Double Ratchet session
-                val localRatchetPair = IdentityCrypto.generateX25519KeyPair()
                 sessionCrypto.initializeSession(
                     relationshipId = bootstrap.relationship.relationshipId,
                     sessionInitializationSecret = bootstrap.secrets.sessionInitializationSecret,
                     isInitiator = true,
                     remoteRatchetPublicKey = valid.invite.bootstrapEphemeralPublicKey,
-                    localRatchetPrivateKey = localRatchetPair.privateKey,
-                    localRatchetPublicKey = localRatchetPair.publicKey
+                    localRatchetPrivateKey = bootstrap.aliceEphemeralPrivateKey!!,
+                    localRatchetPublicKey = bootstrap.aliceEphemeralPublicKey
                 )
 
                 // 5. Create Conversation
@@ -166,6 +166,38 @@ class ContactsViewModel(
                     unreadCount = 0
                 )
                 database.conversationDao().upsert(conversationEntity)
+
+                // 6. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys (Phase 4 & 5)
+                val bootstrapSignedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
+                    inviteId = valid.invite.inviteId,
+                    displayName = localIdentity.displayName,
+                    signingPub = localIdentity.signingPublicKey,
+                    encryptionPub = localIdentity.encryptionPublicKey,
+                    ephemeralPub = bootstrap.aliceEphemeralPublicKey
+                )
+                val bootstrapSig = IdentityCrypto.signEd25519(localIdentity.signingPrivateKey, bootstrapSignedData)
+                val bootstrapWire = com.torxone.app.relationship.ContactBootstrapPayload(
+                    inviteId = valid.invite.inviteId,
+                    initiatorDisplayName = localIdentity.displayName,
+                    initiatorSigningPublicKey = localIdentity.signingPublicKey,
+                    initiatorEncryptionPublicKey = localIdentity.encryptionPublicKey,
+                    initiatorEphemeralPublicKey = bootstrap.aliceEphemeralPublicKey,
+                    signature = bootstrapSig
+                )
+
+                agent?.enqueue(
+                    com.torxone.app.agent.DeliveryItem(
+                        deliveryId = UUID.randomUUID().toString(),
+                        logicalMessageId = UUID.randomUUID().toString(),
+                        conversationId = conversationId,
+                        connectionId = connection.connectionId,
+                        queueAddress = "invite-${valid.invite.inviteId}",
+                        ciphertext = bootstrapWire.toByteArray(),
+                        queueAuthenticator = ByteArray(0),
+                        status = com.torxone.app.agent.DeliveryStatus.QUEUED,
+                        priority = com.torxone.app.agent.DeliveryPriority.HIGH
+                    )
+                )
 
                 _uiState.update { it.copy(pendingInviteValidation = null) }
                 onComplete(conversationId)

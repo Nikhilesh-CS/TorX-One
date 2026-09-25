@@ -20,6 +20,7 @@ import com.torxone.app.identity.KeystoreIdentityRepository
 import com.torxone.app.incoming.*
 import com.torxone.app.transport.TransportRouter
 import com.torxone.app.transport.nearby.NearbyTransport
+import androidx.room.withTransaction
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -68,14 +69,17 @@ class TorXOneApplication : Application() {
         database = TorXDatabase.getInstance(this)
 
         // 2. Keystore / Identity
-        identityRepository = KeystoreIdentityRepository(this)
+        identityRepository = KeystoreIdentityRepository(this, database.pendingInviteDao())
 
         // 3. Crypto / Session
         val sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao())
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 
-        // 4. Connection Manager & Active Conversation Tracker
+        // 4. Connection Manager & Active Conversation Tracker (Restore persisted connections, Section 6)
         connectionManager = ConnectionManager()
+        runBlocking {
+            connectionManager.restoreFromDatabase(database.connectionDao())
+        }
         activeConversationTracker = ActiveConversationTracker()
 
         // 5. Transport Router
@@ -108,7 +112,13 @@ class TorXOneApplication : Application() {
             agent = agent,
             localIdentityIdProvider = {
                 runBlocking { identityRepository.loadIdentity()?.identityId }
-            }
+            },
+            transactionRunner = { block -> database.withTransaction { block() } },
+            pendingInviteDao = database.pendingInviteDao(),
+            identityRepository = identityRepository,
+            connectionDao = database.connectionDao(),
+            contactDao = database.contactDao(),
+            conversationDao = database.conversationDao()
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 

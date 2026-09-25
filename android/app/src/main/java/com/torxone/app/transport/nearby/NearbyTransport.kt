@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import com.torxone.app.incoming.IncomingTransportHub
+import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.transport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
@@ -18,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Enforces critical invariant:
  * connectionsClient.sendPayload() does NOT equal success.
  * Only PayloadTransferUpdate.Status.SUCCESS completes the send as TransportResult.Accepted!
+ *
+ * Fully supports multi-peer full-duplex exact destination routing (Phase 14 & 15).
  */
 class NearbyTransport(
     private val context: Context,
@@ -39,14 +42,29 @@ class NearbyTransport(
     private val connectedEndpoints = ConcurrentHashMap.newKeySet<String>()
     private val pendingTransfers = ConcurrentHashMap<Long, CompletableDeferred<TransportResult>>()
 
+    // Directional queue address to Nearby endpointId routing map (Phase 15)
+    private val queueToEndpointMap = ConcurrentHashMap<String, String>()
+    private val endpointToQueuesMap = ConcurrentHashMap<String, MutableSet<String>>()
+
     private val _availability = MutableStateFlow<TransportAvailability>(TransportAvailability.Unavailable("Not started"))
     override fun availability(): Flow<TransportAvailability> = _availability.asStateFlow()
+
+    fun bindQueueToEndpoint(queueAddress: String, endpointId: String) {
+        queueToEndpointMap[queueAddress] = endpointId
+        endpointToQueuesMap.computeIfAbsent(endpointId) { ConcurrentHashMap.newKeySet() }.add(queueAddress)
+        Log.d(TAG, "[ROUTING] Bound queue ${queueAddress.take(8)} -> endpoint $endpointId")
+    }
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type == Payload.Type.BYTES) {
                 val bytes = payload.asBytes() ?: return
                 Log.d(TAG, "[RX] Received ${bytes.size} bytes from endpoint $endpointId")
+                try {
+                    val envelope = ProtocolCodec.decodeTransportEnvelope(bytes)
+                    bindQueueToEndpoint(envelope.queueAddress, endpointId)
+                } catch (_: Exception) {}
+
                 scope.launch {
                     incomingTransportHub.onRawFrameReceived(bytes, TransportType.NEARBY)
                 }
@@ -93,6 +111,8 @@ class NearbyTransport(
         override fun onDisconnected(endpointId: String) {
             Log.i(TAG, "Disconnected from endpoint: $endpointId")
             connectedEndpoints.remove(endpointId)
+            val queues = endpointToQueuesMap.remove(endpointId)
+            queues?.forEach { queueToEndpointMap.remove(it) }
             updateAvailability()
         }
     }
@@ -142,6 +162,8 @@ class NearbyTransport(
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
         connectedEndpoints.clear()
+        queueToEndpointMap.clear()
+        endpointToQueuesMap.clear()
         updateAvailability()
     }
 
@@ -149,8 +171,20 @@ class NearbyTransport(
         destination: TransportDestination,
         payload: ByteArray
     ): TransportResult {
-        val targetEndpoint = connectedEndpoints.firstOrNull()
-            ?: return TransportResult.Failed(type, "No Nearby endpoints currently connected")
+        // Resolve exact target endpoint by queueAddress (Phase 15)
+        val targetEndpoint = queueToEndpointMap[destination.address]
+            ?: if (connectedEndpoints.size == 1) {
+                val single = connectedEndpoints.first()
+                bindQueueToEndpoint(destination.address, single)
+                single
+            } else if (connectedEndpoints.isEmpty()) {
+                return TransportResult.Failed(type, "No Nearby endpoints currently connected")
+            } else {
+                return TransportResult.Failed(
+                    type,
+                    "Destination queue ${destination.address.take(8)} is not mapped to any connected peer (${connectedEndpoints.size} endpoints connected)"
+                )
+            }
 
         val nearbyPayload = Payload.fromBytes(payload)
         val deferred = CompletableDeferred<TransportResult>()

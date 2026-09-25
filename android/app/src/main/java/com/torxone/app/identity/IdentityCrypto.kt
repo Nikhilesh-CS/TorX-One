@@ -147,4 +147,34 @@ object IdentityCrypto {
         val hex = digest.joinToString("") { "%02X".format(it) }
         return hex.chunked(4).take(8).joinToString(" ")
     }
+
+    /**
+     * Compute HMAC-SHA256 using BouncyCastle.
+     */
+    fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
+        val hmac = org.bouncycastle.crypto.macs.HMac(org.bouncycastle.crypto.digests.SHA256Digest())
+        hmac.init(KeyParameter(key))
+        hmac.update(data, 0, data.size)
+        val out = ByteArray(hmac.macSize)
+        hmac.doFinal(out, 0)
+        return out
+    }
+
+    /**
+     * Compute queue capability MAC:
+     * HMAC(queueAuthSecret, envelopeId || queueAddress || SHA256(ciphertext))
+     */
+    fun computeQueueAuthenticator(
+        queueAuthSecret: ByteArray,
+        envelopeId: String,
+        queueAddress: String,
+        ciphertext: ByteArray
+    ): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        val ciphertextHash = md.digest(ciphertext)
+        val payload = envelopeId.toByteArray(Charsets.UTF_8) +
+                queueAddress.toByteArray(Charsets.UTF_8) +
+                ciphertextHash
+        return hmacSha256(queueAuthSecret, payload)
+    }
 }

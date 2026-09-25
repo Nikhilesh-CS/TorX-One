@@ -58,7 +58,8 @@ class RoomSessionStore(
         )
         sessionDao.upsert(entity)
 
-        // Sync skipped keys
+        // Sync skipped keys: delete consumed/obsolete keys to prevent resurrection
+        skippedKeyDao.deleteKeysForSession(state.sessionId)
         val skippedList = state.skippedKeys.map { (keyId, mk) ->
             SkippedKeyEntity(
                 sessionId = state.sessionId,

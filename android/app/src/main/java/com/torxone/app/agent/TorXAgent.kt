@@ -1,6 +1,7 @@
 package com.torxone.app.agent
 
 import android.util.Log
+import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.protocol.OpaqueTransportEnvelope
 import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.transport.TransportDestination
@@ -163,13 +164,19 @@ class TorXAgent(
         outboxStore.updateStatus(item.deliveryId, DeliveryStatus.TRANSMITTING)
         emitUpdate(item.logicalMessageId, DeliveryStatus.TRANSMITTING)
 
-        // Build transport envelope
+        // Build transport envelope with cryptographic HMAC authenticator
+        val authenticator = IdentityCrypto.computeQueueAuthenticator(
+            queueAuthSecret = item.queueAuthenticator,
+            envelopeId = item.deliveryId,
+            queueAddress = item.queueAddress,
+            ciphertext = item.ciphertext
+        )
         val envelope = OpaqueTransportEnvelope(
             version = 1,
             envelopeId = item.deliveryId,
             queueAddress = item.queueAddress,
             opaqueCiphertext = item.ciphertext,
-            queueAuthenticator = item.queueAuthenticator
+            queueAuthenticator = authenticator
         )
         val rawPayload = ProtocolCodec.encodeTransportEnvelope(envelope)
         val destination = TransportDestination(address = item.queueAddress)

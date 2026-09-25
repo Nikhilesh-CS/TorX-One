@@ -40,7 +40,10 @@ data class SecureEnvelope(
     val groupMetadata: GroupEnvelopeMetadata? = null,
 
     /** Optional: message expiry */
-    val expiresAt: Long? = null
+    val expiresAt: Long? = null,
+
+    /** Directional sequence number (Phase 7 & 8) — independent for each peer direction */
+    val directionSequence: Long = 0L
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -110,6 +113,8 @@ enum class MessageType {
     READ_RECEIPT,
     TYPING_START,
     TYPING_STOP,
+    CONTACT_BOOTSTRAP,
+    CONTACT_BOOTSTRAP_ACK,
 
     // Reactions & edits
     REACTION,

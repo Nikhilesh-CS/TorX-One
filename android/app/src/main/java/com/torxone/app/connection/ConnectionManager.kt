@@ -1,5 +1,6 @@
 package com.torxone.app.connection
 
+import com.torxone.app.data.dao.ConnectionDao
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +24,44 @@ class ConnectionManager {
         connectionsByRecvQueue[connection.recvQueueId] = connection
         connectionsBySendQueue[connection.sendQueueId] = connection
         _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+    }
+
+    /**
+     * Restore persisted active connections from Room database on startup (Section 6).
+     */
+    suspend fun restoreFromDatabase(connectionDao: ConnectionDao) {
+        val activeEntities = connectionDao.getAllActive()
+        for (entity in activeEntities) {
+            registerConnection(
+                Connection(
+                    connectionId = entity.connectionId,
+                    relationshipId = entity.relationshipId,
+                    generation = entity.generation,
+                    sendQueueId = entity.sendQueueId,
+                    recvQueueId = entity.recvQueueId,
+                    sendAuth = entity.sendAuth,
+                    recvAuth = entity.recvAuth,
+                    sendSequence = entity.sendSequence,
+                    recvSequence = entity.recvSequence
+                )
+            )
+        }
+    }
+
+    fun incrementSendSequence(relationshipId: String): Long {
+        val conn = connectionsByRelationship[relationshipId] ?: return 0L
+        val nextSeq = conn.sendSequence + 1
+        val updated = conn.copy(sendSequence = nextSeq)
+        registerConnection(updated)
+        return nextSeq
+    }
+
+    fun updateRecvSequence(relationshipId: String, sequence: Long) {
+        val conn = connectionsByRelationship[relationshipId] ?: return
+        if (sequence > conn.recvSequence) {
+            val updated = conn.copy(recvSequence = sequence)
+            registerConnection(updated)
+        }
     }
 
     fun getConnectionByRelationship(relationshipId: String): Connection? {

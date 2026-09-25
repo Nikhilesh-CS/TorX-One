@@ -188,6 +188,9 @@ data class OutboxEntity(
     @ColumnInfo(name = "status")
     val status: String,
 
+    @ColumnInfo(name = "priority")
+    val priority: Int = 10,
+
     @ColumnInfo(name = "attempt_count")
     val attemptCount: Int = 0,
 
@@ -308,6 +311,12 @@ data class ConnectionDbEntity(
     @ColumnInfo(name = "state")
     val state: String = "ACTIVE",
 
+    @ColumnInfo(name = "send_sequence")
+    val sendSequence: Long = 0L,
+
+    @ColumnInfo(name = "recv_sequence")
+    val recvSequence: Long = 0L,
+
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()
 ) {
@@ -420,5 +429,36 @@ data class SkippedKeyEntity(
         result = 31 * result + counter
         return result
     }
+}
+
+/**
+ * Pending invite state stored locally by Bob when creating a contact QR invite.
+ * Persists the ephemeral bootstrap private key so Bob can compute 3DH responder keys (Section 4).
+ */
+@Entity(tableName = "pending_invites")
+data class PendingInviteEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "invite_id")
+    val inviteId: String,
+
+    @ColumnInfo(name = "ephemeral_public_key", typeAffinity = ColumnInfo.BLOB)
+    val ephemeralPublicKey: ByteArray,
+
+    @ColumnInfo(name = "ephemeral_private_key", typeAffinity = ColumnInfo.BLOB)
+    val ephemeralPrivateKey: ByteArray,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "expires_at")
+    val expiresAt: Long
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PendingInviteEntity) return false
+        return inviteId == other.inviteId
+    }
+
+    override fun hashCode(): Int = inviteId.hashCode()
 }
 

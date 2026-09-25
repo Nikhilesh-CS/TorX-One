@@ -20,7 +20,9 @@ object RelationshipService {
         val aliceToBobQueueId: String,
         val bobToAliceQueueId: String,
         val aliceSendAuth: ByteArray,
-        val bobSendAuth: ByteArray
+        val bobSendAuth: ByteArray,
+        val aliceEphemeralPublicKey: ByteArray,
+        val aliceEphemeralPrivateKey: ByteArray? = null
     )
 
     /**
@@ -81,8 +83,9 @@ object RelationshipService {
             invite.identitySigningPublicKey
         )
 
+        val relId = "rel-${bytesToHex(secrets.relationshipSecret.copyOfRange(0, 16))}"
         val relationship = PairRelationship(
-            relationshipId = UUID.randomUUID().toString(),
+            relationshipId = relId,
             localIdentityId = localIdentity.identityId,
             contactId = contactId,
             remoteDisplayName = invite.displayName,
@@ -101,7 +104,9 @@ object RelationshipService {
             aliceToBobQueueId = aToBQueue,
             bobToAliceQueueId = bToAQueue,
             aliceSendAuth = aSendAuth,
-            bobSendAuth = bSendAuth
+            bobSendAuth = bSendAuth,
+            aliceEphemeralPublicKey = aliceEphemeral.publicKey,
+            aliceEphemeralPrivateKey = aliceEphemeral.privateKey
         )
     }
 
@@ -156,8 +161,9 @@ object RelationshipService {
             localIdentity.signingPublicKey // P2 (Bob)
         )
 
+        val relId = "rel-${bytesToHex(secrets.relationshipSecret.copyOfRange(0, 16))}"
         val relationship = PairRelationship(
-            relationshipId = UUID.randomUUID().toString(),
+            relationshipId = relId,
             localIdentityId = localIdentity.identityId,
             contactId = contactId,
             remoteDisplayName = remoteDisplayName,
@@ -176,7 +182,8 @@ object RelationshipService {
             aliceToBobQueueId = aToBQueue,
             bobToAliceQueueId = bToAQueue,
             aliceSendAuth = aSendAuth,
-            bobSendAuth = bSendAuth
+            bobSendAuth = bSendAuth,
+            aliceEphemeralPublicKey = remoteEphemeralPublicKey
         )
     }
 

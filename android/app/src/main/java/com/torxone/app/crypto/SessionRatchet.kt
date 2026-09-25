@@ -212,31 +212,34 @@ object SessionRatchet {
         localRatchetPrivateKey: ByteArray,
         localRatchetPublicKey: ByteArray
     ): SessionState {
-        val state = SessionState(
+        val aToBSendChain = IdentityCrypto.hkdf(
+            ikm = sessionInitializationSecret,
+            info = "torx-ratchet-a2b-v1".toByteArray(Charsets.UTF_8),
+            outputLength = 32
+        )
+        val bToASendChain = IdentityCrypto.hkdf(
+            ikm = sessionInitializationSecret,
+            info = "torx-ratchet-b2a-v1".toByteArray(Charsets.UTF_8),
+            outputLength = 32
+        )
+        val initialRoot = IdentityCrypto.hkdf(
+            ikm = sessionInitializationSecret,
+            info = "torx-ratchet-root-v1".toByteArray(Charsets.UTF_8),
+            outputLength = 32
+        )
+
+        return SessionState(
             relationshipId = relationshipId,
-            rootKey = sessionInitializationSecret.copyOf(),
+            rootKey = initialRoot,
             localRatchetPrivateKey = localRatchetPrivateKey.copyOf(),
             localRatchetPublicKey = localRatchetPublicKey.copyOf(),
-            remoteRatchetPublicKey = if (isInitiator) remoteRatchetPublicKey.copyOf() else ByteArray(0),
-            sendChainKey = null,
-            recvChainKey = null,
+            remoteRatchetPublicKey = remoteRatchetPublicKey.copyOf(),
+            sendChainKey = if (isInitiator) aToBSendChain else bToASendChain,
+            recvChainKey = if (isInitiator) bToASendChain else aToBSendChain,
             sendMessageNumber = 0,
             receiveMessageNumber = 0,
             previousSendCount = 0
         )
-
-        if (isInitiator) {
-            // Initiator performs initial send DH step right away
-            val dhSecret = IdentityCrypto.diffieHellmanX25519(
-                localRatchetPrivateKey,
-                remoteRatchetPublicKey
-            )
-            val (newRoot, sendCk) = kdfRk(sessionInitializationSecret, dhSecret)
-            state.rootKey = newRoot
-            state.sendChainKey = sendCk
-        }
-
-        return state
     }
 
     private fun bytesToHex(bytes: ByteArray): String =

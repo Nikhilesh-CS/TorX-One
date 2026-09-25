@@ -5,20 +5,14 @@ import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.crypto.DoubleRatchetSessionCrypto
 import com.torxone.app.crypto.SessionState
 import com.torxone.app.crypto.SessionStore
-import com.torxone.app.data.dao.ConversationDao
-import com.torxone.app.data.dao.MessageDao
-import com.torxone.app.data.dao.OutboxDao
-import com.torxone.app.data.dao.ProcessedEnvelopeDao
-import com.torxone.app.data.entity.ConversationEntity
-import com.torxone.app.data.entity.MessageEntity
-import com.torxone.app.data.entity.OutboxEntity
-import com.torxone.app.data.entity.ProcessedEnvelopeEntity
-import com.torxone.app.identity.IdentityCrypto
-import com.torxone.app.identity.TorXIdentity
+import com.torxone.app.data.dao.*
+import com.torxone.app.data.entity.*
+import com.torxone.app.identity.*
 import com.torxone.app.incoming.*
 import com.torxone.app.protocol.MessageType
 import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.relationship.ContactBootstrapPayload
 import com.torxone.app.relationship.RelationshipService
 import com.torxone.app.transport.*
 import kotlinx.coroutines.*
@@ -160,6 +154,102 @@ class EndToEndPipelineTest {
         }
     }
 
+    class InMemoryConnectionDao : ConnectionDao {
+        val connections = ConcurrentHashMap<String, ConnectionDbEntity>()
+        override suspend fun getByRelationshipId(relationshipId: String): ConnectionDbEntity? =
+            connections.values.find { it.relationshipId == relationshipId }
+        override suspend fun getByRecvQueue(recvQueueId: String): ConnectionDbEntity? =
+            connections.values.find { it.recvQueueId == recvQueueId }
+        override suspend fun getBySendQueue(sendQueueId: String): ConnectionDbEntity? =
+            connections.values.find { it.sendQueueId == sendQueueId }
+        override suspend fun getAllActive(): List<ConnectionDbEntity> =
+            connections.values.filter { it.state == "ACTIVE" }
+        override suspend fun upsert(connection: ConnectionDbEntity) {
+            connections[connection.connectionId] = connection
+        }
+        override suspend fun updateState(connectionId: String, state: String) {
+            connections[connectionId]?.let { connections[connectionId] = it.copy(state = state) }
+        }
+    }
+
+    class InMemoryContactDao : ContactDao {
+        val contacts = ConcurrentHashMap<String, ContactEntity>()
+        override fun observeAll(): Flow<List<ContactEntity>> = flowOf(contacts.values.toList())
+        override suspend fun getById(id: String): ContactEntity? = contacts[id]
+        override suspend fun getByRelationshipId(relationshipId: String): ContactEntity? =
+            contacts.values.find { it.relationshipId == relationshipId }
+        override suspend fun getByConversationId(conversationId: String): ContactEntity? =
+            contacts.values.find { it.conversationId == conversationId }
+        override suspend fun getAll(): List<ContactEntity> = contacts.values.toList()
+        override suspend fun upsert(contact: ContactEntity) {
+            contacts[contact.contactId] = contact
+        }
+    }
+
+    class InMemoryPendingInviteDao : PendingInviteDao {
+        val invites = ConcurrentHashMap<String, PendingInviteEntity>()
+        override suspend fun getById(inviteId: String): PendingInviteEntity? = invites[inviteId]
+        override suspend fun getByPublicKey(publicKey: ByteArray): PendingInviteEntity? =
+            invites.values.find { java.util.Arrays.equals(it.ephemeralPublicKey, publicKey) }
+        override suspend fun getLatest(): PendingInviteEntity? =
+            invites.values.maxByOrNull { it.createdAt }
+        override suspend fun insert(invite: PendingInviteEntity) {
+            invites[invite.inviteId] = invite
+        }
+        override suspend fun delete(inviteId: String) {
+            invites.remove(inviteId)
+        }
+    }
+
+    class InMemoryIdentityRepository(
+        val identity: TorXIdentity,
+        val pendingInviteDao: PendingInviteDao
+    ) : IdentityRepository {
+        override suspend fun createIdentity(displayName: String): TorXIdentity = identity
+        override suspend fun loadIdentity(): TorXIdentity? = identity
+        override suspend fun sign(data: ByteArray): ByteArray =
+            IdentityCrypto.signEd25519(identity.signingPrivateKey, data)
+        override suspend fun createContactInvite(): ContactInviteV1 {
+            val ephemeralBootstrapPair = IdentityCrypto.generateX25519KeyPair()
+            val inviteId = UUID.randomUUID().toString()
+            val now = System.currentTimeMillis()
+            val expiresAt = now + (7 * 24 * 60 * 60 * 1000L)
+            val signedData = ContactInviteCodec.serializeForSigning(
+                protocolVersion = 1,
+                inviteId = inviteId,
+                displayName = identity.displayName,
+                signingPublicKey = identity.signingPublicKey,
+                encryptionPublicKey = identity.encryptionPublicKey,
+                bootstrapEphemeralPublicKey = ephemeralBootstrapPair.publicKey,
+                createdAt = now,
+                expiresAt = expiresAt
+            )
+            val signature = IdentityCrypto.signEd25519(identity.signingPrivateKey, signedData)
+            pendingInviteDao.insert(
+                PendingInviteEntity(
+                    inviteId = inviteId,
+                    ephemeralPublicKey = ephemeralBootstrapPair.publicKey,
+                    ephemeralPrivateKey = ephemeralBootstrapPair.privateKey,
+                    createdAt = now,
+                    expiresAt = expiresAt
+                )
+            )
+            return ContactInviteV1(
+                protocolVersion = 1,
+                inviteId = inviteId,
+                displayName = identity.displayName,
+                identitySigningPublicKey = identity.signingPublicKey,
+                identityEncryptionPublicKey = identity.encryptionPublicKey,
+                bootstrapEphemeralPublicKey = ephemeralBootstrapPair.publicKey,
+                createdAt = now,
+                expiresAt = expiresAt,
+                signature = signature
+            )
+        }
+        override suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray? =
+            pendingInviteDao.getById(inviteId)?.ephemeralPrivateKey
+    }
+
     class Node(val name: String) {
         val identity: TorXIdentity
         val messageDao = InMemoryMessageDao()
@@ -169,31 +259,19 @@ class EndToEndPipelineTest {
         val processedDao = InMemoryProcessedStore()
         val sessionStore = InMemorySessionStore()
         val sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
+        val connectionDao = InMemoryConnectionDao()
+        val contactDao = InMemoryContactDao()
+        val pendingInviteDao = InMemoryPendingInviteDao()
+        val identityRepo: InMemoryIdentityRepository
         val connectionManager = ConnectionManager()
         val activeTracker = ActiveConversationTracker()
         val transportRouter = TransportRouter()
         val fakeTransport = FakeTransport()
-        val agent = TorXAgent(
-            transportRouter = transportRouter,
-            outboxStore = outboxStore,
-            processedStore = processedDao,
-            coroutineDispatcher = Dispatchers.Default,
-            baseRetryDelayMs = 200L,
-            outboxPollIntervalMs = 50L
-        )
-
-        val chatReceiver = ChatReceiver(messageDao, conversationDao, activeTracker)
-        val receiptHandler = DeliveryReceiptHandler(messageDao, outboxDao, agent)
-        val dispatcher = IncomingDispatcher(
-            connectionManager = connectionManager,
-            sessionCrypto = sessionCrypto,
-            processedEnvelopeDao = processedDao,
-            chatReceiver = chatReceiver,
-            deliveryReceiptHandler = receiptHandler,
-            agent = agent,
-            localIdentityIdProvider = { identity.identityId }
-        )
-        val incomingHub = IncomingTransportHub(dispatcher)
+        val agent: TorXAgent
+        val chatReceiver: ChatReceiver
+        val receiptHandler: DeliveryReceiptHandler
+        val dispatcher: IncomingDispatcher
+        val incomingHub: IncomingTransportHub
 
         init {
             val signPair = IdentityCrypto.generateEd25519KeyPair()
@@ -206,6 +284,32 @@ class EndToEndPipelineTest {
                 encryptionPrivateKey = encPair.privateKey,
                 displayName = name
             )
+            identityRepo = InMemoryIdentityRepository(identity, pendingInviteDao)
+            agent = TorXAgent(
+                transportRouter = transportRouter,
+                outboxStore = outboxStore,
+                processedStore = processedDao,
+                coroutineDispatcher = Dispatchers.Default,
+                baseRetryDelayMs = 200L,
+                outboxPollIntervalMs = 50L
+            )
+            chatReceiver = ChatReceiver(messageDao, conversationDao, activeTracker)
+            receiptHandler = DeliveryReceiptHandler(messageDao, outboxDao, agent)
+            dispatcher = IncomingDispatcher(
+                connectionManager = connectionManager,
+                sessionCrypto = sessionCrypto,
+                processedEnvelopeDao = processedDao,
+                chatReceiver = chatReceiver,
+                deliveryReceiptHandler = receiptHandler,
+                agent = agent,
+                localIdentityIdProvider = { identity.identityId },
+                pendingInviteDao = pendingInviteDao,
+                identityRepository = identityRepo,
+                connectionDao = connectionDao,
+                contactDao = contactDao,
+                conversationDao = conversationDao
+            )
+            incomingHub = IncomingTransportHub(dispatcher)
             transportRouter.registerTransport(fakeTransport)
             agent.start()
         }
@@ -252,6 +356,18 @@ class EndToEndPipelineTest {
             recvAuth = bSendAuth
         )
         alice.connectionManager.registerConnection(aliceConn)
+        alice.connectionDao.upsert(
+            ConnectionDbEntity(
+                connectionId = aliceConn.connectionId,
+                relationshipId = aliceConn.relationshipId,
+                generation = aliceConn.generation,
+                sendQueueId = aliceConn.sendQueueId,
+                recvQueueId = aliceConn.recvQueueId,
+                sendAuth = aliceConn.sendAuth,
+                recvAuth = aliceConn.recvAuth,
+                state = "ACTIVE"
+            )
+        )
 
         val bobConn = Connection(
             relationshipId = relationshipId,
@@ -262,6 +378,18 @@ class EndToEndPipelineTest {
             recvAuth = aSendAuth
         )
         bob.connectionManager.registerConnection(bobConn)
+        bob.connectionDao.upsert(
+            ConnectionDbEntity(
+                connectionId = bobConn.connectionId,
+                relationshipId = bobConn.relationshipId,
+                generation = bobConn.generation,
+                sendQueueId = bobConn.sendQueueId,
+                recvQueueId = bobConn.recvQueueId,
+                sendAuth = bobConn.sendAuth,
+                recvAuth = bobConn.recvAuth,
+                state = "ACTIVE"
+            )
+        )
 
         // Initialize Double Ratchet sessions
         val aliceRatchet = IdentityCrypto.generateX25519KeyPair()
@@ -298,12 +426,14 @@ class EndToEndPipelineTest {
         val now = System.currentTimeMillis()
 
         // 1. Alice creates and encrypts message
+        val seq = alice.connectionManager.incrementSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = messageId,
             conversationId = conversationId,
             senderIdentity = alice.identity.identityId,
             recipientBinding = bob.identity.identityId,
+            directionSequence = seq,
             messageType = MessageType.TEXT,
             timestamp = now,
             payload = "Hello Bob!".toByteArray(Charsets.UTF_8)
@@ -427,12 +557,14 @@ class EndToEndPipelineTest {
         text: String
     ) {
         val now = System.currentTimeMillis()
+        val seq = sender.connectionManager.incrementSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = msgId,
             conversationId = conversationId,
             senderIdentity = sender.identity.identityId,
             recipientBinding = recipient.identity.identityId,
+            directionSequence = seq,
             messageType = MessageType.TEXT,
             timestamp = now,
             payload = text.toByteArray(Charsets.UTF_8)
@@ -587,6 +719,270 @@ class EndToEndPipelineTest {
         // Verify: None of the above invalid/tampered packets were accepted into Bob's message database!
         delay(100)
         assertEquals("Bob must not persist any messages from malformed or tampered packets", 0, bob.messageDao.messages.size)
+
+        alice.stop()
+        bob.stop()
+    }
+
+    @Test
+    fun testRealQrBilateralBootstrapAndMessaging() = runBlocking {
+        val alice = Node("Alice")
+        val bob = Node("Bob")
+        alice.fakeTransport.peerHub = bob.incomingHub
+        bob.fakeTransport.peerHub = alice.incomingHub
+
+        // 1. Bob creates contact invite (simulating QR code generation)
+        val invite = bob.identityRepo.createContactInvite()
+        val qrString = ContactInviteCodec.encodeToQrString(invite)
+        assertNotNull(qrString)
+
+        // 2. Alice scans Bob's QR code and decodes invite
+        val scannedInvite = ContactInviteCodec.decodeFromQrString(qrString)
+        assertNotNull(scannedInvite)
+        val validation = ContactInviteCodec.validate(scannedInvite!!, alice.identity)
+        assertTrue("Scanned invite must be valid", validation is InviteValidationResult.Valid)
+
+        // 3. Alice establishes relationship as initiator (3DH)
+        val contactId = UUID.randomUUID().toString()
+        val conversationId = UUID.randomUUID().toString()
+        val bootstrap = RelationshipService.establishFromInvite(
+            localIdentity = alice.identity,
+            invite = scannedInvite,
+            contactId = contactId
+        )
+
+        val aliceConn = Connection(
+            relationshipId = bootstrap.relationship.relationshipId,
+            generation = 1,
+            sendQueueId = bootstrap.aliceToBobQueueId,
+            recvQueueId = bootstrap.bobToAliceQueueId,
+            sendAuth = bootstrap.aliceSendAuth,
+            recvAuth = bootstrap.bobSendAuth
+        )
+        alice.connectionManager.registerConnection(aliceConn)
+        alice.connectionDao.upsert(
+            ConnectionDbEntity(
+                connectionId = aliceConn.connectionId,
+                relationshipId = aliceConn.relationshipId,
+                generation = aliceConn.generation,
+                sendQueueId = aliceConn.sendQueueId,
+                recvQueueId = aliceConn.recvQueueId,
+                sendAuth = aliceConn.sendAuth,
+                recvAuth = aliceConn.recvAuth,
+                state = "ACTIVE"
+            )
+        )
+
+        // Alice initializes Double Ratchet session using the bootstrap ephemeral keypair
+        alice.sessionCrypto.initializeSession(
+            relationshipId = bootstrap.relationship.relationshipId,
+            sessionInitializationSecret = bootstrap.secrets.sessionInitializationSecret,
+            isInitiator = true,
+            remoteRatchetPublicKey = scannedInvite.bootstrapEphemeralPublicKey,
+            localRatchetPrivateKey = bootstrap.aliceEphemeralPrivateKey!!,
+            localRatchetPublicKey = bootstrap.aliceEphemeralPublicKey
+        )
+
+        // 4. Alice sends wire ContactBootstrapPayload to Bob over invite queue
+        val bootstrapSignedData = ContactBootstrapPayload.serializeForSigning(
+            inviteId = scannedInvite.inviteId,
+            displayName = alice.identity.displayName,
+            signingPub = alice.identity.signingPublicKey,
+            encryptionPub = alice.identity.encryptionPublicKey,
+            ephemeralPub = bootstrap.aliceEphemeralPublicKey
+        )
+        val bootstrapSig = IdentityCrypto.signEd25519(alice.identity.signingPrivateKey, bootstrapSignedData)
+        val bootstrapWire = ContactBootstrapPayload(
+            inviteId = scannedInvite.inviteId,
+            initiatorDisplayName = alice.identity.displayName,
+            initiatorSigningPublicKey = alice.identity.signingPublicKey,
+            initiatorEncryptionPublicKey = alice.identity.encryptionPublicKey,
+            initiatorEphemeralPublicKey = bootstrap.aliceEphemeralPublicKey,
+            signature = bootstrapSig
+        )
+
+        alice.agent.enqueue(
+            DeliveryItem(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                connectionId = aliceConn.connectionId,
+                queueAddress = "invite-${scannedInvite.inviteId}",
+                ciphertext = bootstrapWire.toByteArray(),
+                queueAuthenticator = ByteArray(0),
+                status = DeliveryStatus.QUEUED,
+                priority = DeliveryPriority.HIGH
+            )
+        )
+
+        // 5. Wait for Bob's Stage 3 incoming dispatcher to process bootstrap and establish responder relationship
+        val relationshipId = bootstrap.relationship.relationshipId
+        waitFor(5000) {
+            bob.connectionManager.getConnectionByRelationship(relationshipId) != null
+        }
+        val bobConn = bob.connectionManager.getConnectionByRelationship(relationshipId)
+        assertNotNull("Bob must have registered matching connection", bobConn)
+        assertEquals("Bob's send queue must equal Alice's recv queue", aliceConn.recvQueueId, bobConn!!.sendQueueId)
+        assertEquals("Bob's recv queue must equal Alice's send queue", aliceConn.sendQueueId, bobConn.recvQueueId)
+
+        // 6. Alice sends first message to Bob
+        val msgAliceToBobId = "msg-alice-1"
+        sendMessage(alice, bob, relationshipId, conversationId, msgAliceToBobId, "Hello Bob from QR!")
+
+        waitFor(5000) { bob.messageDao.exists(msgAliceToBobId) }
+        val receivedByBob = bob.messageDao.getById(msgAliceToBobId)
+        assertNotNull("Bob must receive Alice's message", receivedByBob)
+        assertEquals("Hello Bob from QR!", receivedByBob!!.body)
+
+        // Alice receives Bob's ACK
+        waitFor(5000) { alice.messageDao.getById(msgAliceToBobId)?.status == DeliveryStatus.DELIVERED.name }
+        assertEquals(DeliveryStatus.DELIVERED.name, alice.messageDao.getById(msgAliceToBobId)?.status)
+
+        // 7. Bob sends reply to Alice
+        val msgBobToAliceId = "msg-bob-1"
+        sendMessage(bob, alice, relationshipId, conversationId, msgBobToAliceId, "Hello Alice, responder online!")
+
+        waitFor(5000) { alice.messageDao.exists(msgBobToAliceId) }
+        val receivedByAlice = alice.messageDao.getById(msgBobToAliceId)
+        assertNotNull("Alice must receive Bob's message", receivedByAlice)
+        assertEquals("Hello Alice, responder online!", receivedByAlice!!.body)
+
+        // Bob receives Alice's ACK
+        waitFor(5000) { bob.messageDao.getById(msgBobToAliceId)?.status == DeliveryStatus.DELIVERED.name }
+        assertEquals(DeliveryStatus.DELIVERED.name, bob.messageDao.getById(msgBobToAliceId)?.status)
+
+        alice.stop()
+        bob.stop()
+    }
+
+    @Test
+    fun testSimultaneousDuplexStress() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        val relationshipId = "rel-alice-bob"
+        val messageCount = 50
+
+        val jobAlice = launch(Dispatchers.Default) {
+            for (i in 1..messageCount) {
+                sendMessage(alice, bob, relationshipId, "conv-ab", "stress-a-$i", "Stress message A $i")
+            }
+        }
+        val jobBob = launch(Dispatchers.Default) {
+            for (i in 1..messageCount) {
+                sendMessage(bob, alice, relationshipId, "conv-ba", "stress-b-$i", "Stress message B $i")
+            }
+        }
+        joinAll(jobAlice, jobBob)
+
+        // Wait for all 50 messages from Alice to arrive at Bob
+        waitFor(15000) {
+            bob.messageDao.messages.values.count { it.direction == com.torxone.app.data.entity.MessageDirection.INCOMING } == messageCount
+        }
+        // Wait for all 50 messages from Bob to arrive at Alice
+        waitFor(15000) {
+            alice.messageDao.messages.values.count { it.direction == com.torxone.app.data.entity.MessageDirection.INCOMING } == messageCount
+        }
+
+        // Wait for all 100 messages total across both sides to be DELIVERED via ACKs
+        waitFor(15000) {
+            alice.messageDao.messages.values.filter { it.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING }
+                .all { it.status == DeliveryStatus.DELIVERED.name } &&
+            bob.messageDao.messages.values.filter { it.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING }
+                .all { it.status == DeliveryStatus.DELIVERED.name }
+        }
+
+        assertEquals(messageCount, bob.messageDao.messages.values.count { it.direction == com.torxone.app.data.entity.MessageDirection.INCOMING })
+        assertEquals(messageCount, alice.messageDao.messages.values.count { it.direction == com.torxone.app.data.entity.MessageDirection.INCOMING })
+
+        alice.stop()
+        bob.stop()
+    }
+
+    @Test
+    fun testProcessRestartAndSessionRecovery() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        val relationshipId = "rel-alice-bob"
+
+        // 1. Initial message before restart
+        sendMessage(alice, bob, relationshipId, "conv-ab", "pre-restart-1", "Message before restart")
+        waitFor(5000) { bob.messageDao.exists("pre-restart-1") }
+        waitFor(5000) { alice.messageDao.getById("pre-restart-1")?.status == DeliveryStatus.DELIVERED.name }
+
+        // 2. Simulate Bob killing app and restarting
+        bob.agent.stop()
+
+        // Create fresh ConnectionManager and restore from database
+        val newBobConnectionManager = ConnectionManager()
+        newBobConnectionManager.restoreFromDatabase(bob.connectionDao)
+
+        // Create fresh SessionCrypto using the persisted SessionStore
+        val newBobSessionCrypto = DoubleRatchetSessionCrypto(bob.sessionStore)
+
+        // Re-wire Bob's incoming pipeline with restored managers
+        val newBobDispatcher = IncomingDispatcher(
+            connectionManager = newBobConnectionManager,
+            sessionCrypto = newBobSessionCrypto,
+            processedEnvelopeDao = bob.processedDao,
+            chatReceiver = bob.chatReceiver,
+            deliveryReceiptHandler = bob.receiptHandler,
+            agent = bob.agent,
+            localIdentityIdProvider = { bob.identity.identityId },
+            pendingInviteDao = bob.pendingInviteDao,
+            identityRepository = bob.identityRepo,
+            connectionDao = bob.connectionDao,
+            contactDao = bob.contactDao,
+            conversationDao = bob.conversationDao
+        )
+        bob.incomingHub.dispatcher = newBobDispatcher
+        bob.agent.start()
+
+        // 3. Alice sends message after Bob's restart
+        sendMessage(alice, bob, relationshipId, "conv-ab", "post-restart-1", "Message after Bob restarted")
+        waitFor(5000) { bob.messageDao.exists("post-restart-1") }
+        assertEquals("Message after Bob restarted", bob.messageDao.getById("post-restart-1")?.body)
+
+        waitFor(5000) { alice.messageDao.getById("post-restart-1")?.status == DeliveryStatus.DELIVERED.name }
+
+        // 4. Bob sends message to Alice using restored state
+        val now = System.currentTimeMillis()
+        val env = SecureEnvelope(
+            protocolVersion = 1,
+            logicalMessageId = "bob-post-restart",
+            conversationId = "conv-ba",
+            senderIdentity = bob.identity.identityId,
+            recipientBinding = alice.identity.identityId,
+            directionSequence = newBobConnectionManager.incrementSendSequence(relationshipId),
+            messageType = MessageType.TEXT,
+            timestamp = now,
+            payload = "Bob is back online!".toByteArray(Charsets.UTF_8)
+        )
+        val envBytes = ProtocolCodec.encodeSecureEnvelope(env)
+        val conn = newBobConnectionManager.getConnectionByRelationship(relationshipId)!!
+        val aad = "torx-aad-v1:${conn.generation}:${conn.sendQueueId}".toByteArray(Charsets.UTF_8)
+        val enc = newBobSessionCrypto.encrypt(relationshipId, envBytes, aad)
+
+        bob.messageDao.insertIfAbsent(MessageEntity(
+            logicalMessageId = "bob-post-restart",
+            conversationId = "conv-ba",
+            senderId = bob.identity.identityId,
+            type = "TEXT",
+            body = "Bob is back online!",
+            direction = com.torxone.app.data.entity.MessageDirection.OUTGOING,
+            status = DeliveryStatus.QUEUED.name
+        ))
+        bob.agent.enqueue(DeliveryItem(
+            deliveryId = UUID.randomUUID().toString(),
+            logicalMessageId = "bob-post-restart",
+            conversationId = "conv-ba",
+            connectionId = conn.connectionId,
+            queueAddress = conn.sendQueueId,
+            ciphertext = enc.serialize(),
+            queueAuthenticator = conn.sendAuth,
+            status = DeliveryStatus.QUEUED
+        ))
+
+        waitFor(5000) { alice.messageDao.exists("bob-post-restart") }
+        assertEquals("Bob is back online!", alice.messageDao.getById("bob-post-restart")?.body)
+        waitFor(5000) { bob.messageDao.getById("bob-post-restart")?.status == DeliveryStatus.DELIVERED.name }
 
         alice.stop()
         bob.stop()

@@ -44,6 +44,15 @@ enum class DeliveryStatus {
 }
 
 /**
+ * Priority levels for outbox items (Phase 27).
+ */
+object DeliveryPriority {
+    const val HIGH = 20    // Critical receipts, ACKs, call signaling
+    const val NORMAL = 10  // Chat messages
+    const val LOW = 0      // Best-effort signals
+}
+
+/**
  * A durable delivery item in the TorXAgent outbox.
  *
  * The outbox survives app restarts. TorXAgent is the ONLY
@@ -73,6 +82,9 @@ data class DeliveryItem(
 
     /** Current delivery status */
     val status: DeliveryStatus = DeliveryStatus.QUEUED,
+
+    /** Priority for outbox scheduling (Phase 27) */
+    val priority: Int = DeliveryPriority.NORMAL,
 
     /** Number of delivery attempts */
     val attemptCount: Int = 0,

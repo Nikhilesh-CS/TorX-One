@@ -63,7 +63,9 @@ class ChatService(
 
         Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)}")
 
-        // 1. Build SecureEnvelope
+        val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+
+        // 1. Build SecureEnvelope with directional sequence (Phase 7 & 8)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = messageId,
@@ -72,64 +74,67 @@ class ChatService(
             recipientBinding = recipientId,
             messageType = MessageType.TEXT,
             timestamp = now,
-            payload = text.toByteArray(Charsets.UTF_8)
+            payload = text.toByteArray(Charsets.UTF_8),
+            directionSequence = sendSeq
         )
         val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
 
         // 2. Cryptographically bind AAD to prevent routing metadata tampering
         val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
 
-        // 3. Encrypt via Double Ratchet
-        val encryptedSessionMessage = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
-        val opaqueCiphertext = encryptedSessionMessage.serialize()
+        // 3. Critical atomic send boundary: Encrypt + Ratchet Save + Message + Outbox in one Room transaction
+        var opaqueCiphertext: ByteArray? = null
 
-        // 4. Prepare database entities
-        val messageEntity = MessageEntity(
-            logicalMessageId = messageId,
-            conversationId = conversationId,
-            senderId = localIdentityId,
-            type = MessageType.TEXT.name,
-            body = text,
-            direction = MessageDirection.OUTGOING,
-            status = DeliveryStatus.QUEUED.name,
-            createdAt = now
-        )
+        sessionCrypto.encryptAndCommit(relationshipId, envelopeBytes, aad) { encrypted, updatedState ->
+            val ciphertext = encrypted.serialize()
+            opaqueCiphertext = ciphertext
 
-        val outboxEntity = OutboxEntity(
-            deliveryId = deliveryId,
-            logicalMessageId = messageId,
-            conversationId = conversationId,
-            connectionId = connection.connectionId,
-            queueAddress = connection.sendQueueId,
-            ciphertext = opaqueCiphertext,
-            queueAuthenticator = connection.sendAuth,
-            status = DeliveryStatus.QUEUED.name,
-            attemptCount = 0,
-            nextAttemptAt = now,
-            createdAt = now,
-            updatedAt = now
-        )
-
-        // 5. Critical atomic send transaction: Message + Outbox committed together
-        database.withTransaction {
-            messageDao.insertIfAbsent(messageEntity)
-            outboxDao.insert(outboxEntity)
-            conversationDao.updateLastMessage(
+            val messageEntity = MessageEntity(
+                logicalMessageId = messageId,
                 conversationId = conversationId,
-                messageId = messageId,
-                preview = text.take(100),
-                time = now
+                senderId = localIdentityId,
+                type = MessageType.TEXT.name,
+                body = text,
+                direction = MessageDirection.OUTGOING,
+                status = DeliveryStatus.QUEUED.name,
+                createdAt = now
             )
+
+            val outboxEntity = OutboxEntity(
+                deliveryId = deliveryId,
+                logicalMessageId = messageId,
+                conversationId = conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED.name,
+                attemptCount = 0,
+                nextAttemptAt = now,
+                createdAt = now,
+                updatedAt = now
+            )
+
+            database.withTransaction {
+                messageDao.insertIfAbsent(messageEntity)
+                outboxDao.insert(outboxEntity)
+                conversationDao.updateLastMessage(
+                    conversationId = conversationId,
+                    messageId = messageId,
+                    preview = text.take(100),
+                    time = now
+                )
+            }
         }
 
-        // 6. Notify TorXAgent to drive transport
+        // 4. Notify TorXAgent to drive transport
         val deliveryItem = DeliveryItem(
             deliveryId = deliveryId,
             logicalMessageId = messageId,
             conversationId = conversationId,
             connectionId = connection.connectionId,
             queueAddress = connection.sendQueueId,
-            ciphertext = opaqueCiphertext,
+            ciphertext = opaqueCiphertext ?: throw IllegalStateException("Ciphertext not generated"),
             queueAuthenticator = connection.sendAuth,
             status = DeliveryStatus.QUEUED,
             attemptCount = 0,

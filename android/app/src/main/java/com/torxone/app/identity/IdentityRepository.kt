@@ -14,6 +14,7 @@ interface IdentityRepository {
     suspend fun loadIdentity(): TorXIdentity?
     suspend fun sign(data: ByteArray): ByteArray
     suspend fun createContactInvite(): ContactInviteV1
+    suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray?
 }
 
 /**
@@ -21,7 +22,8 @@ interface IdentityRepository {
  * Identity secret material is stored encrypted via AES256-GCM backed by hardware Keystore.
  */
 class KeystoreIdentityRepository(
-    private val context: Context
+    private val context: Context,
+    private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null
 ) : IdentityRepository {
 
     private var cachedIdentity: TorXIdentity? = null
@@ -114,6 +116,17 @@ class KeystoreIdentityRepository(
 
         val signature = IdentityCrypto.signEd25519(identity.signingPrivateKey, signedData)
 
+        // Persist ephemeral bootstrap private key so Bob can compute 3DH responder keys (Section 4)
+        pendingInviteDao?.insert(
+            com.torxone.app.data.entity.PendingInviteEntity(
+                inviteId = inviteId,
+                ephemeralPublicKey = ephemeralBootstrapPair.publicKey,
+                ephemeralPrivateKey = ephemeralBootstrapPair.privateKey,
+                createdAt = now,
+                expiresAt = expiresAt
+            )
+        )
+
         ContactInviteV1(
             protocolVersion = 1,
             inviteId = inviteId,
@@ -125,6 +138,11 @@ class KeystoreIdentityRepository(
             expiresAt = expiresAt,
             signature = signature
         )
+    }
+
+    override suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray? = withContext(Dispatchers.IO) {
+        pendingInviteDao?.getById(inviteId)?.ephemeralPrivateKey
+            ?: pendingInviteDao?.getLatest()?.ephemeralPrivateKey
     }
 
     private fun saveIdentity(identity: TorXIdentity) {

@@ -26,6 +26,7 @@ object ProtocolCodec {
         dos.writeUTF(envelope.messageType.name)
         dos.writeLong(envelope.timestamp)
         dos.writeUTF(envelope.replyToMessageId ?: "")
+        dos.writeLong(envelope.directionSequence)
         dos.writeInt(envelope.payload.size)
         dos.write(envelope.payload)
         dos.flush()
@@ -53,6 +54,7 @@ object ProtocolCodec {
         val timestamp = dis.readLong()
         val replyToRaw = dis.readUTF()
         val replyTo = if (replyToRaw.isEmpty()) null else replyToRaw
+        val directionSequence = dis.readLong()
 
         val payloadSize = dis.readInt()
         require(payloadSize in 0..ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES) { "Invalid payload size: $payloadSize" }
@@ -68,7 +70,8 @@ object ProtocolCodec {
             messageType = messageType,
             timestamp = timestamp,
             payload = payload,
-            replyToMessageId = replyTo
+            replyToMessageId = replyTo,
+            directionSequence = directionSequence
         )
     }
 

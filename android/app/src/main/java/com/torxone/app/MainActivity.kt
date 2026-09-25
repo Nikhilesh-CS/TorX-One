@@ -58,7 +58,8 @@ fun TorXOneApp() {
             database = app.database,
             identityRepository = app.identityRepository,
             sessionCrypto = app.sessionCrypto,
-            connectionManager = app.connectionManager
+            connectionManager = app.connectionManager,
+            agent = app.agent
         )
     }
 

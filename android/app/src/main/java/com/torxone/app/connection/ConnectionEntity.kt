@@ -17,6 +17,8 @@ data class Connection(
     val sendAuth: ByteArray = ByteArray(0),
     val recvAuth: ByteArray = ByteArray(0),
     val state: ConnectionState = ConnectionState.ACTIVE,
+    val sendSequence: Long = 0L,
+    val recvSequence: Long = 0L,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     override fun equals(other: Any?): Boolean {

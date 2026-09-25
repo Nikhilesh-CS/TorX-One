@@ -17,7 +17,8 @@ import com.torxone.app.data.entity.*
         PairRelationshipEntity::class,
         ConnectionDbEntity::class,
         SessionDbEntity::class,
-        SkippedKeyEntity::class
+        SkippedKeyEntity::class,
+        PendingInviteEntity::class
     ],
     version = 1,
     exportSchema = false
@@ -32,6 +33,7 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun connectionDao(): ConnectionDao
     abstract fun sessionDao(): SessionDao
     abstract fun skippedKeyDao(): SkippedKeyDao
+    abstract fun pendingInviteDao(): PendingInviteDao
 
     companion object {
         @Volatile

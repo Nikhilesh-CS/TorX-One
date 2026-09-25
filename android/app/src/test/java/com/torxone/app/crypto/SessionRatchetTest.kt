@@ -190,4 +190,51 @@ class SessionRatchetTest {
             // Success
         }
     }
+
+    @Test
+    fun testSimultaneousInitialSend() {
+        val (alice, bob) = setupAliceAndBobSessions()
+
+        val aliceMsg = "Alice initial simultaneous message A1".toByteArray(Charsets.UTF_8)
+        val bobMsg = "Bob initial simultaneous message B1".toByteArray(Charsets.UTF_8)
+        val aadA = "aad-alice".toByteArray()
+        val aadB = "aad-bob".toByteArray()
+
+        // Phase 24: Both encrypt simultaneously before either has received the other's message
+        val aliceEnc = SessionRatchet.ratchetEncrypt(alice, aliceMsg, aadA)
+        val bobEnc = SessionRatchet.ratchetEncrypt(bob, bobMsg, aadB)
+
+        // Bob decrypts Alice's initial message
+        val bobDec = SessionRatchet.ratchetDecrypt(bob, aliceEnc, aadA)
+        assertArrayEquals(aliceMsg, bobDec)
+
+        // Alice decrypts Bob's initial message
+        val aliceDec = SessionRatchet.ratchetDecrypt(alice, bobEnc, aadB)
+        assertArrayEquals(bobMsg, aliceDec)
+    }
+
+    @Test
+    fun testSimultaneousOngoingRatchet() {
+        val (alice, bob) = setupAliceAndBobSessions()
+
+        // Phase 25: Continuous simultaneous batches crossing in-flight
+        for (round in 0 until 10) {
+            val aMsgs = (0 until 5).map { "Alice round $round msg $it".toByteArray() }
+            val bMsgs = (0 until 5).map { "Bob round $round msg $it".toByteArray() }
+
+            // Both encrypt their batch
+            val aEncs = aMsgs.map { SessionRatchet.ratchetEncrypt(alice, it, "aad-a".toByteArray()) }
+            val bEncs = bMsgs.map { SessionRatchet.ratchetEncrypt(bob, it, "aad-b".toByteArray()) }
+
+            // Cross delivery: both decrypt the other's batch
+            aEncs.forEachIndexed { idx, enc ->
+                val dec = SessionRatchet.ratchetDecrypt(bob, enc, "aad-a".toByteArray())
+                assertArrayEquals(aMsgs[idx], dec)
+            }
+            bEncs.forEachIndexed { idx, enc ->
+                val dec = SessionRatchet.ratchetDecrypt(alice, enc, "aad-b".toByteArray())
+                assertArrayEquals(bMsgs[idx], dec)
+            }
+        }
+    }
 }
