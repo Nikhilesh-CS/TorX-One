@@ -112,6 +112,12 @@ class EndToEndPipelineTest {
                 .filter { it.conversationId == conversationId && it.direction == MessageDirection.INCOMING && it.status != "READ" }
                 .maxByOrNull { it.createdAt }
         }
+        override suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long) {
+            messages[messageId]?.let { messages[messageId] = it.copy(body = newBody, editVersion = editVersion, editedAt = editedAt) }
+        }
+        override suspend fun markDeleted(messageId: String, deletedAt: Long) {
+            messages[messageId]?.let { messages[messageId] = it.copy(body = null, deletedAt = deletedAt) }
+        }
     }
 
     class InMemoryConversationDao : ConversationDao {
@@ -124,6 +130,13 @@ class EndToEndPipelineTest {
         }
         override suspend fun updateLastMessage(conversationId: String, messageId: String, preview: String?, time: Long) {
             convs[conversationId]?.let { convs[conversationId] = it.copy(lastMessageId = messageId, lastMessagePreview = preview, lastMessageTime = time) }
+        }
+        override suspend fun updateLastMessagePreviewIfLatest(messageId: String, preview: String?) {
+            for ((id, conv) in convs) {
+                if (conv.lastMessageId == messageId) {
+                    convs[id] = conv.copy(lastMessagePreview = preview)
+                }
+            }
         }
     }
 

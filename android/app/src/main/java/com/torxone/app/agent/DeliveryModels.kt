@@ -96,7 +96,10 @@ data class DeliveryItem(
     val createdAt: Long = System.currentTimeMillis(),
 
     /** Last status change timestamp */
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    /** Whether this item expects an end-to-end delivery ACK from peer */
+    val expectsAck: Boolean = true
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

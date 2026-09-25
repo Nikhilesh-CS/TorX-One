@@ -31,6 +31,9 @@ interface ConversationDao {
         preview: String?,
         time: Long
     )
+
+    @Query("UPDATE conversations SET last_message_preview = :preview WHERE last_message_id = :messageId")
+    suspend fun updateLastMessagePreviewIfLatest(messageId: String, preview: String?)
 }
 
 @Dao
@@ -67,6 +70,12 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ' ORDER BY created_at DESC LIMIT 1")
     suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity?
+
+    @Query("UPDATE messages SET body = :newBody, edit_version = :editVersion, edited_at = :editedAt WHERE logical_message_id = :messageId")
+    suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long)
+
+    @Query("UPDATE messages SET body = null, deleted_at = :deletedAt WHERE logical_message_id = :messageId")
+    suspend fun markDeleted(messageId: String, deletedAt: Long)
 }
 
 @Dao
@@ -205,5 +214,23 @@ interface PendingInviteDao {
 
     @Query("DELETE FROM pending_invites WHERE invite_id = :inviteId")
     suspend fun delete(inviteId: String)
+}
+
+@Dao
+interface ReactionDao {
+    @Query("SELECT * FROM reactions WHERE message_id = :messageId")
+    suspend fun getForMessage(messageId: String): List<ReactionEntity>
+
+    @Query("SELECT * FROM reactions WHERE conversation_id = :conversationId")
+    fun observeForConversation(conversationId: String): Flow<List<ReactionEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(reaction: ReactionEntity)
+
+    @Query("DELETE FROM reactions WHERE message_id = :messageId AND sender_id = :senderId AND emoji = :emoji")
+    suspend fun remove(messageId: String, senderId: String, emoji: String)
+
+    @Query("DELETE FROM reactions WHERE message_id = :messageId AND sender_id = :senderId")
+    suspend fun removeAllFromSender(messageId: String, senderId: String)
 }
 

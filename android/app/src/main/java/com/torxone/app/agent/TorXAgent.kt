@@ -230,15 +230,21 @@ class TorXAgent(
 
         when (result) {
             is TransportResult.Accepted -> {
-                Log.i(TAG, "[ACCEPTED] Nearby accepted env=${item.deliveryId.take(8)} (awaiting Bob's ACK)")
-                // Schedule next attempt with backoff in case ACK is lost on the wire
-                val ackTimeout = calculateBackoff(item.attemptCount)
-                outboxStore.updateRetry(
-                    deliveryId = item.deliveryId,
-                    attemptCount = item.attemptCount + 1,
-                    nextAttemptAt = System.currentTimeMillis() + ackTimeout
-                )
-                emitUpdate(item.logicalMessageId, DeliveryStatus.TRANSPORT_ACCEPTED)
+                Log.i(TAG, "[ACCEPTED] Nearby accepted env=${item.deliveryId.take(8)}")
+                if (!item.expectsAck) {
+                    outboxStore.removeByMessageId(item.logicalMessageId)
+                    emitUpdate(item.logicalMessageId, DeliveryStatus.DELIVERED)
+                } else {
+                    // Schedule next attempt with backoff in case ACK is lost on the wire
+                    val ackTimeout = calculateBackoff(item.attemptCount)
+                    outboxStore.updateRetry(
+                        deliveryId = item.deliveryId,
+                        attemptCount = item.attemptCount + 1,
+                        nextAttemptAt = System.currentTimeMillis() + ackTimeout
+                    )
+                    outboxStore.updateStatus(item.deliveryId, DeliveryStatus.TRANSPORT_ACCEPTED)
+                    emitUpdate(item.logicalMessageId, DeliveryStatus.TRANSPORT_ACCEPTED)
+                }
             }
 
             is TransportResult.Failed -> {

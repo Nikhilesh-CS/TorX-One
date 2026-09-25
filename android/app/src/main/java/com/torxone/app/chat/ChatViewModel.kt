@@ -6,6 +6,8 @@ import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.connection.ConnectionState
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.data.entity.MessageEntity
+import com.torxone.app.data.entity.ReactionEntity
+import com.torxone.app.protocol.ReactionOperation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -22,6 +24,7 @@ data class ChatUiState(
     val lastSeenAt: Long? = null,
     val isTyping: Boolean = false,
     val replyingTo: MessageUiModel? = null,
+    val editingMessage: MessageUiModel? = null,
     val connectionState: ConnectionState = ConnectionState.ACTIVE,
     val isSending: Boolean = false,
     val error: String? = null
@@ -31,10 +34,13 @@ data class ChatUiState(
  * ChatViewModel
  *
  * Responsibilities:
- * - Maps Room MessageEntity -> MessageUiModel with quoted reply resolution
+ * - Maps Room MessageEntity + ReactionEntity -> MessageUiModel with quotes & reactions
  * - Manages typing debouncing (TYPING_START on first keystroke, TYPING_STOP after 2.5s pause)
  * - Observes pairwise presence and updates header status
  * - Manages reply state (replyingTo, cancelReply)
+ * - Manages edit state (startEditing, cancelEditing, editMessage)
+ * - Manages delete state (deleteMessage tombstoning)
+ * - Manages reaction toggling (toggleReaction)
  * - Dispatches batch read receipts when conversation is visible
  */
 class ChatViewModel(
@@ -50,14 +56,21 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState(title = contactName))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    private var currentReactionEntities: List<ReactionEntity> = emptyList()
+
     private var typingDebounceJob: Job? = null
     private var isTypingLocally = false
 
     init {
-        // 1. Observe messages and map to UI models with quote resolution
+        // 1. Observe messages and reactions and map to UI models with quote & reaction resolution
         viewModelScope.launch {
-            chatService.observeMessages(conversationId).collect { msgEntities ->
-                val uiModels = mapToUiModels(msgEntities)
+            combine(
+                chatService.observeMessages(conversationId),
+                chatService.observeReactions(conversationId)
+            ) { msgEntities, reactionEntities ->
+                currentReactionEntities = reactionEntities
+                mapToUiModels(msgEntities, reactionEntities)
+            }.collect { uiModels ->
                 _uiState.update { it.copy(messages = uiModels) }
 
                 // Automatically mark incoming messages read if conversation is open
@@ -81,8 +94,13 @@ class ChatViewModel(
         }
     }
 
-    private fun mapToUiModels(entities: List<MessageEntity>): List<MessageUiModel> {
+    private fun mapToUiModels(
+        entities: List<MessageEntity>,
+        reactions: List<ReactionEntity>
+    ): List<MessageUiModel> {
         val entityMap = entities.associateBy { it.logicalMessageId }
+        val reactionsByMessage = reactions.groupBy { it.messageId }
+
         return entities.map { entity ->
             val quoted = entity.replyToMessageId?.let { replyId ->
                 val original = entityMap[replyId]
@@ -91,7 +109,7 @@ class ChatViewModel(
                         QuotedMessageUiModel(
                             messageId = replyId,
                             senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
-                            previewText = "Message deleted"
+                            previewText = "This message was deleted"
                         )
                     } else {
                         QuotedMessageUiModel(
@@ -116,6 +134,18 @@ class ChatViewModel(
                 DeliveryStatus.QUEUED
             }
 
+            val messageReactions = reactionsByMessage[entity.logicalMessageId].orEmpty()
+            val reactionSummaries = messageReactions
+                .groupBy { it.emoji }
+                .map { (emoji, list) ->
+                    ReactionSummaryUiModel(
+                        emoji = emoji,
+                        count = list.size,
+                        userReacted = list.any { it.senderId == localIdentityId }
+                    )
+                }
+                .sortedByDescending { it.count }
+
             MessageUiModel(
                 logicalMessageId = entity.logicalMessageId,
                 conversationId = entity.conversationId,
@@ -128,7 +158,10 @@ class ChatViewModel(
                 readAt = entity.readAt,
                 replyToMessageId = entity.replyToMessageId,
                 quotedMessage = quoted,
-                isDeleted = entity.deletedAt != null
+                isEdited = entity.editedAt != null && entity.editVersion > 0,
+                editedAt = entity.editedAt,
+                isDeleted = entity.deletedAt != null,
+                reactions = reactionSummaries
             )
         }
     }
@@ -168,16 +201,89 @@ class ChatViewModel(
     }
 
     fun onReply(message: MessageUiModel) {
-        _uiState.update { it.copy(replyingTo = message) }
+        _uiState.update { it.copy(replyingTo = message, editingMessage = null) }
     }
 
     fun cancelReply() {
         _uiState.update { it.copy(replyingTo = null) }
     }
 
+    fun startEditing(message: MessageUiModel) {
+        if (message.isDeleted || message.direction != MessageDirection.OUTGOING) return
+        _uiState.update {
+            it.copy(
+                editingMessage = message,
+                replyingTo = null,
+                composerText = message.body ?: ""
+            )
+        }
+    }
+
+    fun cancelEditing() {
+        _uiState.update { it.copy(editingMessage = null, composerText = "") }
+    }
+
+    fun toggleReaction(messageId: String, emoji: String) {
+        val alreadyReacted = currentReactionEntities.any {
+            it.messageId == messageId && it.senderId == localIdentityId && it.emoji == emoji
+        }
+        val operation = if (alreadyReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
+
+        viewModelScope.launch {
+            chatService.sendReaction(
+                conversationId = conversationId,
+                relationshipId = relationshipId,
+                localIdentityId = localIdentityId,
+                recipientId = recipientId,
+                targetMessageId = messageId,
+                emoji = emoji,
+                operation = operation
+            )
+        }
+    }
+
+    fun deleteMessage(messageId: String) {
+        viewModelScope.launch {
+            try {
+                chatService.deleteMessage(
+                    conversationId = conversationId,
+                    relationshipId = relationshipId,
+                    localIdentityId = localIdentityId,
+                    recipientId = recipientId,
+                    targetMessageId = messageId
+                )
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to delete message") }
+            }
+        }
+    }
+
     fun sendText() {
         val text = _uiState.value.composerText.trim()
         if (text.isEmpty()) return
+
+        val editing = _uiState.value.editingMessage
+        if (editing != null) {
+            // Editing mode
+            _uiState.update { it.copy(editingMessage = null, composerText = "", isSending = true, error = null) }
+            viewModelScope.launch {
+                try {
+                    chatService.editMessage(
+                        conversationId = conversationId,
+                        relationshipId = relationshipId,
+                        localIdentityId = localIdentityId,
+                        recipientId = recipientId,
+                        targetMessageId = editing.logicalMessageId,
+                        newText = text
+                    )
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(error = e.message ?: "Edit failed") }
+                } finally {
+                    _uiState.update { it.copy(isSending = false) }
+                }
+            }
+            return
+        }
 
         val replyToId = _uiState.value.replyingTo?.logicalMessageId
 

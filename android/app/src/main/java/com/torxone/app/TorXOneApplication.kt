@@ -108,6 +108,18 @@ class TorXOneApplication : Application() {
         )
         val presenceHandler = PresenceHandler(presenceService)
         val typingHandler = TypingHandler(presenceService)
+        val reactionHandler = ReactionHandler(
+            reactionDao = database.reactionDao(),
+            messageDao = database.messageDao()
+        )
+        val editHandler = EditHandler(
+            messageDao = database.messageDao(),
+            conversationDao = database.conversationDao()
+        )
+        val deleteHandler = DeleteHandler(
+            messageDao = database.messageDao(),
+            conversationDao = database.conversationDao()
+        )
 
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
@@ -132,6 +144,9 @@ class TorXOneApplication : Application() {
             },
             presenceHandler = presenceHandler,
             typingHandler = typingHandler,
+            reactionHandler = reactionHandler,
+            editHandler = editHandler,
+            deleteHandler = deleteHandler,
             transactionRunner = { block -> database.withTransaction { block() } },
             pendingInviteDao = database.pendingInviteDao(),
             identityRepository = identityRepository,
@@ -159,7 +174,8 @@ class TorXOneApplication : Application() {
             agent = agent,
             messageDao = database.messageDao(),
             conversationDao = database.conversationDao(),
-            outboxDao = database.outboxDao()
+            outboxDao = database.outboxDao(),
+            reactionDao = database.reactionDao()
         )
 
         // 10. Start background agent and transport
@@ -184,7 +200,8 @@ class TorXOneApplication : Application() {
                         attemptCount = item.attemptCount,
                         nextAttemptAt = item.nextAttemptAt,
                         createdAt = item.createdAt,
-                        updatedAt = item.updatedAt
+                        updatedAt = item.updatedAt,
+                        expectsAck = item.expectsAck
                     )
                 )
             }
@@ -203,7 +220,8 @@ class TorXOneApplication : Application() {
                         attemptCount = entity.attemptCount,
                         nextAttemptAt = entity.nextAttemptAt,
                         createdAt = entity.createdAt,
-                        updatedAt = entity.updatedAt
+                        updatedAt = entity.updatedAt,
+                        expectsAck = entity.expectsAck
                     )
                 }
             }

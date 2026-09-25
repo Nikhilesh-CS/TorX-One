@@ -201,7 +201,10 @@ data class OutboxEntity(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "expects_ack")
+    val expectsAck: Boolean = true
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -461,4 +464,41 @@ data class PendingInviteEntity(
 
     override fun hashCode(): Int = inviteId.hashCode()
 }
+
+/**
+ * Reaction — An emoji reaction to a message by a specific user.
+ * Stored in its own table rather than stuffing into MessageEntity.
+ */
+@Entity(
+    tableName = "reactions",
+    primaryKeys = ["message_id", "sender_id", "emoji"],
+    indices = [
+        Index("message_id"),
+        Index("conversation_id")
+    ],
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["logical_message_id"],
+            childColumns = ["message_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ]
+)
+data class ReactionEntity(
+    @ColumnInfo(name = "message_id")
+    val messageId: String,
+
+    @ColumnInfo(name = "conversation_id")
+    val conversationId: String,
+
+    @ColumnInfo(name = "sender_id")
+    val senderId: String,
+
+    @ColumnInfo(name = "emoji")
+    val emoji: String,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis()
+)
 

@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -24,17 +26,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.torxone.app.agent.DeliveryStatus
-import com.torxone.app.chat.ChatUiState
-import com.torxone.app.chat.ChatViewModel
-import com.torxone.app.chat.MessageUiModel
-import com.torxone.app.chat.PresenceFormatter
-import com.torxone.app.chat.PresenceStatus
+import com.torxone.app.chat.*
 import com.torxone.app.data.entity.MessageDirection
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -61,10 +62,15 @@ fun ChatScreen(
         lastSeenAt = uiState.lastSeenAt,
         isTyping = uiState.isTyping,
         replyingTo = uiState.replyingTo,
+        editingMessage = uiState.editingMessage,
         onComposerTextChange = viewModel::onComposerTextChanged,
         onSendMessage = viewModel::sendText,
         onReply = viewModel::onReply,
         onCancelReply = viewModel::cancelReply,
+        onStartEdit = viewModel::startEditing,
+        onCancelEdit = viewModel::cancelEditing,
+        onToggleReaction = viewModel::toggleReaction,
+        onDeleteMessage = viewModel::deleteMessage,
         onBackClick = onBackClick,
         modifier = modifier
     )
@@ -75,6 +81,10 @@ fun ChatScreen(
  *
  * Highlights:
  * - Header priority: typing… > online > last seen today/yesterday > offline
+ * - Message actions on long press: Reaction quick bar, Reply, Copy, Edit, Delete
+ * - WhatsApp-style emoji reaction pills below message bubbles
+ * - Tombstone for deleted messages ("This message was deleted")
+ * - "(edited)" suffix indicator on edited messages
  * - Swipe-to-reply on message bubbles with animated offset
  * - Quoted reply preview in composer with dismiss button
  * - In-bubble quoted reply card with click-to-scroll & temporary highlight
@@ -90,10 +100,15 @@ fun ChatScreen(
     lastSeenAt: Long? = null,
     isTyping: Boolean = false,
     replyingTo: MessageUiModel? = null,
+    editingMessage: MessageUiModel? = null,
     onComposerTextChange: (String) -> Unit = {},
     onSendMessage: () -> Unit = {},
     onReply: (MessageUiModel) -> Unit = {},
     onCancelReply: () -> Unit = {},
+    onStartEdit: (MessageUiModel) -> Unit = {},
+    onCancelEdit: () -> Unit = {},
+    onToggleReaction: (String, String) -> Unit = { _, _ -> },
+    onDeleteMessage: (String) -> Unit = {},
     onBackClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -101,6 +116,7 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var selectedMessageForMenu by remember { mutableStateOf<MessageUiModel?>(null) }
+    val clipboardManager = LocalClipboardManager.current
 
     // Auto-scroll to bottom on new message
     LaunchedEffect(messages.size) {
@@ -200,55 +216,127 @@ fun ChatScreen(
                                     }
                                 }
                             }
+                        },
+                        onToggleReaction = { emoji ->
+                            onToggleReaction(message.logicalMessageId, emoji)
                         }
                     )
                 }
             }
 
-            // Composer with Reply preview banner
+            // Composer with Reply / Edit preview banner
             MessageComposer(
                 text = composerText,
                 replyingTo = replyingTo,
+                editingMessage = editingMessage,
                 contactName = contactName,
                 onTextChange = onComposerTextChange,
                 onCancelReply = onCancelReply,
+                onCancelEdit = onCancelEdit,
                 onSend = onSendMessage
             )
         }
     }
 
-    // Long press action menu
+    // Message Action Sheet on Long-Press
     if (selectedMessageForMenu != null) {
         val selected = selectedMessageForMenu!!
-        AlertDialog(
+        ModalBottomSheet(
             onDismissRequest = { selectedMessageForMenu = null },
-            title = { Text("Message Options") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = selected.body ?: "",
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyMedium
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Emoji Reaction Bar (👍 ❤️ 😂 😮 😢 🙏)
+                if (!selected.isDeleted) {
+                    val quickEmojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(32.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        for (emoji in quickEmojis) {
+                            val userReacted = selected.reactions.any { it.emoji == emoji && it.userReacted }
+                            Surface(
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        onToggleReaction(selected.logicalMessageId, emoji)
+                                        selectedMessageForMenu = null
+                                    },
+                                color = if (userReacted) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                            ) {
+                                Text(
+                                    text = emoji,
+                                    fontSize = 24.sp,
+                                    modifier = Modifier.padding(6.dp)
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                }
+
+                // Action List
+                // 1. Reply
+                if (!selected.isDeleted) {
+                    ListItem(
+                        headlineContent = { Text("Reply") },
+                        leadingContent = { Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = "Reply") },
+                        modifier = Modifier.clickable {
+                            onReply(selected)
+                            selectedMessageForMenu = null
+                        }
                     )
                 }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onReply(selected)
-                        selectedMessageForMenu = null
-                    }
-                ) {
-                    Text("Reply")
+
+                // 2. Copy
+                if (!selected.isDeleted && !selected.body.isNullOrBlank()) {
+                    ListItem(
+                        headlineContent = { Text("Copy") },
+                        leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") },
+                        modifier = Modifier.clickable {
+                            clipboardManager.setText(AnnotatedString(selected.body))
+                            selectedMessageForMenu = null
+                        }
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { selectedMessageForMenu = null }) {
-                    Text("Cancel")
+
+                // 3. Edit (own outgoing messages only)
+                if (selected.direction == MessageDirection.OUTGOING && !selected.isDeleted) {
+                    ListItem(
+                        headlineContent = { Text("Edit") },
+                        leadingContent = { Icon(Icons.Default.Edit, contentDescription = "Edit") },
+                        modifier = Modifier.clickable {
+                            onStartEdit(selected)
+                            selectedMessageForMenu = null
+                        }
+                    )
                 }
+
+                // 4. Delete (own outgoing messages only)
+                if (selected.direction == MessageDirection.OUTGOING && !selected.isDeleted) {
+                    ListItem(
+                        headlineContent = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) },
+                        modifier = Modifier.clickable {
+                            onDeleteMessage(selected.logicalMessageId)
+                            selectedMessageForMenu = null
+                        }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
-        )
+        }
     }
 }
 
@@ -260,7 +348,8 @@ private fun MessageBubble(
     isHighlighted: Boolean,
     onReply: () -> Unit,
     onLongClick: () -> Unit,
-    onQuoteClick: (String) -> Unit
+    onQuoteClick: (String) -> Unit,
+    onToggleReaction: (String) -> Unit
 ) {
     val isOutgoing = message.direction == MessageDirection.OUTGOING
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
@@ -295,16 +384,16 @@ private fun MessageBubble(
                 state = draggableState,
                 orientation = Orientation.Horizontal,
                 onDragStopped = {
-                    if (dragOffsetX > 80f) {
+                    if (dragOffsetX > 80f && !message.isDeleted) {
                         onReply()
                     }
                     dragOffsetX = 0f
                 }
             )
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start
+            horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
         ) {
             Surface(
                 modifier = Modifier
@@ -324,7 +413,7 @@ private fun MessageBubble(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     // Quoted message bubble snippet (if replying)
-                    if (message.quotedMessage != null) {
+                    if (message.quotedMessage != null && !message.isDeleted) {
                         QuotedBubbleView(
                             quoted = message.quotedMessage,
                             isOutgoingBubble = isOutgoing,
@@ -333,22 +422,59 @@ private fun MessageBubble(
                         Spacer(modifier = Modifier.height(4.dp))
                     }
 
-                    // Message body
-                    Text(
-                        text = message.body ?: "",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (isOutgoing)
-                            MaterialTheme.colorScheme.onPrimary
-                        else
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    // Message body or Tombstone
+                    if (message.isDeleted) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Block,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (isOutgoing)
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                            Text(
+                                text = "This message was deleted",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
+                                color = if (isOutgoing)
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = message.body ?: "",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (isOutgoing)
+                                MaterialTheme.colorScheme.onPrimary
+                            else
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
 
-                    // Timestamp and delivery tick icons
+                    // Timestamp, (edited) suffix, and delivery tick icons
                     Row(
                         modifier = Modifier.align(Alignment.End),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (message.isEdited && !message.isDeleted) {
+                            Text(
+                                text = "(edited)",
+                                style = MaterialTheme.typography.labelSmall.copy(fontStyle = FontStyle.Italic),
+                                color = if (isOutgoing)
+                                    MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+
                         Text(
                             text = formatMessageTime(message.createdAt),
                             style = MaterialTheme.typography.labelSmall,
@@ -357,11 +483,48 @@ private fun MessageBubble(
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
-                        if (isOutgoing) {
+
+                        if (isOutgoing && !message.isDeleted) {
                             DeliveryStatusIcon(
                                 status = message.status,
                                 tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
                             )
+                        }
+                    }
+                }
+            }
+
+            // Reaction Pills below the bubble
+            if (message.reactions.isNotEmpty() && !message.isDeleted) {
+                Row(
+                    modifier = Modifier
+                        .padding(top = 2.dp, start = if (isOutgoing) 0.dp else 6.dp, end = if (isOutgoing) 6.dp else 0.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    for (rx in message.reactions) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (rx.userReacted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            shadowElevation = 1.dp,
+                            modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable {
+                                onToggleReaction(rx.emoji)
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(text = rx.emoji, fontSize = 12.sp)
+                                if (rx.count > 1) {
+                                    Text(
+                                        text = rx.count.toString(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (rx.userReacted) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -398,27 +561,29 @@ private fun QuotedBubbleView(
                     .height(34.dp)
                     .background(
                         if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                        shape = RoundedCornerShape(2.dp)
+                        RoundedCornerShape(2.dp)
                     )
             )
             Spacer(modifier = Modifier.width(8.dp))
             Column {
                 Text(
                     text = quoted.senderName,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+                    color = if (isOutgoingBubble)
+                        MaterialTheme.colorScheme.onPrimary
+                    else
+                        MaterialTheme.colorScheme.primary
                 )
                 Text(
                     text = quoted.previewText,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    fontStyle = if (quoted.isUnavailable) FontStyle.Italic else FontStyle.Normal,
                     color = if (isOutgoingBubble)
                         MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f)
                     else
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                        MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -426,15 +591,17 @@ private fun QuotedBubbleView(
 }
 
 /**
- * Message composer with integrated reply preview banner.
+ * Bottom composer with integrated Reply and Edit preview banners.
  */
 @Composable
 private fun MessageComposer(
     text: String,
     replyingTo: MessageUiModel?,
+    editingMessage: MessageUiModel?,
     contactName: String,
     onTextChange: (String) -> Unit,
     onCancelReply: () -> Unit,
+    onCancelEdit: () -> Unit,
     onSend: () -> Unit
 ) {
     Surface(
@@ -483,6 +650,47 @@ private fun MessageComposer(
                 }
             }
 
+            // Edit Preview Banner
+            if (editingMessage != null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = "Editing",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Edit message",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = editingMessage.body ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                        IconButton(onClick = onCancelEdit) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel edit", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+
             // Input Bar
             Row(
                 modifier = Modifier
@@ -494,7 +702,9 @@ private fun MessageComposer(
                     value = text,
                     onValueChange = onTextChange,
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Message...") },
+                    placeholder = {
+                        Text(if (editingMessage != null) "Edit message..." else "Message...")
+                    },
                     shape = RoundedCornerShape(24.dp),
                     maxLines = 5,
                     colors = OutlinedTextFieldDefaults.colors(
@@ -508,8 +718,8 @@ private fun MessageComposer(
                     enabled = text.isNotBlank()
                 ) {
                     Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send"
+                        if (editingMessage != null) Icons.Default.Check else Icons.AutoMirrored.Filled.Send,
+                        contentDescription = if (editingMessage != null) "Confirm edit" else "Send"
                     )
                 }
             }

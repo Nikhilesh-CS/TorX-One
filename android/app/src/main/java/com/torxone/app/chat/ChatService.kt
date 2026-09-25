@@ -11,10 +11,9 @@ import com.torxone.app.data.TorXDatabase
 import com.torxone.app.data.dao.ConversationDao
 import com.torxone.app.data.dao.MessageDao
 import com.torxone.app.data.dao.OutboxDao
+import com.torxone.app.data.dao.ReactionDao
 import com.torxone.app.data.entity.*
-import com.torxone.app.protocol.MessageType
-import com.torxone.app.protocol.ProtocolCodec
-import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.protocol.*
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
@@ -30,13 +29,17 @@ import java.util.UUID
  * Invariant: Never calls Nearby or network transports directly.
  */
 class ChatService(
-    private val database: TorXDatabase,
+    private val database: TorXDatabase? = null,
     private val sessionCrypto: SessionCrypto,
     private val connectionManager: ConnectionManager,
     private val agent: TorXAgent,
     private val messageDao: MessageDao,
     private val conversationDao: ConversationDao,
-    private val outboxDao: OutboxDao
+    private val outboxDao: OutboxDao,
+    private val reactionDao: ReactionDao? = null,
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
+        if (database != null) database.withTransaction { block() } else block()
+    }
 ) {
     companion object {
         private const val TAG = "ChatService"
@@ -118,7 +121,7 @@ class ChatService(
                 updatedAt = now
             )
 
-            database.withTransaction {
+            transactionRunner {
                 messageDao.insertIfAbsent(messageEntity)
                 outboxDao.insert(outboxEntity)
                 conversationDao.updateLastMessage(
@@ -244,5 +247,255 @@ class ChatService(
      */
     fun observeConversations(): Flow<List<ConversationEntity>> {
         return conversationDao.observeAll()
+    }
+
+    /**
+     * Send or remove an emoji reaction on a target message.
+     */
+    suspend fun sendReaction(
+        conversationId: String,
+        relationshipId: String,
+        localIdentityId: String,
+        recipientId: String,
+        targetMessageId: String,
+        emoji: String,
+        operation: ReactionOperation
+    ) {
+        val now = System.currentTimeMillis()
+
+        // 1. Update Room DB locally
+        when (operation) {
+            ReactionOperation.ADD -> {
+                reactionDao?.insertOrUpdate(
+                    ReactionEntity(
+                        messageId = targetMessageId,
+                        conversationId = conversationId,
+                        senderId = localIdentityId,
+                        emoji = emoji,
+                        createdAt = now
+                    )
+                )
+            }
+            ReactionOperation.REMOVE -> {
+                reactionDao?.remove(
+                    messageId = targetMessageId,
+                    senderId = localIdentityId,
+                    emoji = emoji
+                )
+            }
+        }
+
+        // 2. Build and transmit secure protocol event
+        try {
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return
+            val payload = MessageReaction(
+                targetMessageId = targetMessageId,
+                emoji = emoji,
+                operation = operation
+            ).toByteArray()
+
+            val envelope = SecureEnvelope(
+                protocolVersion = 1,
+                logicalMessageId = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                senderIdentity = localIdentityId,
+                recipientBinding = recipientId,
+                messageType = MessageType.REACTION,
+                timestamp = now,
+                payload = payload
+            )
+            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+
+            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
+            val ciphertext = encrypted.serialize()
+
+            val deliveryItem = DeliveryItem(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = envelope.logicalMessageId,
+                conversationId = conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED,
+                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
+                expectsAck = false
+            )
+
+            Log.i(TAG, "[REACTION] Enqueueing reaction $emoji on msg=${targetMessageId.take(8)}")
+            agent.enqueue(deliveryItem)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send reaction: ${e.message}")
+        }
+    }
+
+    /**
+     * Edit a previously sent text message.
+     * Rules: only original sender may edit, new version > stored version, deleted messages cannot be edited.
+     */
+    suspend fun editMessage(
+        conversationId: String,
+        relationshipId: String,
+        localIdentityId: String,
+        recipientId: String,
+        targetMessageId: String,
+        newText: String
+    ): Boolean {
+        require(newText.isNotBlank()) { "Edited text cannot be blank" }
+
+        val targetMsg = messageDao.getById(targetMessageId) ?: return false
+        if (targetMsg.senderId != localIdentityId) {
+            Log.w(TAG, "Cannot edit message: not original author")
+            return false
+        }
+        if (targetMsg.deletedAt != null) {
+            Log.w(TAG, "Cannot edit deleted message")
+            return false
+        }
+
+        val newVersion = targetMsg.editVersion + 1
+        val now = System.currentTimeMillis()
+
+        // 1. Update Room DB locally
+        messageDao.updateBodyAndEdit(
+            messageId = targetMessageId,
+            newBody = newText,
+            editVersion = newVersion,
+            editedAt = now
+        )
+        conversationDao.updateLastMessagePreviewIfLatest(
+            messageId = targetMessageId,
+            preview = newText.take(100)
+        )
+
+        // 2. Build and transmit secure protocol event
+        try {
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return true
+            val payload = MessageEdit(
+                targetMessageId = targetMessageId,
+                newText = newText,
+                editVersion = newVersion,
+                editedAt = now
+            ).toByteArray()
+
+            val envelope = SecureEnvelope(
+                protocolVersion = 1,
+                logicalMessageId = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                senderIdentity = localIdentityId,
+                recipientBinding = recipientId,
+                messageType = MessageType.EDIT,
+                timestamp = now,
+                payload = payload
+            )
+            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+
+            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
+            val ciphertext = encrypted.serialize()
+
+            val deliveryItem = DeliveryItem(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = envelope.logicalMessageId,
+                conversationId = conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED,
+                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
+                expectsAck = false
+            )
+
+            Log.i(TAG, "[EDIT] Enqueueing edit for msg=${targetMessageId.take(8)} version=$newVersion")
+            agent.enqueue(deliveryItem)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send edit: ${e.message}")
+        }
+        return true
+    }
+
+    /**
+     * Delete a previously sent message, turning it into a tombstone.
+     */
+    suspend fun deleteMessage(
+        conversationId: String,
+        relationshipId: String,
+        localIdentityId: String,
+        recipientId: String,
+        targetMessageId: String
+    ): Boolean {
+        val targetMsg = messageDao.getById(targetMessageId) ?: return false
+        if (targetMsg.senderId != localIdentityId) {
+            Log.w(TAG, "Cannot delete message: not original author")
+            return false
+        }
+        if (targetMsg.deletedAt != null) {
+            return true
+        }
+
+        val now = System.currentTimeMillis()
+
+        // 1. Update Room DB locally: body = null, deletedAt = now
+        messageDao.markDeleted(
+            messageId = targetMessageId,
+            deletedAt = now
+        )
+        conversationDao.updateLastMessagePreviewIfLatest(
+            messageId = targetMessageId,
+            preview = "This message was deleted"
+        )
+
+        // 2. Build and transmit secure protocol event
+        try {
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return true
+            val payload = MessageDelete(
+                targetMessageId = targetMessageId,
+                deletedAt = now
+            ).toByteArray()
+
+            val envelope = SecureEnvelope(
+                protocolVersion = 1,
+                logicalMessageId = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                senderIdentity = localIdentityId,
+                recipientBinding = recipientId,
+                messageType = MessageType.DELETE,
+                timestamp = now,
+                payload = payload
+            )
+            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+
+            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
+            val ciphertext = encrypted.serialize()
+
+            val deliveryItem = DeliveryItem(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = envelope.logicalMessageId,
+                conversationId = conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED,
+                priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                expectsAck = false
+            )
+
+            Log.i(TAG, "[DELETE] Enqueueing delete for msg=${targetMessageId.take(8)}")
+            agent.enqueue(deliveryItem)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send delete: ${e.message}")
+        }
+        return true
+    }
+
+    /**
+     * Observe reactions for a conversation.
+     */
+    fun observeReactions(conversationId: String): Flow<List<ReactionEntity>> {
+        return reactionDao?.observeForConversation(conversationId) ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
 }

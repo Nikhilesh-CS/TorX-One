@@ -44,6 +44,9 @@ class IncomingDispatcher(
     private val localIdentityIdProvider: () -> String?,
     private val presenceHandler: PresenceHandler? = null,
     private val typingHandler: TypingHandler? = null,
+    private val reactionHandler: ReactionHandler? = null,
+    private val editHandler: EditHandler? = null,
+    private val deleteHandler: DeleteHandler? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
@@ -255,6 +258,15 @@ class IncomingDispatcher(
                         }
                         MessageType.TYPING_START, MessageType.TYPING_STOP -> {
                             typingHandler?.handleTypingEvent(connection, secureEnvelope)
+                        }
+                        MessageType.REACTION -> {
+                            reactionHandler?.handleReaction(secureEnvelope)
+                        }
+                        MessageType.EDIT -> {
+                            editHandler?.handleEdit(secureEnvelope)
+                        }
+                        MessageType.DELETE -> {
+                            deleteHandler?.handleDelete(secureEnvelope)
                         }
                         else -> {
                             Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")
