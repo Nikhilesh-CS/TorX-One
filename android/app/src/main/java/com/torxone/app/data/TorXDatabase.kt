@@ -20,9 +20,11 @@ import com.torxone.app.data.entity.*
         SkippedKeyEntity::class,
         PendingInviteEntity::class,
         ReactionEntity::class,
-        LocalMessageStateEntity::class
+        LocalMessageStateEntity::class,
+        MediaEntity::class,
+        MediaTransferEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -30,6 +32,8 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun reactionDao(): ReactionDao
     abstract fun localMessageStateDao(): LocalMessageStateDao
+    abstract fun mediaDao(): MediaDao
+    abstract fun mediaTransferDao(): MediaTransferDao
     abstract fun contactDao(): ContactDao
     abstract fun outboxDao(): OutboxDao
     abstract fun processedEnvelopeDao(): ProcessedEnvelopeDao

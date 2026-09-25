@@ -47,6 +47,7 @@ class IncomingDispatcher(
     private val reactionHandler: ReactionHandler? = null,
     private val editHandler: EditHandler? = null,
     private val deleteHandler: DeleteHandler? = null,
+    private val mediaHandler: MediaHandler? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
@@ -268,6 +269,19 @@ class IncomingDispatcher(
                         MessageType.DELETE -> {
                             deleteHandler?.handleDelete(secureEnvelope)
                         }
+                        MessageType.IMAGE,
+                        MessageType.VIDEO,
+                        MessageType.AUDIO,
+                        MessageType.FILE,
+                        MessageType.VOICE_NOTE -> {
+                            mediaHandler?.handleMediaDescriptor(connection, secureEnvelope)
+                        }
+                        MessageType.FILE_PROGRESS -> {
+                            mediaHandler?.handleMediaChunk(connection, secureEnvelope)
+                        }
+                        MessageType.FILE_CANCEL -> {
+                            mediaHandler?.handleMediaCancel(secureEnvelope)
+                        }
                         else -> {
                             Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")
                         }
@@ -290,9 +304,15 @@ class IncomingDispatcher(
             return false
         }
 
-        // Stage 12: If TEXT, send secure authenticated ACK
+        // Stage 12: If TEXT or Media descriptor, send secure authenticated ACK
         val env = decryptedEnvelope
-        if (env != null && env.messageType == MessageType.TEXT) {
+        if (env != null && (env.messageType == MessageType.TEXT ||
+                    env.messageType == MessageType.IMAGE ||
+                    env.messageType == MessageType.VIDEO ||
+                    env.messageType == MessageType.AUDIO ||
+                    env.messageType == MessageType.FILE ||
+                    env.messageType == MessageType.VOICE_NOTE)
+        ) {
             sendAck(connection, env.logicalMessageId, opaqueEnvelope.envelopeId, env.senderIdentity)
         }
 

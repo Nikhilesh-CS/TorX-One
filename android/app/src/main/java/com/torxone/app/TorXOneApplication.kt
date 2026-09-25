@@ -68,6 +68,9 @@ class TorXOneApplication : Application() {
     lateinit var chatService: ChatService
         private set
 
+    lateinit var mediaService: com.torxone.app.media.MediaService
+        private set
+
     lateinit var presenceService: com.torxone.app.chat.PresenceService
         private set
 
@@ -156,6 +159,24 @@ class TorXOneApplication : Application() {
             notificationManager = notificationManager
         )
 
+        // 7b. Media Service & Handler
+        mediaService = com.torxone.app.media.MediaService(
+            context = this,
+            sessionCrypto = sessionCrypto,
+            connectionManager = connectionManager,
+            agent = agent,
+            messageDao = database.messageDao(),
+            conversationDao = database.conversationDao(),
+            mediaDao = database.mediaDao(),
+            mediaTransferDao = database.mediaTransferDao(),
+            appSettingsRepository = settingsRepository,
+            transactionRunner = { block -> database.withTransaction { block() } }
+        )
+        val mediaHandler = MediaHandler(
+            mediaService = mediaService,
+            notificationManager = notificationManager
+        )
+
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
             messageDao = database.messageDao(),
@@ -183,6 +204,7 @@ class TorXOneApplication : Application() {
             reactionHandler = reactionHandler,
             editHandler = editHandler,
             deleteHandler = deleteHandler,
+            mediaHandler = mediaHandler,
             transactionRunner = { block -> database.withTransaction { block() } },
             pendingInviteDao = database.pendingInviteDao(),
             identityRepository = identityRepository,

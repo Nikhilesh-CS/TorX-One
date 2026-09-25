@@ -285,6 +285,10 @@ class AppSettingsRepository(context: Context) {
         store.edit { it[ConnectionKeys.LOW_BANDWIDTH_MODE] = enabled }
     }
 
+    suspend fun isLowBandwidthMode(): Boolean {
+        return store.data.first()[ConnectionKeys.LOW_BANDWIDTH_MODE] ?: false
+    }
+
     // =========================================================================
     //  Data & Storage
     // =========================================================================

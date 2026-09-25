@@ -142,7 +142,14 @@ class TorXNotificationManager(
                 val rawText = if (msg.deletedAt != null) {
                     "This message was deleted"
                 } else {
-                    msg.body ?: ""
+                    when (msg.type) {
+                        "IMAGE" -> "📷 Photo"
+                        "VIDEO" -> "🎥 Video"
+                        "VOICE_NOTE" -> "🎤 Voice message"
+                        "AUDIO" -> "🎵 Audio"
+                        "FILE" -> "📄 ${msg.body ?: "Document"}"
+                        else -> msg.body ?: ""
+                    }
                 }
 
                 val formatted = NotificationPolicy.formatContent(privacyMode, contactTitle, rawText)

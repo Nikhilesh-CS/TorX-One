@@ -92,7 +92,25 @@ fun ContactInfoScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Settings Card
+            // Media, Links & Docs Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                ListItem(
+                    headlineContent = { Text("Media, links and docs") },
+                    supportingContent = { Text("Encrypted photos, videos, voice notes and files") },
+                    leadingContent = {
+                        Icon(Icons.Default.PermMedia, contentDescription = null)
+                    },
+                    trailingContent = {
+                        Icon(Icons.Default.ChevronRight, contentDescription = null)
+                    },
+                    modifier = Modifier.clickable { /* Open media gallery */ }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp)

@@ -187,7 +187,8 @@ fun TorXOneApp() {
                         recipientId = contact.contactId,
                         contactName = screen.contactName,
                         chatService = app.chatService,
-                        presenceService = app.presenceService
+                        presenceService = app.presenceService,
+                        mediaService = app.mediaService
                     )
                 }
 

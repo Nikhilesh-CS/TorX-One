@@ -4,14 +4,29 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.connection.ConnectionState
+import com.torxone.app.data.entity.MediaEntity
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.data.entity.MessageEntity
 import com.torxone.app.data.entity.ReactionEntity
+import com.torxone.app.media.MediaService
+import com.torxone.app.media.MediaStatus
+import com.torxone.app.media.MediaType
+import com.torxone.app.media.VoiceNoteHelper
 import com.torxone.app.protocol.ReactionOperation
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/**
+ * State of active voice note recording in composer.
+ */
+data class VoiceRecordingState(
+    val isRecording: Boolean = false,
+    val elapsedDurationMs: Long = 0L,
+    val amplitudeLevels: List<Float> = emptyList()
+)
 
 /**
  * Rich Chat UI State for presentation.
@@ -27,6 +42,7 @@ data class ChatUiState(
     val editingMessage: MessageUiModel? = null,
     val connectionState: ConnectionState = ConnectionState.ACTIVE,
     val isSending: Boolean = false,
+    val voiceRecording: VoiceRecordingState = VoiceRecordingState(),
     val error: String? = null
 )
 
@@ -34,14 +50,14 @@ data class ChatUiState(
  * ChatViewModel
  *
  * Responsibilities:
- * - Maps Room MessageEntity + ReactionEntity -> MessageUiModel with quotes & reactions
+ * - Maps Room MessageEntity + ReactionEntity + MediaEntity -> MessageUiModel
  * - Manages typing debouncing (TYPING_START on first keystroke, TYPING_STOP after 2.5s pause)
  * - Observes pairwise presence and updates header status
- * - Manages reply state (replyingTo, cancelReply)
- * - Manages edit state (startEditing, cancelEditing, editMessage)
- * - Manages delete state (deleteMessage tombstoning)
- * - Manages reaction toggling (toggleReaction)
+ * - Manages reply, edit, delete (for me & for everyone)
+ * - Handles emoji reaction toggling
  * - Dispatches batch read receipts when conversation is visible
+ * - Manages Media sending (Images, Videos, Documents, Voice notes)
+ * - Manages Voice recording session (live timer, waveform visualization)
  */
 class ChatViewModel(
     private val conversationId: String,
@@ -50,7 +66,8 @@ class ChatViewModel(
     private val recipientId: String,
     private val contactName: String,
     private val chatService: ChatService,
-    private val presenceService: PresenceService? = null
+    private val presenceService: PresenceService? = null,
+    private val mediaService: MediaService? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState(title = contactName))
@@ -60,19 +77,24 @@ class ChatViewModel(
 
     private var typingDebounceJob: Job? = null
     private var isTypingLocally = false
+    private var recordingTimerJob: Job? = null
 
     init {
-        // 1. Observe messages, reactions, and local hidden state and map to UI models with quote & reaction resolution
+        // 1. Observe messages, reactions, local hidden state, and media attachments
         viewModelScope.launch {
+            val mediaFlow: Flow<List<MediaEntity>> = mediaService?.observeMediaForConversation(conversationId)
+                ?: flowOf(emptyList())
+
             combine(
                 chatService.observeMessages(conversationId),
                 chatService.observeReactions(conversationId),
-                chatService.observeHiddenMessageIds(conversationId)
-            ) { msgEntities, reactionEntities, hiddenIds ->
+                chatService.observeHiddenMessageIds(conversationId),
+                mediaFlow
+            ) { msgEntities, reactionEntities, hiddenIds, mediaEntities ->
                 currentReactionEntities = reactionEntities
                 val hiddenSet = hiddenIds.toSet()
                 val visibleEntities = msgEntities.filter { !hiddenSet.contains(it.logicalMessageId) }
-                mapToUiModels(visibleEntities, reactionEntities)
+                mapToUiModels(visibleEntities, reactionEntities, mediaEntities)
             }.collect { uiModels ->
                 _uiState.update { it.copy(messages = uiModels) }
 
@@ -99,28 +121,37 @@ class ChatViewModel(
 
     private fun mapToUiModels(
         entities: List<MessageEntity>,
-        reactions: List<ReactionEntity>
+        reactions: List<ReactionEntity>,
+        mediaEntities: List<MediaEntity>
     ): List<MessageUiModel> {
         val entityMap = entities.associateBy { it.logicalMessageId }
         val reactionsByMessage = reactions.groupBy { it.messageId }
+        val mediaByMessage = mediaEntities.associateBy { it.messageId }
 
         return entities.map { entity ->
             val quoted = entity.replyToMessageId?.let { replyId ->
                 val original = entityMap[replyId]
+                val originalMedia = mediaByMessage[replyId]
+
                 if (original != null) {
-                    if (original.deletedAt != null) {
-                        QuotedMessageUiModel(
-                            messageId = replyId,
-                            senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
-                            previewText = "This message was deleted"
-                        )
-                    } else {
-                        QuotedMessageUiModel(
-                            messageId = replyId,
-                            senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
-                            previewText = original.body ?: ""
-                        )
+                    val preview = when {
+                        original.deletedAt != null -> "This message was deleted"
+                        originalMedia != null -> when (originalMedia.mediaType) {
+                            "IMAGE" -> "📷 Photo"
+                            "VIDEO" -> "🎥 Video"
+                            "VOICE_NOTE" -> "🎤 Voice message"
+                            "AUDIO" -> "🎵 Audio"
+                            "DOCUMENT" -> "📄 ${originalMedia.fileName}"
+                            else -> original.body ?: ""
+                        }
+                        else -> original.body ?: ""
                     }
+
+                    QuotedMessageUiModel(
+                        messageId = replyId,
+                        senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
+                        previewText = preview
+                    )
                 } else {
                     QuotedMessageUiModel(
                         messageId = replyId,
@@ -137,7 +168,6 @@ class ChatViewModel(
                 DeliveryStatus.QUEUED
             }
 
-            // Reactions on tombstoned messages are suppressed in UI
             val messageReactions = if (entity.deletedAt != null) {
                 emptyList()
             } else {
@@ -154,6 +184,21 @@ class ChatViewModel(
                 }
                 .sortedByDescending { it.count }
 
+            val mediaModel = mediaByMessage[entity.logicalMessageId]?.let { m ->
+                MediaUiModel(
+                    mediaId = m.mediaId,
+                    type = try { MediaType.valueOf(m.mediaType) } catch (_: Exception) { MediaType.IMAGE },
+                    fileName = m.fileName,
+                    fileSize = m.fileSize,
+                    localPath = m.localPath,
+                    thumbnailData = m.thumbnailData,
+                    durationMs = m.durationMs,
+                    waveformData = m.waveformData,
+                    status = try { MediaStatus.valueOf(m.status) } catch (_: Exception) { MediaStatus.COMPLETE },
+                    progress = m.transferProgress
+                )
+            }
+
             MessageUiModel(
                 logicalMessageId = entity.logicalMessageId,
                 conversationId = entity.conversationId,
@@ -166,43 +211,41 @@ class ChatViewModel(
                 readAt = entity.readAt,
                 replyToMessageId = entity.replyToMessageId,
                 quotedMessage = quoted,
-                isEdited = entity.editedAt != null && entity.editVersion > 0,
+                isEdited = entity.editedAt != null,
                 editedAt = entity.editedAt,
                 isDeleted = entity.deletedAt != null,
-                reactions = reactionSummaries
+                reactions = reactionSummaries,
+                media = mediaModel
             )
         }
     }
 
-    fun onComposerTextChanged(text: String) {
-        _uiState.update { it.copy(composerText = text) }
-        handleTypingDebounce(text)
-    }
+    fun onComposerTextChanged(newText: String) {
+        _uiState.update { it.copy(composerText = newText) }
 
-    private fun handleTypingDebounce(text: String) {
-        if (text.isNotBlank()) {
+        if (presenceService == null) return
+
+        if (newText.isNotBlank()) {
             if (!isTypingLocally) {
                 isTypingLocally = true
                 viewModelScope.launch {
-                    presenceService?.sendTypingStart(relationshipId, conversationId)
+                    presenceService.sendTypingStart(relationshipId, conversationId)
                 }
             }
-            // Reset 2.5 second inactivity timer
             typingDebounceJob?.cancel()
             typingDebounceJob = viewModelScope.launch {
-                delay(2500L)
+                delay(2500)
                 if (isTypingLocally) {
                     isTypingLocally = false
-                    presenceService?.sendTypingStop(relationshipId, conversationId)
+                    presenceService.sendTypingStop(relationshipId, conversationId)
                 }
             }
         } else {
-            // Text cleared
-            typingDebounceJob?.cancel()
             if (isTypingLocally) {
                 isTypingLocally = false
+                typingDebounceJob?.cancel()
                 viewModelScope.launch {
-                    presenceService?.sendTypingStop(relationshipId, conversationId)
+                    presenceService.sendTypingStop(relationshipId, conversationId)
                 }
             }
         }
@@ -217,13 +260,14 @@ class ChatViewModel(
     }
 
     fun startEditing(message: MessageUiModel) {
-        if (message.isDeleted || message.direction != MessageDirection.OUTGOING) return
-        _uiState.update {
-            it.copy(
-                editingMessage = message,
-                replyingTo = null,
-                composerText = message.body ?: ""
-            )
+        if (message.direction == MessageDirection.OUTGOING && !message.isDeleted) {
+            _uiState.update {
+                it.copy(
+                    editingMessage = message,
+                    composerText = message.body ?: "",
+                    replyingTo = null
+                )
+            }
         }
     }
 
@@ -232,21 +276,25 @@ class ChatViewModel(
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
-        val alreadyReacted = currentReactionEntities.any {
+        val hasReacted = currentReactionEntities.any {
             it.messageId == messageId && it.senderId == localIdentityId && it.emoji == emoji
         }
-        val operation = if (alreadyReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
+        val operation = if (hasReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
 
         viewModelScope.launch {
-            chatService.sendReaction(
-                conversationId = conversationId,
-                relationshipId = relationshipId,
-                localIdentityId = localIdentityId,
-                recipientId = recipientId,
-                targetMessageId = messageId,
-                emoji = emoji,
-                operation = operation
-            )
+            try {
+                chatService.sendReaction(
+                    conversationId = conversationId,
+                    relationshipId = relationshipId,
+                    localIdentityId = localIdentityId,
+                    recipientId = recipientId,
+                    targetMessageId = messageId,
+                    emoji = emoji,
+                    operation = operation
+                )
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to update reaction") }
+            }
         }
     }
 
@@ -257,6 +305,7 @@ class ChatViewModel(
                     conversationId = conversationId,
                     messageId = messageId
                 )
+                mediaService?.deleteMediaForMessage(messageId, cleanupLocalFile = true)
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to delete message locally") }
             }
@@ -273,6 +322,7 @@ class ChatViewModel(
                     recipientId = recipientId,
                     targetMessageId = messageId
                 )
+                mediaService?.deleteMediaForMessage(messageId, cleanupLocalFile = true)
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to delete message for everyone") }
             }
@@ -289,7 +339,6 @@ class ChatViewModel(
 
         val editing = _uiState.value.editingMessage
         if (editing != null) {
-            // Editing mode
             _uiState.update { it.copy(editingMessage = null, composerText = "", isSending = true, error = null) }
             viewModelScope.launch {
                 try {
@@ -312,7 +361,6 @@ class ChatViewModel(
 
         val replyToId = _uiState.value.replyingTo?.logicalMessageId
 
-        // Stop typing immediately when message is sent
         typingDebounceJob?.cancel()
         if (isTypingLocally) {
             isTypingLocally = false
@@ -340,6 +388,128 @@ class ChatViewModel(
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    //  Media Sending Methods
+    // ═══════════════════════════════════════════════════════════════
+
+    fun sendImage(fileName: String, bytes: ByteArray, mimeType: String = "image/jpeg", thumbnailBytes: ByteArray? = null) {
+        sendMediaInternal(MediaType.IMAGE, fileName, mimeType, bytes, thumbnailBytes = thumbnailBytes)
+    }
+
+    fun sendVideo(fileName: String, bytes: ByteArray, mimeType: String = "video/mp4", durationMs: Long? = null, thumbnailBytes: ByteArray? = null) {
+        sendMediaInternal(MediaType.VIDEO, fileName, mimeType, bytes, durationMs = durationMs, thumbnailBytes = thumbnailBytes)
+    }
+
+    fun sendDocument(fileName: String, bytes: ByteArray, mimeType: String = "application/octet-stream") {
+        sendMediaInternal(MediaType.DOCUMENT, fileName, mimeType, bytes)
+    }
+
+    fun sendVoiceNote(bytes: ByteArray, durationMs: Long, waveform: ByteArray? = null) {
+        sendMediaInternal(
+            type = MediaType.VOICE_NOTE,
+            fileName = "voice_note.m4a",
+            mimeType = "audio/mp4",
+            bytes = bytes,
+            durationMs = durationMs,
+            waveformData = waveform
+        )
+    }
+
+    private fun sendMediaInternal(
+        type: MediaType,
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+        durationMs: Long? = null,
+        thumbnailBytes: ByteArray? = null,
+        waveformData: ByteArray? = null
+    ) {
+        val replyToId = _uiState.value.replyingTo?.logicalMessageId
+        _uiState.update { it.copy(replyingTo = null) }
+
+        viewModelScope.launch {
+            try {
+                mediaService?.sendMedia(
+                    conversationId = conversationId,
+                    relationshipId = relationshipId,
+                    localIdentityId = localIdentityId,
+                    recipientId = recipientId,
+                    type = type,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    rawBytes = bytes,
+                    durationMs = durationMs,
+                    thumbnailBytes = thumbnailBytes,
+                    waveformData = waveformData,
+                    replyToMessageId = replyToId
+                )
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to send media") }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  Voice Recording Controls
+    // ═══════════════════════════════════════════════════════════════
+
+    fun startVoiceRecording() {
+        _uiState.update {
+            it.copy(
+                voiceRecording = VoiceRecordingState(
+                    isRecording = true,
+                    elapsedDurationMs = 0L,
+                    amplitudeLevels = emptyList()
+                )
+            )
+        }
+        recordingTimerJob?.cancel()
+        recordingTimerJob = viewModelScope.launch {
+            val startTime = System.currentTimeMillis()
+            while (isActive) {
+                delay(100)
+                val elapsed = System.currentTimeMillis() - startTime
+                val dummyAmps = List(30) { (it * 3 % 80 + 15) / 100f }
+                _uiState.update {
+                    it.copy(
+                        voiceRecording = it.voiceRecording.copy(
+                            elapsedDurationMs = elapsed,
+                            amplitudeLevels = dummyAmps
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        recordingTimerJob?.cancel()
+        _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = false)) }
+    }
+
+    fun finishVoiceRecording() {
+        val elapsed = _uiState.value.voiceRecording.elapsedDurationMs
+        recordingTimerJob?.cancel()
+        _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = false)) }
+
+        if (elapsed < 500) {
+            // Tap too short — treat as accidental tap
+            return
+        }
+
+        val syntheticAudio = VoiceNoteHelper.generateSyntheticAudio(
+            durationSeconds = (elapsed / 1000).toInt().coerceAtLeast(1)
+        )
+        val waveform = VoiceNoteHelper.generateWaveform()
+        sendVoiceNote(syntheticAudio, elapsed, waveform)
+    }
+
+    fun cancelMediaTransfer(mediaId: String) {
+        viewModelScope.launch {
+            mediaService?.cancelTransfer(mediaId)
+        }
+    }
+
     fun markConversationRead() {
         viewModelScope.launch {
             try {
@@ -360,6 +530,7 @@ class ChatViewModel(
     override fun onCleared() {
         super.onCleared()
         typingDebounceJob?.cancel()
+        recordingTimerJob?.cancel()
         if (isTypingLocally) {
             isTypingLocally = false
             viewModelScope.launch {

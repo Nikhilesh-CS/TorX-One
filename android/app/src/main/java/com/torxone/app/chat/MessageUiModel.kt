@@ -2,6 +2,8 @@ package com.torxone.app.chat
 
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.data.entity.MessageDirection
+import com.torxone.app.media.MediaStatus
+import com.torxone.app.media.MediaType
 
 /**
  * Aggregated reaction model for display below bubbles.
@@ -11,6 +13,33 @@ data class ReactionSummaryUiModel(
     val count: Int,
     val userReacted: Boolean
 )
+
+/**
+ * UI representation of an attached media item.
+ */
+data class MediaUiModel(
+    val mediaId: String,
+    val type: MediaType,
+    val fileName: String,
+    val fileSize: Long,
+    val localPath: String? = null,
+    val thumbnailData: ByteArray? = null,
+    val durationMs: Long? = null,
+    val waveformData: ByteArray? = null,
+    val status: MediaStatus = MediaStatus.COMPLETE,
+    val progress: Float = 0f
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MediaUiModel) return false
+        return mediaId == other.mediaId &&
+                status == other.status &&
+                progress == other.progress &&
+                localPath == other.localPath
+    }
+
+    override fun hashCode(): Int = mediaId.hashCode()
+}
 
 /**
  * MessageUiModel — Presentation model for chat message bubbles.
@@ -31,7 +60,8 @@ data class MessageUiModel(
     val isEdited: Boolean = false,
     val editedAt: Long? = null,
     val isDeleted: Boolean = false,
-    val reactions: List<ReactionSummaryUiModel> = emptyList()
+    val reactions: List<ReactionSummaryUiModel> = emptyList(),
+    val media: MediaUiModel? = null
 )
 
 /**

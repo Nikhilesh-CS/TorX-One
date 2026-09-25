@@ -540,3 +540,142 @@ data class LocalMessageStateEntity(
     val hiddenAt: Long = System.currentTimeMillis()
 )
 
+/**
+ * Media attachment associated with a logical chat message.
+ *
+ * Invariant: Never stores raw file binary data in Room.
+ * Stores metadata, cryptographic verification hashes, encryption key, and local path.
+ */
+@Entity(
+    tableName = "media",
+    indices = [
+        Index("message_id", unique = true),
+        Index("conversation_id")
+    ],
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["logical_message_id"],
+            childColumns = ["message_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ]
+)
+data class MediaEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "media_id")
+    val mediaId: String,
+
+    @ColumnInfo(name = "message_id")
+    val messageId: String,
+
+    @ColumnInfo(name = "conversation_id")
+    val conversationId: String,
+
+    @ColumnInfo(name = "media_type")
+    val mediaType: String, // MediaType.IMAGE, VIDEO, AUDIO, DOCUMENT, VOICE_NOTE
+
+    @ColumnInfo(name = "mime_type")
+    val mimeType: String,
+
+    @ColumnInfo(name = "file_name")
+    val fileName: String,
+
+    @ColumnInfo(name = "file_size")
+    val fileSize: Long,
+
+    @ColumnInfo(name = "local_path")
+    val localPath: String? = null,
+
+    @ColumnInfo(name = "encrypted_sha256")
+    val encryptedSha256: String,
+
+    @ColumnInfo(name = "media_key", typeAffinity = ColumnInfo.BLOB)
+    val mediaKey: ByteArray,
+
+    @ColumnInfo(name = "thumbnail_data", typeAffinity = ColumnInfo.BLOB)
+    val thumbnailData: ByteArray? = null,
+
+    @ColumnInfo(name = "duration_ms")
+    val durationMs: Long? = null,
+
+    @ColumnInfo(name = "waveform_data", typeAffinity = ColumnInfo.BLOB)
+    val waveformData: ByteArray? = null,
+
+    @ColumnInfo(name = "width")
+    val width: Int? = null,
+
+    @ColumnInfo(name = "height")
+    val height: Int? = null,
+
+    @ColumnInfo(name = "status")
+    val status: String, // MediaStatus: PREPARING, QUEUED, UPLOADING, SENT, DELIVERED, DOWNLOADING, COMPLETE, FAILED, CANCELLED
+
+    @ColumnInfo(name = "transfer_progress")
+    val transferProgress: Float = 0f,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is MediaEntity) return false
+        return mediaId == other.mediaId
+    }
+
+    override fun hashCode(): Int = mediaId.hashCode()
+}
+
+/**
+ * Tracks chunked transfer progress, resumability, and chunk bitmask.
+ */
+@Entity(
+    tableName = "media_transfers",
+    indices = [Index("media_id"), Index("conversation_id")]
+)
+data class MediaTransferEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "transfer_id")
+    val transferId: String,
+
+    @ColumnInfo(name = "media_id")
+    val mediaId: String,
+
+    @ColumnInfo(name = "conversation_id")
+    val conversationId: String,
+
+    @ColumnInfo(name = "relationship_id")
+    val relationshipId: String,
+
+    @ColumnInfo(name = "direction")
+    val direction: String, // TransferDirection: UPLOAD, DOWNLOAD
+
+    @ColumnInfo(name = "total_chunks")
+    val totalChunks: Int,
+
+    @ColumnInfo(name = "chunk_size")
+    val chunkSize: Int,
+
+    @ColumnInfo(name = "completed_chunks")
+    val completedChunks: Int = 0,
+
+    @ColumnInfo(name = "chunk_bitmask")
+    val chunkBitmask: String = "",
+
+    @ColumnInfo(name = "temp_encrypted_path")
+    val tempEncryptedPath: String,
+
+    @ColumnInfo(name = "status")
+    val status: String, // TransferStatus: IDLE, ACTIVE, PAUSED, COMPLETED, FAILED, CANCELLED
+
+    @ColumnInfo(name = "bytes_transferred")
+    val bytesTransferred: Long = 0L,
+
+    @ColumnInfo(name = "total_bytes")
+    val totalBytes: Long,
+
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+

@@ -304,4 +304,79 @@ interface LocalMessageStateDao {
     suspend fun deleteByConversation(conversationId: String)
 }
 
+@Dao
+interface MediaDao {
+    @Query("SELECT * FROM media WHERE media_id = :mediaId")
+    suspend fun getById(mediaId: String): MediaEntity?
+
+    @Query("SELECT * FROM media WHERE message_id = :messageId")
+    suspend fun getByMessageId(messageId: String): MediaEntity?
+
+    @Query("SELECT * FROM media WHERE message_id = :messageId")
+    fun observeByMessageId(messageId: String): Flow<MediaEntity?>
+
+    @Query("SELECT * FROM media WHERE conversation_id = :conversationId ORDER BY created_at DESC")
+    fun observeForConversation(conversationId: String): Flow<List<MediaEntity>>
+
+    @Query("SELECT * FROM media WHERE conversation_id = :conversationId ORDER BY created_at DESC")
+    suspend fun getMediaForConversation(conversationId: String): List<MediaEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(media: MediaEntity)
+
+    @Query("UPDATE media SET status = :status, transfer_progress = :progress WHERE media_id = :mediaId")
+    suspend fun updateStatus(mediaId: String, status: String, progress: Float)
+
+    @Query("UPDATE media SET local_path = :localPath, status = :status, transfer_progress = 1.0 WHERE media_id = :mediaId")
+    suspend fun updateLocalPathAndStatus(mediaId: String, localPath: String, status: String)
+
+    @Query("DELETE FROM media WHERE media_id = :mediaId")
+    suspend fun deleteByMediaId(mediaId: String)
+
+    @Query("DELETE FROM media WHERE message_id = :messageId")
+    suspend fun deleteByMessageId(messageId: String)
+
+    @Query("DELETE FROM media WHERE conversation_id = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
+}
+
+@Dao
+interface MediaTransferDao {
+    @Query("SELECT * FROM media_transfers WHERE transfer_id = :transferId")
+    suspend fun getByTransferId(transferId: String): MediaTransferEntity?
+
+    @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId")
+    suspend fun getByMediaId(mediaId: String): MediaTransferEntity?
+
+    @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId")
+    fun observeByMediaId(mediaId: String): Flow<MediaTransferEntity?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(transfer: MediaTransferEntity)
+
+    @Query("UPDATE media_transfers SET completed_chunks = :completedChunks, chunk_bitmask = :chunkBitmask, bytes_transferred = :bytesTransferred, status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId")
+    suspend fun updateProgress(
+        transferId: String,
+        completedChunks: Int,
+        chunkBitmask: String,
+        bytesTransferred: Long,
+        status: String,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    @Query("UPDATE media_transfers SET status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId")
+    suspend fun updateStatus(
+        transferId: String,
+        status: String,
+        updatedAt: Long = System.currentTimeMillis()
+    )
+
+    @Query("DELETE FROM media_transfers WHERE transfer_id = :transferId")
+    suspend fun deleteByTransferId(transferId: String)
+
+    @Query("DELETE FROM media_transfers WHERE media_id = :mediaId")
+    suspend fun deleteByMediaId(mediaId: String)
+}
+
+
 
