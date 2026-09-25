@@ -143,6 +143,7 @@ class EndToEndPipelineTest {
         override fun observeArchivedCount(): Flow<Int> =
             flowOf(convs.values.count { it.isArchived })
         override suspend fun getById(id: String): ConversationEntity? = convs[id]
+        override fun observeById(id: String): Flow<ConversationEntity?> = flowOf(convs[id])
         override suspend fun upsert(conversation: ConversationEntity) { convs[conversation.conversationId] = conversation }
         override suspend fun updateUnreadCount(id: String, count: Int) {
             convs[id]?.let { convs[id] = it.copy(unreadCount = count) }

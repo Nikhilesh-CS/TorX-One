@@ -168,6 +168,7 @@ class TestConversationDao : ConversationDao {
     override fun observeArchived(): Flow<List<ConversationEntity>> = flowOf(emptyList())
     override fun observeArchivedCount(): Flow<Int> = flowOf(0)
     override suspend fun getById(id: String): ConversationEntity? = convs[id]
+    override fun observeById(id: String): Flow<ConversationEntity?> = flowOf(convs[id])
     override suspend fun upsert(conversation: ConversationEntity) { convs[conversation.conversationId] = conversation }
     override suspend fun updateUnreadCount(id: String, count: Int) { convs[id]?.let { convs[id] = it.copy(unreadCount = count) } }
     override suspend fun updateManuallyUnread(id: String, manuallyUnread: Boolean) {}

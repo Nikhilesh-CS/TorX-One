@@ -908,6 +908,109 @@ class GroupService(
         return true
     }
 
+    /**
+     * Updates the group avatar hash. Requires OWNER or ADMIN.
+     */
+    suspend fun updateGroupAvatar(groupId: String, avatarHash: String?): Boolean {
+        val localIdentityId = localIdentityIdProvider() ?: return false
+        val group = groupDao.getById(groupId) ?: return false
+
+        val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
+        val selfRole = GroupMemberRole.fromString(selfMember.role)
+        if (selfRole != GroupMemberRole.OWNER && selfRole != GroupMemberRole.ADMIN) return false
+
+        val previousEpoch = group.epoch
+        val newEpoch = previousEpoch + 1
+        val now = System.currentTimeMillis()
+
+        transactionRunner {
+            groupDao.updateAvatar(groupId, avatarHash, now)
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            conversationDao.getById(groupId)?.let { conv ->
+                conversationDao.upsert(conv.copy(avatarHash = avatarHash))
+            }
+        }
+
+        val avatarPayload = GroupAvatarChangePayload(
+            groupId = groupId,
+            newAvatarHash = avatarHash,
+            actorIdentity = localIdentityId,
+            previousEpoch = previousEpoch,
+            newEpoch = newEpoch
+        )
+        val avatarBytes = GroupProtocolCodec.encodeAvatarChange(avatarPayload)
+
+        val activeMembers = groupMemberDao.getActiveMembers(groupId)
+            .filter { it.memberIdentityId != localIdentityId }
+
+        activeMembers.forEach { member ->
+            try {
+                fanoutControlEnvelope(
+                    groupId = groupId,
+                    recipientIdentityId = member.memberIdentityId,
+                    relationshipId = member.relationshipId,
+                    localIdentityId = localIdentityId,
+                    messageType = MessageType.GROUP_AVATAR_CHANGE,
+                    payload = avatarBytes,
+                    epoch = newEpoch,
+                    priority = DeliveryPriority.HIGH
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send avatar change to ${member.memberIdentityId}: ${e.message}")
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * Marks all unread incoming messages in a group as READ locally and dispatches
+     * READ receipts to the authors of those messages.
+     */
+    suspend fun markGroupRead(groupId: String) {
+        val now = System.currentTimeMillis()
+        val localIdentityId = localIdentityIdProvider() ?: return
+        val group = groupDao.getById(groupId) ?: return
+
+        // 1. Mark local Room messages as READ
+        messageDao.markAllIncomingRead(groupId, DeliveryStatus.READ.name, now)
+        conversationDao.updateUnreadCount(groupId, 0)
+        conversationDao.updateManuallyUnread(groupId, false)
+
+        // 2. Find unread incoming messages and dispatch READ receipt back to each author
+        val unreadIncoming = messageDao.getMessagesForConversationDesc(groupId)
+            .filter { it.direction == MessageDirection.INCOMING && it.senderId != localIdentityId }
+        val latestBySender = unreadIncoming.groupBy { it.senderId }.mapValues { (_, msgs) -> msgs.maxByOrNull { it.createdAt } }
+
+        val activeMembers = groupMemberDao.getActiveMembers(groupId).associateBy { it.memberIdentityId }
+
+        for ((senderId, latestMsg) in latestBySender) {
+            if (latestMsg == null) continue
+            val member = activeMembers[senderId] ?: continue
+            val receiptPayload = ReadReceipt(
+                conversationId = groupId,
+                upToMessageId = latestMsg.logicalMessageId,
+                readAt = now
+            ).toByteArray()
+
+            try {
+                fanoutControlEnvelope(
+                    groupId = groupId,
+                    recipientIdentityId = member.memberIdentityId,
+                    relationshipId = member.relationshipId,
+                    localIdentityId = localIdentityId,
+                    messageType = MessageType.READ_RECEIPT,
+                    payload = receiptPayload,
+                    epoch = group.epoch,
+                    priority = DeliveryPriority.NORMAL,
+                    expectsAck = false
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to send read receipt to $senderId: ${e.message}")
+            }
+        }
+    }
+
     // ─── Recoverable Fan-Out on Startup / Restart ──────────────────────────────
 
     /**

@@ -61,7 +61,9 @@ data class MessageUiModel(
     val editedAt: Long? = null,
     val isDeleted: Boolean = false,
     val reactions: List<ReactionSummaryUiModel> = emptyList(),
-    val media: MediaUiModel? = null
+    val media: MediaUiModel? = null,
+    val senderDisplayName: String? = null,
+    val senderAvatarHash: String? = null
 )
 
 /**

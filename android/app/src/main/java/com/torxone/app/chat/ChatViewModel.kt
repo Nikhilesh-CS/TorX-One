@@ -33,11 +33,16 @@ data class VoiceRecordingState(
  */
 data class ChatUiState(
     val title: String = "",
+    val subtitle: String? = null,
+    val participantCount: Int? = null,
+    val isGroup: Boolean = false,
+    val isParticipantActive: Boolean = true,
     val messages: List<MessageUiModel> = emptyList(),
     val composerText: String = "",
     val presence: PresenceStatus = PresenceStatus.UNKNOWN,
     val lastSeenAt: Long? = null,
     val isTyping: Boolean = false,
+    val typingText: String? = null,
     val replyingTo: MessageUiModel? = null,
     val editingMessage: MessageUiModel? = null,
     val connectionState: ConnectionState = ConnectionState.ACTIVE,

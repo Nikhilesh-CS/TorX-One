@@ -205,6 +205,7 @@ class MediaTransferTest {
         override fun observeArchived(): Flow<List<ConversationEntity>> = flowOf(emptyList())
         override fun observeArchivedCount(): Flow<Int> = flowOf(0)
         override suspend fun getById(id: String): ConversationEntity? = convs[id]
+        override fun observeById(id: String): Flow<ConversationEntity?> = flowOf(convs[id])
         override suspend fun upsert(conversation: ConversationEntity) { convs[conversation.conversationId] = conversation }
         override suspend fun updateUnreadCount(id: String, count: Int) { convs[id]?.let { convs[id] = it.copy(unreadCount = count) } }
         override suspend fun updateManuallyUnread(id: String, manuallyUnread: Boolean) {}
@@ -1028,16 +1029,20 @@ class MediaTransferTest {
         val aliceMedia = alice.mediaDao.getByMessageId(msgId)!!
         val aliceEncFile = alice.mediaStorage.getTempEncryptedFile(aliceMedia.mediaId)
 
-        // Wait for Bob to finish download, Alice to receive FILE_COMPLETE confirmation,
-        // AND temp encrypted file to be cleaned up. On Windows, File.delete() can silently
-        // fail on recently-accessed RandomAccessFile handles, especially under GC pressure
-        // when running alongside other tests. Use a generous timeout and longer poll interval.
-        withTimeout(45000) {
-            while (
-                alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name ||
-                aliceEncFile.exists()
-            ) {
+        // Phase 1: Wait for DELIVERED status (protocol-level, reliable)
+        withTimeout(30000) {
+            while (alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name) {
                 delay(50)
+            }
+        }
+
+        // Phase 2: Wait for temp file cleanup. On Windows, File.delete() can silently
+        // fail on recently-accessed RandomAccessFile handles until GC collects finalizers.
+        // Under full-suite GC pressure this needs a generous timeout + GC hints.
+        withTimeout(60000) {
+            while (aliceEncFile.exists()) {
+                System.gc()
+                delay(200)
             }
         }
 

@@ -121,7 +121,8 @@ class TorXOneApplication : Application() {
             appVisibilityTracker = appVisibilityTracker,
             conversationDao = database.conversationDao(),
             messageDao = database.messageDao(),
-            localMessageStateDao = database.localMessageStateDao()
+            localMessageStateDao = database.localMessageStateDao(),
+            contactDao = database.contactDao()
         )
 
         // 5. Transport Router

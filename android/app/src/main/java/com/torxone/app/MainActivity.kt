@@ -130,6 +130,9 @@ fun TorXOneApp() {
                 onScanQrClick = {
                     showInviteDialog = true
                 },
+                onNewGroupClick = {
+                    currentScreen = Screen.NewGroup
+                },
                 onSettingsClick = {
                     currentScreen = Screen.Settings
                 }
@@ -160,54 +163,93 @@ fun TorXOneApp() {
                 app.activeConversationTracker.setActiveConversation(screen.conversationId)
                 app.notificationManager.cancelForConversation(screen.conversationId)
                 coroutineScope.launch {
-                    app.chatService.markConversationRead(screen.conversationId)
+                    val conv = app.database.conversationDao().getById(screen.conversationId)
+                    if (conv?.type == com.torxone.app.data.entity.ConversationType.GROUP) {
+                        app.groupService.markGroupRead(screen.conversationId)
+                    } else {
+                        app.chatService.markConversationRead(screen.conversationId)
+                    }
                 }
                 onDispose {
                     app.activeConversationTracker.clearActiveConversation()
                 }
             }
 
-            val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
-                value = app.database.contactDao().getByConversationId(screen.conversationId)
-                    ?: app.database.contactDao().getAll().firstOrNull()
+            val conversationState = produceState<com.torxone.app.data.entity.ConversationEntity?>(initialValue = null, screen.conversationId) {
+                value = app.database.conversationDao().getById(screen.conversationId)
             }
             val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
                 value = app.identityRepository.loadIdentity()
             }
-
-            val contact = contactState.value
+            val conversation = conversationState.value
             val localIdentity = localIdentityState.value
 
-            if (contact != null && localIdentity != null) {
-                val viewModel = remember(screen.conversationId, contact.relationshipId) {
-                    com.torxone.app.chat.ChatViewModel(
-                        conversationId = screen.conversationId,
-                        relationshipId = contact.relationshipId,
-                        localIdentityId = localIdentity.identityId,
-                        recipientId = contact.contactId,
-                        contactName = screen.contactName,
-                        chatService = app.chatService,
-                        presenceService = app.presenceService,
-                        mediaService = app.mediaService
-                    )
-                }
-
-                ChatScreen(
-                    viewModel = viewModel,
-                    onBackClick = {
-                        currentScreen = Screen.ConversationList
-                    },
-                    onHeaderClick = {
-                        currentScreen = Screen.ContactInfo(screen.conversationId, screen.contactName)
+            if (conversation != null && localIdentity != null) {
+                if (conversation.type == com.torxone.app.data.entity.ConversationType.GROUP) {
+                    val groupViewModel = remember(screen.conversationId) {
+                        com.torxone.app.groups.GroupChatViewModel(
+                            groupId = screen.conversationId,
+                            conversationId = screen.conversationId,
+                            localIdentityId = localIdentity.identityId,
+                            groupService = app.groupService,
+                            groupDao = app.database.groupDao(),
+                            groupMemberDao = app.database.groupMemberDao(),
+                            messageDao = app.database.messageDao(),
+                            reactionDao = app.database.reactionDao(),
+                            contactDao = app.database.contactDao(),
+                            conversationDao = app.database.conversationDao(),
+                            mediaDao = app.database.mediaDao(),
+                            mediaService = app.mediaService
+                        )
                     }
-                )
+
+                    ChatScreen(
+                        viewModel = groupViewModel,
+                        onBackClick = {
+                            currentScreen = Screen.ConversationList
+                        },
+                        onHeaderClick = {
+                            currentScreen = Screen.GroupInfo(screen.conversationId)
+                        }
+                    )
+                } else {
+                    // DIRECT conversation: Load contact strictly by conversationId
+                    val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
+                        value = app.database.contactDao().getByConversationId(screen.conversationId)
+                    }
+                    val contact = contactState.value
+
+                    if (contact != null) {
+                        val viewModel = remember(screen.conversationId, contact.relationshipId) {
+                            com.torxone.app.chat.ChatViewModel(
+                                conversationId = screen.conversationId,
+                                relationshipId = contact.relationshipId,
+                                localIdentityId = localIdentity.identityId,
+                                recipientId = contact.contactId,
+                                contactName = screen.contactName,
+                                chatService = app.chatService,
+                                presenceService = app.presenceService,
+                                mediaService = app.mediaService
+                            )
+                        }
+
+                        ChatScreen(
+                            viewModel = viewModel,
+                            onBackClick = {
+                                currentScreen = Screen.ConversationList
+                            },
+                            onHeaderClick = {
+                                currentScreen = Screen.ContactInfo(screen.conversationId, screen.contactName)
+                            }
+                        )
+                    }
+                }
             }
         }
 
         is Screen.ContactInfo -> {
             val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
                 value = app.database.contactDao().getByConversationId(screen.conversationId)
-                    ?: app.database.contactDao().getAll().firstOrNull()
             }
             val conversationState = produceState<com.torxone.app.data.entity.ConversationEntity?>(initialValue = null, screen.conversationId) {
                 value = app.database.conversationDao().getById(screen.conversationId)
@@ -221,6 +263,52 @@ fun TorXOneApp() {
                     currentScreen = Screen.Chat(screen.conversationId, screen.contactName)
                 },
                 onChatDeleted = {
+                    currentScreen = Screen.ConversationList
+                }
+            )
+        }
+
+        is Screen.NewGroup -> {
+            val contactsState = produceState<List<com.torxone.app.data.entity.ContactEntity>>(initialValue = emptyList()) {
+                value = app.database.contactDao().getAll()
+            }
+
+            NewGroupScreen(
+                contacts = contactsState.value,
+                onCreateGroup = { title, selectedMembers ->
+                    coroutineScope.launch {
+                        try {
+                            val group = app.groupService.createGroup(
+                                title = title,
+                                initialMembers = selectedMembers
+                            )
+                            currentScreen = Screen.Chat(group.groupId, group.title)
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to create group: ${e.message}", e)
+                        }
+                    }
+                },
+                onBackClick = {
+                    currentScreen = Screen.ConversationList
+                }
+            )
+        }
+
+        is Screen.GroupInfo -> {
+            val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
+                value = app.identityRepository.loadIdentity()
+            }
+
+            GroupInfoScreen(
+                groupId = screen.groupId,
+                database = app.database,
+                groupService = app.groupService,
+                chatService = app.chatService,
+                localIdentityId = localIdentityState.value?.identityId,
+                onBackClick = {
+                    currentScreen = Screen.Chat(screen.groupId, "Group")
+                },
+                onGroupLeft = {
                     currentScreen = Screen.ConversationList
                 }
             )
@@ -302,6 +390,8 @@ sealed class Screen {
     data object ArchivedList : Screen()
     data class Chat(val conversationId: String, val contactName: String) : Screen()
     data class ContactInfo(val conversationId: String, val contactName: String) : Screen()
+    data object NewGroup : Screen()
+    data class GroupInfo(val groupId: String) : Screen()
     data object Settings : Screen()
     data object Profile : Screen()
 }

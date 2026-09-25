@@ -47,28 +47,40 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            val localIdentity = identityRepo.loadIdentity()
-                            val localId = localIdentity?.identityId ?: "local"
-                            val contact = contactDao.getByConversationId(conversationId)
-                            val recipientId = contact?.contactId ?: "peer"
+                            val conv = app.database.conversationDao().getById(conversationId)
+                            val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
 
-                            // Route through golden path
-                            chatService.sendTextMessage(
-                                conversationId = conversationId,
-                                relationshipId = relationshipId,
-                                localIdentityId = localId,
-                                recipientId = recipientId,
-                                text = replyText
-                            )
+                            if (isGroup) {
+                                app.groupService.sendGroupText(
+                                    groupId = conversationId,
+                                    text = replyText
+                                )
+                                app.groupService.markGroupRead(conversationId)
+                                notificationManager.cancelForConversation(conversationId)
+                            } else {
+                                val localIdentity = identityRepo.loadIdentity()
+                                val localId = localIdentity?.identityId ?: "local"
+                                val contact = contactDao.getByConversationId(conversationId)
+                                val recipientId = contact?.contactId ?: "peer"
 
-                            // Mark incoming messages as read upon reply and dismiss notification
-                            chatService.markConversationRead(
-                                conversationId = conversationId,
-                                relationshipId = relationshipId,
-                                localIdentityId = localId,
-                                recipientId = recipientId
-                            )
-                            notificationManager.cancelForConversation(conversationId)
+                                // Route through golden path
+                                chatService.sendTextMessage(
+                                    conversationId = conversationId,
+                                    relationshipId = relationshipId,
+                                    localIdentityId = localId,
+                                    recipientId = recipientId,
+                                    text = replyText
+                                )
+
+                                // Mark incoming messages as read upon reply and dismiss notification
+                                chatService.markConversationRead(
+                                    conversationId = conversationId,
+                                    relationshipId = relationshipId,
+                                    localIdentityId = localId,
+                                    recipientId = recipientId
+                                )
+                                notificationManager.cancelForConversation(conversationId)
+                            }
                         } catch (e: Exception) {
                             Log.e(TAG, "Failed to send inline reply: ${e.message}", e)
                         } finally {
@@ -83,18 +95,26 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        val localIdentity = identityRepo.loadIdentity()
-                        val localId = localIdentity?.identityId ?: "local"
-                        val contact = contactDao.getByConversationId(conversationId)
-                        val recipientId = contact?.contactId ?: "peer"
+                        val conv = app.database.conversationDao().getById(conversationId)
+                        val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
 
-                        chatService.markConversationRead(
-                            conversationId = conversationId,
-                            relationshipId = relationshipId,
-                            localIdentityId = localId,
-                            recipientId = recipientId
-                        )
-                        notificationManager.cancelForConversation(conversationId)
+                        if (isGroup) {
+                            app.groupService.markGroupRead(conversationId)
+                            notificationManager.cancelForConversation(conversationId)
+                        } else {
+                            val localIdentity = identityRepo.loadIdentity()
+                            val localId = localIdentity?.identityId ?: "local"
+                            val contact = contactDao.getByConversationId(conversationId)
+                            val recipientId = contact?.contactId ?: "peer"
+
+                            chatService.markConversationRead(
+                                conversationId = conversationId,
+                                relationshipId = relationshipId,
+                                localIdentityId = localId,
+                                recipientId = recipientId
+                            )
+                            notificationManager.cancelForConversation(conversationId)
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to mark as read: ${e.message}", e)
                     } finally {

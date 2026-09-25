@@ -53,6 +53,66 @@ import java.util.*
 import kotlin.math.roundToInt
 
 /**
+ * ChatScreen with GroupChatViewModel state binding.
+ */
+@Composable
+fun ChatScreen(
+    viewModel: com.torxone.app.groups.GroupChatViewModel,
+    onBackClick: () -> Unit,
+    onHeaderClick: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    var infoMessageId by remember { mutableStateOf<String?>(null) }
+    var deliverySummary by remember { mutableStateOf<com.torxone.app.groups.GroupMessageDeliverySummary?>(null) }
+
+    if (infoMessageId != null) {
+        LaunchedEffect(infoMessageId) {
+            deliverySummary = viewModel.getDeliverySummary(infoMessageId!!)
+        }
+        GroupMessageInfoDialog(
+            summary = deliverySummary,
+            onDismiss = {
+                infoMessageId = null
+                deliverySummary = null
+            }
+        )
+    }
+
+    ChatScreen(
+        contactName = uiState.title,
+        subtitleOverride = uiState.subtitle,
+        isGroup = true,
+        isParticipantActive = uiState.isParticipantActive,
+        messages = uiState.messages,
+        composerText = uiState.composerText,
+        presence = uiState.presence,
+        lastSeenAt = uiState.lastSeenAt,
+        isTyping = uiState.isTyping,
+        replyingTo = uiState.replyingTo,
+        editingMessage = uiState.editingMessage,
+        voiceRecording = uiState.voiceRecording,
+        onComposerTextChange = viewModel::onComposerTextChanged,
+        onSendMessage = viewModel::sendText,
+        onReply = viewModel::onReply,
+        onCancelReply = viewModel::cancelReply,
+        onStartEdit = viewModel::startEditing,
+        onCancelEdit = viewModel::cancelEditing,
+        onToggleReaction = viewModel::toggleReaction,
+        onDeleteForMe = viewModel::deleteForMe,
+        onDeleteForEveryone = viewModel::deleteForEveryone,
+        onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
+        onSendDocument = { name, bytes -> viewModel.sendDocument(name, bytes) },
+        onRequestMessageInfo = { msg ->
+            infoMessageId = msg.logicalMessageId
+        },
+        onHeaderClick = onHeaderClick,
+        onBackClick = onBackClick,
+        modifier = modifier
+    )
+}
+
+/**
  * ChatScreen with ChatViewModel state binding.
  */
 @Composable
@@ -66,6 +126,9 @@ fun ChatScreen(
 
     ChatScreen(
         contactName = uiState.title,
+        subtitleOverride = uiState.subtitle,
+        isGroup = uiState.isGroup,
+        isParticipantActive = uiState.isParticipantActive,
         messages = uiState.messages,
         composerText = uiState.composerText,
         presence = uiState.presence,
@@ -96,16 +159,7 @@ fun ChatScreen(
 }
 
 /**
- * ChatScreen — The 1:1 conversation view.
- *
- * Features:
- * - Header with live presence & typing indicator
- * - Rich media bubbles: Images, Voice notes, Videos, Documents
- * - Swipe-to-reply on message bubbles
- * - Long-press action sheet: Reactions, Reply, Copy, Edit, Delete
- * - Voice note recording bar with live timer & waveform visualization
- * - Attachment picker menu (Photos, Documents, Videos)
- * - In-app full-screen media viewer
+ * ChatScreen — Unified presentation view for Direct and Group conversations.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,6 +170,9 @@ fun ChatScreen(
     presence: PresenceStatus = PresenceStatus.UNKNOWN,
     lastSeenAt: Long? = null,
     isTyping: Boolean = false,
+    subtitleOverride: String? = null,
+    isGroup: Boolean = false,
+    isParticipantActive: Boolean = true,
     replyingTo: MessageUiModel? = null,
     editingMessage: MessageUiModel? = null,
     voiceRecording: VoiceRecordingState = VoiceRecordingState(),
@@ -134,6 +191,7 @@ fun ChatScreen(
     onSendImage: (String, ByteArray) -> Unit = { _, _ -> },
     onSendDocument: (String, ByteArray) -> Unit = { _, _ -> },
     onCancelMediaTransfer: (String) -> Unit = {},
+    onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
     onHeaderClick: () -> Unit = {},
     onBackClick: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -192,7 +250,7 @@ fun ChatScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
 
-                            val subtitleText = when {
+                            val subtitleText = subtitleOverride ?: when {
                                 isTyping -> "typing…"
                                 presence == PresenceStatus.ONLINE -> "online"
                                 presence == PresenceStatus.OFFLINE && lastSeenAt != null -> formatLastSeen(lastSeenAt)
@@ -224,21 +282,39 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            MessageComposer(
-                text = composerText,
-                replyingTo = replyingTo,
-                editingMessage = editingMessage,
-                voiceRecording = voiceRecording,
-                contactName = contactName,
-                onTextChange = onComposerTextChange,
-                onCancelReply = onCancelReply,
-                onCancelEdit = onCancelEdit,
-                onSend = onSendMessage,
-                onAttachClick = { showAttachmentMenu = true },
-                onMicClick = onStartVoiceRecording,
-                onCancelRecording = onCancelVoiceRecording,
-                onSendRecording = onFinishVoiceRecording
-            )
+            if (!isParticipantActive) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = "You are no longer a participant in this group.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(16.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            } else {
+                MessageComposer(
+                    text = composerText,
+                    replyingTo = replyingTo,
+                    editingMessage = editingMessage,
+                    voiceRecording = voiceRecording,
+                    contactName = contactName,
+                    onTextChange = onComposerTextChange,
+                    onCancelReply = onCancelReply,
+                    onCancelEdit = onCancelEdit,
+                    onSend = onSendMessage,
+                    onAttachClick = { showAttachmentMenu = true },
+                    onMicClick = onStartVoiceRecording,
+                    onCancelRecording = onCancelVoiceRecording,
+                    onSendRecording = onFinishVoiceRecording
+                )
+            }
         },
         modifier = modifier
     ) { innerPadding ->
@@ -472,6 +548,18 @@ fun ChatScreen(
                     )
                 }
 
+                if (!target.isDeleted && target.direction == MessageDirection.OUTGOING && isGroup && onRequestMessageInfo != null) {
+                    ListItem(
+                        headlineContent = { Text("Message info") },
+                        leadingContent = { Icon(Icons.Default.Info, contentDescription = null) },
+                        modifier = Modifier.clickable {
+                            val msg = target
+                            selectedMessageForMenu = null
+                            onRequestMessageInfo(msg)
+                        }
+                    )
+                }
+
                 ListItem(
                     headlineContent = { Text("Delete", color = MaterialTheme.colorScheme.error) },
                     leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
@@ -623,6 +711,17 @@ private fun MessageBubble(
                 tonalElevation = 2.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    // Sender display name (for group chats)
+                    if (!isOutgoing && message.senderDisplayName != null && !message.isDeleted) {
+                        Text(
+                            text = message.senderDisplayName,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(bottom = 2.dp)
+                        )
+                    }
+
                     // Quoted snippet
                     if (message.quotedMessage != null && !message.isDeleted) {
                         QuotedBubbleView(

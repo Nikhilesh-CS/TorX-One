@@ -29,12 +29,15 @@ import com.torxone.app.conversations.ConversationUiModel
 import java.text.SimpleDateFormat
 import java.util.*
 
+import com.torxone.app.data.entity.ConversationType
+
 @Composable
 fun ConversationListScreen(
     viewModel: ConversationListViewModel,
     onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit,
     onScanQrClick: () -> Unit,
+    onNewGroupClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -50,6 +53,7 @@ fun ConversationListScreen(
         onConversationClick = onConversationClick,
         onArchivedClick = onArchivedClick,
         onScanQrClick = onScanQrClick,
+        onNewGroupClick = onNewGroupClick,
         onSettingsClick = onSettingsClick,
         onPinClick = viewModel::togglePin,
         onArchiveClick = viewModel::toggleArchive,
@@ -77,6 +81,7 @@ fun ConversationListScreen(
     onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit = {},
     onScanQrClick: () -> Unit,
+    onNewGroupClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
     onPinClick: (ConversationUiModel) -> Unit = {},
     onArchiveClick: (ConversationUiModel) -> Unit = {},
@@ -90,6 +95,7 @@ fun ConversationListScreen(
     var selectedForActionSheet by remember { mutableStateOf<ConversationUiModel?>(null) }
     var conversationPendingMute by remember { mutableStateOf<ConversationUiModel?>(null) }
     var conversationPendingDelete by remember { mutableStateOf<ConversationUiModel?>(null) }
+    var showNewChatSheet by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -154,7 +160,7 @@ fun ConversationListScreen(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onScanQrClick) {
+            FloatingActionButton(onClick = { showNewChatSheet = true }) {
                 Icon(Icons.Default.Add, contentDescription = "New chat")
             }
         },
@@ -364,15 +370,61 @@ fun ConversationListScreen(
         )
     }
 
+    // New Chat Options Bottom Sheet (Groups vs Direct Contact)
+    if (showNewChatSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showNewChatSheet = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = "Start chatting",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                ListItem(
+                    headlineContent = { Text("New group") },
+                    supportingContent = { Text("Create an end-to-end encrypted group chat") },
+                    leadingContent = {
+                        Icon(Icons.Default.GroupAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    modifier = Modifier.clickable {
+                        showNewChatSheet = false
+                        onNewGroupClick()
+                    }
+                )
+                ListItem(
+                    headlineContent = { Text("Scan QR / Add contact") },
+                    supportingContent = { Text("Direct peer connection via mesh") },
+                    leadingContent = {
+                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    modifier = Modifier.clickable {
+                        showNewChatSheet = false
+                        onScanQrClick()
+                    }
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
+    }
+
     // Delete Chat Dialog (Local only)
     if (conversationPendingDelete != null) {
         val target = conversationPendingDelete!!
+        val explanation = if (target.type == ConversationType.GROUP) {
+            "Messages will be deleted from this device only. You will remain a member of the group until you leave it."
+        } else {
+            "Messages will be deleted from this device only. The contact and secure key exchange will remain saved."
+        }
         AlertDialog(
             onDismissRequest = { conversationPendingDelete = null },
             title = { Text("Delete this chat?") },
-            text = {
-                Text("Messages will be deleted from this device only. The contact and secure key exchange will remain saved.")
-            },
+            text = { Text(explanation) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -420,15 +472,29 @@ private fun ConversationItem(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(
+                        if (conversation.type == ConversationType.GROUP)
+                            MaterialTheme.colorScheme.secondaryContainer
+                        else
+                            MaterialTheme.colorScheme.primaryContainer
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = conversation.title.take(1).uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                if (conversation.type == ConversationType.GROUP) {
+                    Icon(
+                        imageVector = Icons.Default.Groups,
+                        contentDescription = "Group",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(28.dp)
+                    )
+                } else {
+                    Text(
+                        text = conversation.title.take(1).uppercase(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
             }
 
             // Title + Preview
@@ -439,6 +505,14 @@ private fun ConversationItem(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (conversation.type == ConversationType.GROUP) {
+                        Icon(
+                            imageVector = Icons.Default.Groups,
+                            contentDescription = "Group",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     Text(
                         text = conversation.title,
                         style = MaterialTheme.typography.titleMedium,

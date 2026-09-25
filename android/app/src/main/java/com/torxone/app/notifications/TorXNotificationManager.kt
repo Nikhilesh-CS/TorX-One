@@ -39,7 +39,8 @@ class TorXNotificationManager(
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao,
     private val localMessageStateDao: LocalMessageStateDao,
-    private val privacyModeProvider: () -> NotificationPrivacyMode = { NotificationPrivacyMode.FULL }
+    private val privacyModeProvider: () -> NotificationPrivacyMode = { NotificationPrivacyMode.FULL },
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
 ) {
     companion object {
         private const val TAG = "TorXNotificationManager"
@@ -134,9 +135,19 @@ class TorXNotificationManager(
             val privacyMode = privacyModeProvider()
 
             // 2. Build MessagingStyle
+            val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
             val userPerson = Person.Builder().setName("You").build()
             val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
                 .setConversationTitle(contactTitle)
+                .setGroupConversation(isGroup)
+
+            val contactsMap = if (isGroup && contactDao != null) {
+                try {
+                    contactDao.getAll().associateBy { it.contactId }
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
 
             for (msg in unreadIncoming) {
                 val rawText = if (msg.deletedAt != null) {
@@ -152,7 +163,13 @@ class TorXNotificationManager(
                     }
                 }
 
-                val formatted = NotificationPolicy.formatContent(privacyMode, contactTitle, rawText)
+                val senderName = if (isGroup) {
+                    contactsMap?.get(msg.senderId)?.displayName ?: msg.senderId.take(8)
+                } else {
+                    contactTitle
+                }
+
+                val formatted = NotificationPolicy.formatContent(privacyMode, senderName, rawText)
                 val senderPerson = Person.Builder().setName(formatted.title).build()
 
                 messagingStyle.addMessage(

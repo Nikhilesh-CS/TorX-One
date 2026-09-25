@@ -1,6 +1,7 @@
 package com.torxone.app.conversations
 
 import com.torxone.app.agent.DeliveryStatus
+import com.torxone.app.data.entity.ConversationType
 
 /**
  * UI representation of a conversation item in the list.
@@ -17,7 +18,8 @@ data class ConversationUiModel(
     val isMuted: Boolean,
     val avatarHash: String? = null,
     val isLastMessageOutgoing: Boolean = false,
-    val lastMessageStatus: DeliveryStatus? = null
+    val lastMessageStatus: DeliveryStatus? = null,
+    val type: ConversationType = ConversationType.DIRECT
 ) {
     companion object {
         fun from(
@@ -55,7 +57,8 @@ data class ConversationUiModel(
                 isMuted = com.torxone.app.notifications.NotificationPolicy.isConversationMuted(entity.mutedUntil, now),
                 avatarHash = entity.avatarHash,
                 isLastMessageOutgoing = isOutgoing,
-                lastMessageStatus = status
+                lastMessageStatus = status,
+                type = entity.type
             )
         }
     }
