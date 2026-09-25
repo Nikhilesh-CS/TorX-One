@@ -48,6 +48,9 @@ class IncomingDispatcher(
     private val editHandler: EditHandler? = null,
     private val deleteHandler: DeleteHandler? = null,
     private val mediaHandler: MediaHandler? = null,
+    private val groupHandler: GroupHandler? = null,
+    private val groupDao: com.torxone.app.data.dao.GroupDao? = null,
+    private val groupMemberDao: com.torxone.app.data.dao.GroupMemberDao? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
@@ -244,6 +247,29 @@ class IncomingDispatcher(
                     connectionManager.updateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
                 }
 
+                // Stage 8c: Validate group authorization and epoch if group envelope
+                if (secureEnvelope.groupMetadata != null) {
+                    val gMeta = secureEnvelope.groupMetadata
+                    if (groupDao != null && groupMemberDao != null) {
+                        // Only validate membership for non-invite messages
+                        if (secureEnvelope.messageType != MessageType.GROUP_CREATE &&
+                            secureEnvelope.messageType != MessageType.GROUP_MEMBER_INVITE
+                        ) {
+                            val group = groupDao.getById(gMeta.groupId)
+                            if (group == null) {
+                                throw IllegalStateException("Received group message for unknown group ${gMeta.groupId}")
+                            }
+                            val member = groupMemberDao.getMember(gMeta.groupId, secureEnvelope.senderIdentity)
+                            if (member == null || member.state != com.torxone.app.data.entity.GroupMemberState.ACTIVE.name) {
+                                throw IllegalStateException("Sender ${secureEnvelope.senderIdentity} is not an active member of group ${gMeta.groupId}")
+                            }
+                            if (gMeta.groupEpoch < member.joinedEpoch) {
+                                throw IllegalStateException("Group message epoch ${gMeta.groupEpoch} precedes member joined epoch ${member.joinedEpoch}")
+                            }
+                        }
+                    }
+                }
+
                 // Stage 9, 10, 11: Atomic Database Transaction
                 // Ratchet receive state + Message persistence + Dedup record committed together!
                 transactionRunner {
@@ -291,6 +317,25 @@ class IncomingDispatcher(
                         }
                         MessageType.FILE_CANCEL -> {
                             mediaHandler?.handleMediaCancel(secureEnvelope)
+                        }
+                        MessageType.GROUP_CREATE,
+                        MessageType.GROUP_MEMBER_INVITE -> {
+                            groupHandler?.handleGroupCreateOrInvite(connection, secureEnvelope)
+                        }
+                        MessageType.GROUP_MEMBER_ACCEPT -> {
+                            groupHandler?.handleMemberJoined(connection, secureEnvelope)
+                        }
+                        MessageType.GROUP_MEMBER_REMOVE -> {
+                            groupHandler?.handleMemberRemove(connection, secureEnvelope)
+                        }
+                        MessageType.GROUP_ROLE_CHANGE -> {
+                            groupHandler?.handleRoleChange(connection, secureEnvelope)
+                        }
+                        MessageType.GROUP_NAME_CHANGE -> {
+                            groupHandler?.handleNameChange(connection, secureEnvelope)
+                        }
+                        MessageType.GROUP_AVATAR_CHANGE -> {
+                            groupHandler?.handleAvatarChange(connection, secureEnvelope)
                         }
                         else -> {
                             Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")

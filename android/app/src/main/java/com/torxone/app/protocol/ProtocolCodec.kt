@@ -29,6 +29,16 @@ object ProtocolCodec {
         dos.writeLong(envelope.directionSequence)
         dos.writeInt(envelope.payload.size)
         dos.write(envelope.payload)
+
+        if (envelope.groupMetadata != null) {
+            dos.writeBoolean(true)
+            dos.writeUTF(envelope.groupMetadata.groupId.take(ProtocolLimits.MAX_ID_LENGTH))
+            dos.writeInt(envelope.groupMetadata.groupEpoch)
+            dos.writeInt(envelope.groupMetadata.keyVersion)
+        } else {
+            dos.writeBoolean(false)
+        }
+
         dos.flush()
 
         return baos.toByteArray()
@@ -61,6 +71,16 @@ object ProtocolCodec {
         val payload = ByteArray(payloadSize)
         dis.readFully(payload)
 
+        val groupMetadata = if (dis.available() > 0) {
+            val hasGroup = dis.readBoolean()
+            if (hasGroup) {
+                val gId = dis.readUTF()
+                val gEpoch = dis.readInt()
+                val kVer = dis.readInt()
+                GroupEnvelopeMetadata(groupId = gId, groupEpoch = gEpoch, keyVersion = kVer)
+            } else null
+        } else null
+
         return SecureEnvelope(
             protocolVersion = version,
             logicalMessageId = messageId,
@@ -71,6 +91,7 @@ object ProtocolCodec {
             timestamp = timestamp,
             payload = payload,
             replyToMessageId = replyTo,
+            groupMetadata = groupMetadata,
             directionSequence = directionSequence
         )
     }

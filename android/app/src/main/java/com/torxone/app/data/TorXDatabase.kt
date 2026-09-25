@@ -22,9 +22,12 @@ import com.torxone.app.data.entity.*
         ReactionEntity::class,
         LocalMessageStateEntity::class,
         MediaEntity::class,
-        MediaTransferEntity::class
+        MediaTransferEntity::class,
+        GroupEntity::class,
+        GroupMemberEntity::class,
+        GroupMessageDeliveryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -42,6 +45,9 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun sessionDao(): SessionDao
     abstract fun skippedKeyDao(): SkippedKeyDao
     abstract fun pendingInviteDao(): PendingInviteDao
+    abstract fun groupDao(): GroupDao
+    abstract fun groupMemberDao(): GroupMemberDao
+    abstract fun groupMessageDeliveryDao(): GroupMessageDeliveryDao
 
     companion object {
         @Volatile

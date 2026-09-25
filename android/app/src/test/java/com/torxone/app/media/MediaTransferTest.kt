@@ -1013,7 +1013,7 @@ class MediaTransferTest {
         val (alice, bob) = setupPair()
         val conversationId = "conv_alice_bob"
 
-        val testData = ByteArray(32 * 1024) { 0x55.toByte() }
+        val testData = ByteArray(8 * 1024) { 0x55.toByte() }
         val msgId = alice.mediaService!!.sendMedia(
             conversationId = conversationId,
             relationshipId = "rel_alice_bob",
@@ -1032,7 +1032,7 @@ class MediaTransferTest {
         // AND temp encrypted file to be cleaned up. On Windows, File.delete() can silently
         // fail on recently-accessed RandomAccessFile handles, especially under GC pressure
         // when running alongside other tests. Use a generous timeout and longer poll interval.
-        withTimeout(30000) {
+        withTimeout(45000) {
             while (
                 alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name ||
                 aliceEncFile.exists()

@@ -11,7 +11,8 @@ import com.torxone.app.protocol.SecureEnvelope
 class DeliveryReceiptHandler(
     private val messageDao: MessageDao,
     private val outboxDao: OutboxDao,
-    private val agent: TorXAgent
+    private val agent: TorXAgent,
+    private val groupService: com.torxone.app.groups.GroupService? = null
 ) {
     companion object {
         private const val TAG = "DeliveryReceiptHandler"
@@ -21,14 +22,20 @@ class DeliveryReceiptHandler(
         val ack = DeliveryAck.fromByteArray(envelope.payload)
         Log.i(TAG, "[ACK] Received ACK for message=${ack.originalMessageId.take(8)}")
 
-        // 1. Mark message as DELIVERED in Room
-        messageDao.markDelivered(ack.originalMessageId, DeliveryStatus.DELIVERED.name, ack.receivedAt)
+        val isGroup = groupService?.isGroupMessage(ack.originalMessageId) ?: false
+        if (!isGroup) {
+            // 1. Mark 1:1 message as DELIVERED in Room
+            messageDao.markDelivered(ack.originalMessageId, DeliveryStatus.DELIVERED.name, ack.receivedAt)
+        }
 
         // 2. Remove outbox record
         outboxDao.removeByMessageId(ack.originalMessageId)
 
         // 3. Notify agent
         agent.markDelivered(ack.originalMessageId)
+
+        // 4. Notify GroupService if message is a group message
+        groupService?.handleDeliveryAck(ack.originalMessageId, envelope.senderIdentity, ack.receivedAt)
     }
 
     suspend fun handleReadReceipt(envelope: SecureEnvelope) {
@@ -36,18 +43,22 @@ class DeliveryReceiptHandler(
             try {
                 val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
                 Log.i(TAG, "[READ] Received batch READ up to message=${receipt.upToMessageId.take(8)} for conv=${receipt.conversationId.take(8)}")
-                val targetMsg = messageDao.getById(receipt.upToMessageId)
-                if (targetMsg != null) {
-                    messageDao.markOutgoingReadUpTo(
-                        conversationId = receipt.conversationId,
-                        upToCreatedAt = targetMsg.createdAt,
-                        status = DeliveryStatus.READ.name,
-                        readAt = receipt.readAt
-                    )
-                } else {
-                    messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
+                val isGroup = groupService?.isGroupMessage(receipt.upToMessageId) ?: false
+                if (!isGroup) {
+                    val targetMsg = messageDao.getById(receipt.upToMessageId)
+                    if (targetMsg != null) {
+                        messageDao.markOutgoingReadUpTo(
+                            conversationId = receipt.conversationId,
+                            upToCreatedAt = targetMsg.createdAt,
+                            status = DeliveryStatus.READ.name,
+                            readAt = receipt.readAt
+                        )
+                    } else {
+                        messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
+                    }
                 }
                 agent.markRead(receipt.upToMessageId)
+                groupService?.handleReadReceipt(receipt.upToMessageId, envelope.senderIdentity, receipt.readAt)
                 return
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to parse ReadReceipt payload, falling back to messageId: ${e.message}")
@@ -56,7 +67,11 @@ class DeliveryReceiptHandler(
 
         val messageId = envelope.logicalMessageId
         Log.i(TAG, "[READ] Received READ for message=${messageId.take(8)}")
-        messageDao.markRead(messageId, DeliveryStatus.READ.name, envelope.timestamp)
+        val isGroup = groupService?.isGroupMessage(messageId) ?: false
+        if (!isGroup) {
+            messageDao.markRead(messageId, DeliveryStatus.READ.name, envelope.timestamp)
+        }
         agent.markRead(messageId)
+        groupService?.handleReadReceipt(messageId, envelope.senderIdentity, envelope.timestamp)
     }
 }

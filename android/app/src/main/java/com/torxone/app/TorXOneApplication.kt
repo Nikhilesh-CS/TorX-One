@@ -68,6 +68,9 @@ class TorXOneApplication : Application() {
     lateinit var chatService: ChatService
         private set
 
+    lateinit var groupService: com.torxone.app.groups.GroupService
+        private set
+
     lateinit var mediaService: com.torxone.app.media.MediaService
         private set
 
@@ -181,6 +184,35 @@ class TorXOneApplication : Application() {
             notificationManager = notificationManager
         )
 
+        // 7c. Group Service & Handler
+        groupService = com.torxone.app.groups.GroupService(
+            groupDao = database.groupDao(),
+            groupMemberDao = database.groupMemberDao(),
+            groupMessageDeliveryDao = database.groupMessageDeliveryDao(),
+            conversationDao = database.conversationDao(),
+            messageDao = database.messageDao(),
+            reactionDao = database.reactionDao(),
+            contactDao = database.contactDao(),
+            outboxDao = database.outboxDao(),
+            connectionManager = connectionManager,
+            sessionCrypto = sessionCrypto,
+            agent = agent,
+            localIdentityIdProvider = {
+                runBlocking { identityRepository.loadIdentity()?.identityId }
+            },
+            transactionRunner = { block -> database.withTransaction { block() } }
+        )
+        val groupHandler = com.torxone.app.incoming.GroupHandler(
+            groupDao = database.groupDao(),
+            groupMemberDao = database.groupMemberDao(),
+            conversationDao = database.conversationDao(),
+            localIdentityIdProvider = {
+                runBlocking { identityRepository.loadIdentity()?.identityId }
+            },
+            notificationManager = notificationManager,
+            transactionRunner = { block -> database.withTransaction { block() } }
+        )
+
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
             messageDao = database.messageDao(),
@@ -191,7 +223,8 @@ class TorXOneApplication : Application() {
         val receiptHandler = DeliveryReceiptHandler(
             messageDao = database.messageDao(),
             outboxDao = database.outboxDao(),
-            agent = agent
+            agent = agent,
+            groupService = groupService
         )
         val incomingDispatcher = IncomingDispatcher(
             connectionManager = connectionManager,
@@ -209,6 +242,9 @@ class TorXOneApplication : Application() {
             editHandler = editHandler,
             deleteHandler = deleteHandler,
             mediaHandler = mediaHandler,
+            groupHandler = groupHandler,
+            groupDao = database.groupDao(),
+            groupMemberDao = database.groupMemberDao(),
             transactionRunner = { block -> database.withTransaction { block() } },
             pendingInviteDao = database.pendingInviteDao(),
             identityRepository = identityRepository,
