@@ -8,6 +8,7 @@ import com.torxone.app.agent.ProcessedEnvelope
 import com.torxone.app.agent.ProcessedEnvelopeStore
 import com.torxone.app.agent.TorXAgent
 import com.torxone.app.chat.ChatService
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.crypto.DoubleRatchetSessionCrypto
 import com.torxone.app.crypto.RoomSessionStore
@@ -76,6 +77,9 @@ class TorXOneApplication : Application() {
     lateinit var nearbyTransport: NearbyTransport
         private set
 
+    lateinit var settingsRepository: AppSettingsRepository
+        private set
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -83,6 +87,9 @@ class TorXOneApplication : Application() {
         // 0. App Lifecycle & Visibility Tracking
         appVisibilityTracker = com.torxone.app.notifications.AppVisibilityTracker()
         registerActivityLifecycleCallbacks(appVisibilityTracker)
+
+        // 0b. Settings DataStore
+        settingsRepository = AppSettingsRepository(this)
 
         // 1. Database
         database = TorXDatabase.getInstance(this)

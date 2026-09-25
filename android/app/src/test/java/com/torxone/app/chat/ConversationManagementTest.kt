@@ -536,7 +536,8 @@ class ConversationManagementTest {
         assertTrue(active[0].isPinned)
         assertNotNull(active[0].pinnedAt)
 
-        // Pin Alice
+        // Pin Alice (small delay to ensure distinct pinnedAt timestamp across fast clock ticks)
+        kotlinx.coroutines.delay(25)
         chatService.setChatPinned("conv_1", true)
         active = convDao.observeActive().first()
         assertEquals("conv_1", active[0].conversationId)

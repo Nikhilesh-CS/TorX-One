@@ -35,6 +35,7 @@ fun ConversationListScreen(
     onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit,
     onScanQrClick: () -> Unit,
+    onSettingsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -49,6 +50,7 @@ fun ConversationListScreen(
         onConversationClick = onConversationClick,
         onArchivedClick = onArchivedClick,
         onScanQrClick = onScanQrClick,
+        onSettingsClick = onSettingsClick,
         onPinClick = viewModel::togglePin,
         onArchiveClick = viewModel::toggleArchive,
         onMuteClick = { conv, duration -> viewModel.setMuteDuration(conv.conversationId, duration) },
@@ -75,6 +77,7 @@ fun ConversationListScreen(
     onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit = {},
     onScanQrClick: () -> Unit,
+    onSettingsClick: () -> Unit = {},
     onPinClick: (ConversationUiModel) -> Unit = {},
     onArchiveClick: (ConversationUiModel) -> Unit = {},
     onMuteClick: (ConversationUiModel, Long?) -> Unit = { _, _ -> },
@@ -142,6 +145,9 @@ fun ConversationListScreen(
                         }
                         IconButton(onClick = onScanQrClick) {
                             Icon(Icons.Default.QrCode, contentDescription = "Scan QR")
+                        }
+                        IconButton(onClick = onSettingsClick) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
                         }
                     }
                 )
