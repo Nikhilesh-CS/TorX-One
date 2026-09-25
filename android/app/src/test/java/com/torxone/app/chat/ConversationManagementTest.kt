@@ -330,6 +330,7 @@ class ConversationManagementTest {
         val sessions = ConcurrentHashMap<String, SessionState>()
         override suspend fun loadSession(relationshipId: String): SessionState? = sessions[relationshipId]?.copyState()
         override suspend fun saveSession(state: SessionState) { sessions[state.relationshipId] = state.copyState() }
+        override suspend fun deleteSession(relationshipId: String) { sessions.remove(relationshipId) }
     }
 
     class InMemoryOutboxStore : OutboxStore {

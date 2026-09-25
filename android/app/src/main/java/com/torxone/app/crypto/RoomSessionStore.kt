@@ -72,4 +72,12 @@ class RoomSessionStore(
             skippedKeyDao.insertAll(skippedList)
         }
     }
+
+    override suspend fun deleteSession(relationshipId: String): Unit = withContext(Dispatchers.IO) {
+        val existing = sessionDao.getByRelationshipId(relationshipId)
+        if (existing != null) {
+            skippedKeyDao.deleteKeysForSession(existing.sessionId)
+        }
+        sessionDao.deleteByRelationshipId(relationshipId)
+    }
 }

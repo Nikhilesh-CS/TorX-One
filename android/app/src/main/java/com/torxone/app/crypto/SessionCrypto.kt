@@ -4,6 +4,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
@@ -41,6 +42,8 @@ interface SessionCrypto {
 
     suspend fun saveSession(state: SessionState)
     suspend fun hasSession(relationshipId: String): Boolean
+    fun closeSession(relationshipId: String)
+    suspend fun resetSession(relationshipId: String)
     suspend fun initializeSession(
         relationshipId: String,
         sessionInitializationSecret: ByteArray,
@@ -56,7 +59,7 @@ interface SessionCrypto {
  * Owns session lifecycle and operations with no exposure of internal chain keys.
  */
 interface SessionController : SessionCrypto {
-    suspend fun resetSession(relationshipId: String)
+    override suspend fun resetSession(relationshipId: String)
 }
 
 /**
@@ -65,6 +68,7 @@ interface SessionController : SessionCrypto {
 interface SessionStore {
     suspend fun loadSession(relationshipId: String): SessionState?
     suspend fun saveSession(state: SessionState)
+    suspend fun deleteSession(relationshipId: String) {}
 }
 
 /**
@@ -138,6 +142,11 @@ class SessionActor(
         }
     }
 
+    fun close() {
+        channel.close()
+        scope.cancel()
+    }
+
     suspend fun send(command: SessionCommand) {
         channel.send(command)
     }
@@ -183,6 +192,7 @@ class SessionActor(
                 cmd.response.complete(exists)
             }
             is SessionCommand.Reset -> {
+                sessionStore.deleteSession(relationshipId)
                 cmd.response.complete(Unit)
             }
         }
@@ -203,6 +213,10 @@ class DoubleRatchetSessionCrypto(
         return actors.computeIfAbsent(relationshipId) {
             SessionActor(relationshipId, sessionStore)
         }
+    }
+
+    override fun closeSession(relationshipId: String) {
+        actors.remove(relationshipId)?.close()
     }
 
     override suspend fun hasSession(relationshipId: String): Boolean {

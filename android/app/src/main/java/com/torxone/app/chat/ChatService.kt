@@ -15,8 +15,10 @@ import com.torxone.app.data.dao.OutboxDao
 import com.torxone.app.data.dao.ReactionDao
 import com.torxone.app.data.entity.*
 import com.torxone.app.notifications.TorXNotificationManager
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.protocol.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.util.UUID
 
 /**
@@ -41,6 +43,7 @@ class ChatService(
     private val reactionDao: ReactionDao? = null,
     private val localMessageStateDao: LocalMessageStateDao? = null,
     private val notificationManager: TorXNotificationManager? = null,
+    private val appSettingsRepository: AppSettingsRepository? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
     }
@@ -212,6 +215,11 @@ class ChatService(
         localIdentityId: String,
         recipientId: String
     ) {
+        val readReceiptsEnabled = appSettingsRepository?.readReceiptsEnabled?.first() ?: true
+        if (!readReceiptsEnabled) {
+            Log.d(TAG, "Read receipts disabled in settings; suppressing read receipt for conv=$conversationId")
+            return
+        }
         try {
             val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return
             val now = System.currentTimeMillis()
@@ -340,6 +348,10 @@ class ChatService(
      * - Cancels active notifications for this conversation.
      */
     suspend fun deleteChatLocally(conversationId: String): Boolean {
+        val contact = database?.contactDao()?.getByConversationId(conversationId)
+        if (contact != null) {
+            sessionCrypto.closeSession(contact.relationshipId)
+        }
         transactionRunner {
             messageDao.deleteByConversation(conversationId)
             reactionDao?.deleteByConversation(conversationId)
@@ -349,6 +361,14 @@ class ChatService(
         notificationManager?.cancelForConversation(conversationId)
         Log.i(TAG, "[DELETE CHAT] Conversation $conversationId deleted locally")
         return true
+    }
+
+    /**
+     * Resets the Double Ratchet session state for a relationship.
+     */
+    suspend fun resetSession(relationshipId: String) {
+        sessionCrypto.resetSession(relationshipId)
+        Log.i(TAG, "[SESSION RESET] Double ratchet session cleared for $relationshipId")
     }
 
     /**

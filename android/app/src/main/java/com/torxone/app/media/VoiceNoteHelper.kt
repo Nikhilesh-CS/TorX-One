@@ -47,8 +47,10 @@ object VoiceNoteHelper {
     }
 
     /**
-     * Generates a synthetic minimal WAV audio header + audio bytes for unit tests.
+     * Generates a synthetic minimal WAV audio header + audio bytes strictly for unit tests.
+     * Production audio capture must use VoiceNoteRecorder / AudioRecord.
      */
+    @androidx.annotation.VisibleForTesting
     fun generateSyntheticAudio(durationSeconds: Int = 2, sampleRate: Int = 8000): ByteArray {
         val totalAudioLen = sampleRate * durationSeconds
         val totalDataLen = totalAudioLen + 36

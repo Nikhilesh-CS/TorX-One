@@ -12,12 +12,14 @@ import com.torxone.app.protocol.PresenceState
 import com.torxone.app.protocol.PresenceUpdate
 import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.transport.nearby.DirectRouteTable
 import com.torxone.app.transport.nearby.RouteState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -37,6 +39,7 @@ class PresenceService(
     private val agent: TorXAgent,
     private val directRouteTable: DirectRouteTable,
     private val localIdentityIdProvider: () -> String?,
+    private val appSettingsRepository: AppSettingsRepository? = null,
     private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 ) {
     companion object {
@@ -172,6 +175,17 @@ class PresenceService(
      * Send encrypted ephemeral PRESENCE_UPDATE.
      */
     suspend fun sendPresenceUpdate(relationshipId: String, state: PresenceState) {
+        val onlineVisible = appSettingsRepository?.onlineVisible?.first() ?: true
+        val lastSeenVisible = appSettingsRepository?.lastSeenVisible?.first() ?: true
+        if (state == PresenceState.ONLINE && !onlineVisible) {
+            Log.d(TAG, "Online status disabled in settings; suppressing ONLINE update to $relationshipId")
+            return
+        }
+        if (state == PresenceState.OFFLINE && !lastSeenVisible) {
+            Log.d(TAG, "Last seen status disabled in settings; suppressing OFFLINE update to $relationshipId")
+            return
+        }
+
         val payload = PresenceUpdate(state = state).toByteArray()
         sendEphemeralEnvelope(
             relationshipId = relationshipId,

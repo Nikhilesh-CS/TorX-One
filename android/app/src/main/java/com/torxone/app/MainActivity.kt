@@ -1,25 +1,37 @@
 package com.torxone.app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import com.torxone.app.contacts.ContactsViewModel
 import com.torxone.app.data.entity.ConversationEntity
 import com.torxone.app.data.entity.MessageEntity
+import com.torxone.app.media.RealVoiceNoteRecorder
 import com.torxone.app.profile.SettingsViewModel
 import com.torxone.app.ui.components.ContactInviteDialog
+import com.torxone.app.ui.permissions.PermissionHelper
 import com.torxone.app.ui.screens.*
+import com.torxone.app.ui.security.AppLockManager
+import com.torxone.app.ui.security.AppLockOverlay
 import com.torxone.app.ui.theme.TorXOneTheme
 import kotlinx.coroutines.launch
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -37,6 +49,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TorXOneApp() {
     val context = LocalContext.current
@@ -49,9 +62,12 @@ fun TorXOneApp() {
     // Don't render anything until we know the onboarding state (avoid flash)
     val resolved = onboardingComplete ?: return
 
+    val launchNavigateTo = (context as? android.app.Activity)?.intent?.getStringExtra("navigate_to")
     var currentScreen by remember(resolved) {
-        val launchConvId = (context as? ComponentActivity)?.intent?.getStringExtra("conversationId")
-        if (!launchConvId.isNullOrBlank()) {
+        val launchConvId = (context as? android.app.Activity)?.intent?.getStringExtra("conversationId")
+        if (launchNavigateTo == "active_call") {
+            mutableStateOf<Screen>(Screen.ActiveCall)
+        } else if (!launchConvId.isNullOrBlank()) {
             mutableStateOf<Screen>(Screen.Chat(launchConvId, "Chat"))
         } else if (!resolved) {
             mutableStateOf<Screen>(Screen.Landing)
@@ -90,6 +106,103 @@ fun TorXOneApp() {
 
     val settingsViewModel = remember {
         SettingsViewModel(settingsRepo = app.settingsRepository)
+    }
+
+    val callViewModel = remember {
+        com.torxone.app.calls.CallViewModel(
+            callManager = app.callManager,
+            contactDao = app.database.contactDao()
+        )
+    }
+
+    val fragmentActivity = context as? FragmentActivity
+    val settingsState by settingsViewModel.uiState.collectAsState()
+    var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
+    var lockErrorMessage by remember { mutableStateOf<String?>(null) }
+
+    // Screen Security: enforce FLAG_SECURE on window
+    LaunchedEffect(settingsState.screenSecurityEnabled) {
+        if (fragmentActivity != null) {
+            AppLockManager.setScreenSecurity(fragmentActivity, settingsState.screenSecurityEnabled)
+        }
+    }
+
+    // App Lock: trigger biometric prompt on resume / launch when enabled
+    LaunchedEffect(settingsState.appLockEnabled) {
+        if (settingsState.appLockEnabled && !isAppUnlocked && fragmentActivity != null) {
+            AppLockManager.promptUnlock(
+                activity = fragmentActivity,
+                onSuccess = {
+                    isAppUnlocked = true
+                    lockErrorMessage = null
+                },
+                onError = { err ->
+                    lockErrorMessage = err
+                }
+            )
+        }
+    }
+
+    // Core Transport & Notification runtime permissions
+    val startupPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.all { it }) {
+            app.nearbyTransport.start()
+        }
+    }
+
+    LaunchedEffect(resolved) {
+        if (resolved) {
+            val perms = PermissionHelper.getStartupPermissions()
+            if (!PermissionHelper.arePermissionsGranted(context, perms)) {
+                startupPermissionsLauncher.launch(perms)
+            }
+        }
+    }
+
+    // Navigation BackStack handling
+    var screenStack by remember { mutableStateOf<List<Screen>>(emptyList()) }
+
+    fun navigateTo(newScreen: Screen) {
+        if (newScreen != currentScreen) {
+            screenStack = screenStack + currentScreen
+            currentScreen = newScreen
+        }
+    }
+
+    fun navigateBack() {
+        if (screenStack.isNotEmpty()) {
+            val prev = screenStack.last()
+            screenStack = screenStack.dropLast(1)
+            currentScreen = prev
+        }
+    }
+
+    BackHandler(enabled = screenStack.isNotEmpty()) {
+        navigateBack()
+    }
+
+    // Render fullscreen AppLockOverlay if App Lock is active and unauthenticated
+    if (settingsState.appLockEnabled && !isAppUnlocked) {
+        AppLockOverlay(
+            onUnlockClick = {
+                if (fragmentActivity != null) {
+                    AppLockManager.promptUnlock(
+                        activity = fragmentActivity,
+                        onSuccess = {
+                            isAppUnlocked = true
+                            lockErrorMessage = null
+                        },
+                        onError = { err ->
+                            lockErrorMessage = err
+                        }
+                    )
+                }
+            },
+            errorMessage = lockErrorMessage
+        )
+        return
     }
 
     when (val screen = currentScreen) {
@@ -220,6 +333,7 @@ fun TorXOneApp() {
                     val contact = contactState.value
 
                     if (contact != null) {
+                        val voiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
                         val viewModel = remember(screen.conversationId, contact.relationshipId) {
                             com.torxone.app.chat.ChatViewModel(
                                 conversationId = screen.conversationId,
@@ -229,7 +343,8 @@ fun TorXOneApp() {
                                 contactName = screen.contactName,
                                 chatService = app.chatService,
                                 presenceService = app.presenceService,
-                                mediaService = app.mediaService
+                                mediaService = app.mediaService,
+                                voiceNoteRecorder = voiceRecorder
                             )
                         }
 
@@ -240,8 +355,96 @@ fun TorXOneApp() {
                             },
                             onHeaderClick = {
                                 currentScreen = Screen.ContactInfo(screen.conversationId, screen.contactName)
+                            },
+                            onStartVoiceCall = {
+                                coroutineScope.launch {
+                                    app.callManager.startOutgoingCall(
+                                        conversationId = screen.conversationId,
+                                        relationshipId = contact.relationshipId,
+                                        peerIdentityId = contact.contactId,
+                                        type = com.torxone.app.calls.CallType.VOICE
+                                    )
+                                    currentScreen = Screen.ActiveCall
+                                }
+                            },
+                            onStartVideoCall = {
+                                coroutineScope.launch {
+                                    app.callManager.startOutgoingCall(
+                                        conversationId = screen.conversationId,
+                                        relationshipId = contact.relationshipId,
+                                        peerIdentityId = contact.contactId,
+                                        type = com.torxone.app.calls.CallType.VIDEO
+                                    )
+                                    currentScreen = Screen.ActiveCall
+                                }
                             }
                         )
+                    } else {
+                        Scaffold(
+                            topBar = {
+                                TopAppBar(
+                                    title = { Text(screen.contactName.ifBlank { "Conversation" }) },
+                                    navigationIcon = {
+                                        IconButton(onClick = { currentScreen = Screen.ConversationList }) {
+                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                        }
+                                    }
+                                )
+                            }
+                        ) { padding ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(padding),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(24.dp)
+                                ) {
+                                    Text("Conversation Not Found", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text("This conversation or contact cannot be found.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Button(onClick = { currentScreen = Screen.ConversationList }) {
+                                        Text("Back to Chats")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Scaffold(
+                    topBar = {
+                        TopAppBar(
+                            title = { Text(screen.contactName.ifBlank { "Chat" }) },
+                            navigationIcon = {
+                                IconButton(onClick = { currentScreen = Screen.ConversationList }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
+                            }
+                        )
+                    }
+                ) { padding ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text("Conversation Not Found", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("This conversation cannot be found or is loading.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(onClick = { currentScreen = Screen.ConversationList }) {
+                                Text("Back to Chats")
+                            }
+                        }
                     }
                 }
             }
@@ -365,16 +568,25 @@ fun TorXOneApp() {
                 onShowQr = { showInviteDialog = true }
             )
         }
+
+        is Screen.ActiveCall -> {
+            CallScreen(
+                viewModel = callViewModel,
+                onBackClick = {
+                    currentScreen = Screen.ConversationList
+                }
+            )
+        }
     }
 
     if (showInviteDialog) {
         ContactInviteDialog(
             viewModel = contactsViewModel,
-            onContactAdded = { conversationId ->
+            onContactAdded = { conversationId, contactName ->
                 showInviteDialog = false
                 currentScreen = Screen.Chat(
                     conversationId = conversationId,
-                    contactName = "Peer"
+                    contactName = contactName.ifBlank { "Contact" }
                 )
             },
             onDismiss = {
@@ -394,4 +606,5 @@ sealed class Screen {
     data class GroupInfo(val groupId: String) : Screen()
     data object Settings : Screen()
     data object Profile : Screen()
+    data object ActiveCall : Screen()
 }

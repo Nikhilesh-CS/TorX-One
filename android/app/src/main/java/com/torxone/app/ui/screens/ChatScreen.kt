@@ -1,6 +1,9 @@
 package com.torxone.app.ui.screens
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -120,9 +123,36 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     onBackClick: () -> Unit,
     onHeaderClick: () -> Unit = {},
+    onStartVoiceCall: (() -> Unit)? = null,
+    onStartVideoCall: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+
+    val recordAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.startVoiceRecording()
+        }
+    }
+
+    val callAudioLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            onStartVoiceCall?.invoke()
+        }
+    }
+
+    val videoCallPermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.all { it }) {
+            onStartVideoCall?.invoke()
+        }
+    }
 
     ChatScreen(
         contactName = uiState.title,
@@ -146,7 +176,13 @@ fun ChatScreen(
         onToggleReaction = viewModel::toggleReaction,
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
-        onStartVoiceRecording = viewModel::startVoiceRecording,
+        onStartVoiceRecording = {
+            if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
+                viewModel.startVoiceRecording()
+            } else {
+                recordAudioLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            }
+        },
         onCancelVoiceRecording = viewModel::cancelVoiceRecording,
         onFinishVoiceRecording = viewModel::finishVoiceRecording,
         onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
@@ -154,6 +190,25 @@ fun ChatScreen(
         onCancelMediaTransfer = viewModel::cancelMediaTransfer,
         onHeaderClick = onHeaderClick,
         onBackClick = onBackClick,
+        onStartVoiceCall = onStartVoiceCall?.let {
+            {
+                if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
+                    onStartVoiceCall()
+                } else {
+                    callAudioLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        },
+        onStartVideoCall = onStartVideoCall?.let {
+            {
+                val perms = arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA)
+                if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(context, perms)) {
+                    onStartVideoCall()
+                } else {
+                    videoCallPermissionsLauncher.launch(perms)
+                }
+            }
+        },
         modifier = modifier
     )
 }
@@ -194,6 +249,8 @@ fun ChatScreen(
     onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
     onHeaderClick: () -> Unit = {},
     onBackClick: () -> Unit = {},
+    onStartVoiceCall: (() -> Unit)? = null,
+    onStartVideoCall: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -274,6 +331,28 @@ fun ChatScreen(
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (!isGroup) {
+                        if (onStartVoiceCall != null) {
+                            IconButton(onClick = onStartVoiceCall) {
+                                Icon(
+                                    Icons.Default.Call,
+                                    contentDescription = "Voice Call",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                        if (onStartVideoCall != null) {
+                            IconButton(onClick = onStartVideoCall) {
+                                Icon(
+                                    Icons.Default.Videocam,
+                                    contentDescription = "Video Call",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

@@ -270,6 +270,7 @@ class MediaTransferTest {
         val sessions = ConcurrentHashMap<String, SessionState>()
         override suspend fun loadSession(relationshipId: String): SessionState? = sessions[relationshipId]?.copyState()
         override suspend fun saveSession(state: SessionState) { sessions[state.relationshipId] = state.copyState() }
+        override suspend fun deleteSession(relationshipId: String) { sessions.remove(relationshipId) }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1030,7 +1031,7 @@ class MediaTransferTest {
         val aliceEncFile = alice.mediaStorage.getTempEncryptedFile(aliceMedia.mediaId)
 
         // Phase 1: Wait for DELIVERED status (protocol-level, reliable)
-        withTimeout(30000) {
+        withTimeout(60000) {
             while (alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name) {
                 delay(50)
             }

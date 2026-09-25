@@ -8,6 +8,7 @@ import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.incoming.IncomingTransportHub
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.transport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
@@ -39,7 +40,8 @@ class NearbyTransport(
     private val agent: TorXAgent? = null,
     customEndpointName: String? = null,
     adapter: NearbyConnectionsAdapter? = null,
-    val directRouteTable: DirectRouteTable = DirectRouteTable()
+    val directRouteTable: DirectRouteTable = DirectRouteTable(),
+    private val appSettingsRepository: AppSettingsRepository? = null
 ) : Transport {
 
     companion object {
@@ -79,6 +81,20 @@ class NearbyTransport(
 
     private var heartbeatJob: Job? = null
     private val secureRandom = SecureRandom()
+
+    @Volatile
+    private var autoConnectEnabled: Boolean = true
+
+    init {
+        appSettingsRepository?.let { repo ->
+            scope.launch {
+                repo.autoConnectNearby.collect { enabled ->
+                    autoConnectEnabled = enabled
+                    Log.d(TAG, "autoConnectNearby setting updated: $enabled")
+                }
+            }
+        }
+    }
 
     private fun getSemaphoreForEndpoint(endpointId: String): Semaphore =
         endpointSemaphores.computeIfAbsent(endpointId) { Semaphore(MAX_CONCURRENT_TRANSFERS_PER_PEER) }
@@ -188,6 +204,11 @@ class NearbyTransport(
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val remoteName = info.endpointName
             Log.d(TAG, "Discovered endpoint $endpointId ($remoteName)")
+
+            if (!autoConnectEnabled) {
+                Log.d(TAG, "autoConnectNearby is disabled in settings; suppressing auto connection to $endpointId")
+                return
+            }
 
             // Deterministic collision arbitration:
             // Compare tie-breaker tokens to ensure only one peer initiates connection request

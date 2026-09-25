@@ -31,7 +31,7 @@ import com.torxone.app.contacts.ContactsViewModel
 @Composable
 fun ContactInviteDialog(
     viewModel: ContactsViewModel,
-    onContactAdded: (conversationId: String) -> Unit,
+    onContactAdded: (conversationId: String, contactName: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -121,7 +121,7 @@ fun ContactInviteDialog(
                             onClick = {
                                 viewModel.confirmAddContact { convId ->
                                     onDismiss()
-                                    onContactAdded(convId)
+                                    onContactAdded(convId, valid.invite.displayName)
                                 }
                             },
                             modifier = Modifier.weight(1f)

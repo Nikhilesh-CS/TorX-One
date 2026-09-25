@@ -20,6 +20,7 @@ class MaxSkipExceededException(message: String) : SecurityException(message)
 object SessionRatchet {
 
     const val MAX_SKIP = 1000
+    const val MAX_TOTAL_SKIPPED_KEYS = 2000
     private const val INFO_RATCHET_RK = "torx-ratchet-rk-v1"
     private const val INFO_RATCHET_CK = "torx-ratchet-ck-v1"
 
@@ -199,6 +200,17 @@ object SessionRatchet {
             state.receiveMessageNumber++
         }
         state.recvChainKey = currentCk
+
+        // Bound total skipped keys across the session lifetime (oldest-first eviction)
+        if (state.skippedKeys.size > MAX_TOTAL_SKIPPED_KEYS) {
+            val excess = state.skippedKeys.size - MAX_TOTAL_SKIPPED_KEYS
+            val keysToEvict = state.skippedKeys.keys
+                .sortedBy { it.counter }
+                .take(excess)
+            for (key in keysToEvict) {
+                state.skippedKeys.remove(key)
+            }
+        }
     }
 
     /**

@@ -35,6 +35,7 @@ fun ContactInfoScreen(
     val coroutineScope = rememberCoroutineScope()
     var showMuteDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showResetSessionConfirm by remember { mutableStateOf(false) }
 
     val isMuted = NotificationPolicy.isConversationMuted(conversation?.mutedUntil)
     val contactName = contact?.displayName ?: conversation?.title ?: "Contact"
@@ -151,6 +152,19 @@ fun ContactInfoScreen(
                             Icon(Icons.Default.Lock, contentDescription = null)
                         }
                     )
+
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                    ListItem(
+                        headlineContent = { Text("Reset secure session") },
+                        supportingContent = {
+                            Text("Clear ratchet state to recover from decryption or sync errors.")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.Refresh, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable { showResetSessionConfirm = true }
+                    )
                 }
             }
 
@@ -249,6 +263,34 @@ fun ContactInfoScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Reset Session Confirmation
+    if (showResetSessionConfirm && contact != null) {
+        AlertDialog(
+            onDismissRequest = { showResetSessionConfirm = false },
+            title = { Text("Reset secure session?") },
+            text = {
+                Text("This deletes the current Double Ratchet session keys for this contact. Use this to recover from key-desync or decryption errors.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        coroutineScope.launch {
+                            chatService.resetSession(contact.relationshipId)
+                            showResetSessionConfirm = false
+                        }
+                    }
+                ) {
+                    Text("Reset Session", color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetSessionConfirm = false }) {
                     Text("Cancel")
                 }
             }

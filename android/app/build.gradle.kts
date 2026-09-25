@@ -48,6 +48,9 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.maxHeapSize = "2048m"
+        }
     }
 }
 
@@ -104,6 +107,9 @@ dependencies {
 
     // ── DataStore ──
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // ── WebRTC (media engine for voice/video calls) ──
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
 
     // ── Testing ──
     testImplementation("junit:junit:4.13.2")

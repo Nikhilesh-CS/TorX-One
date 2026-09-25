@@ -13,6 +13,8 @@ import com.torxone.app.media.MediaStatus
 import com.torxone.app.media.MediaType
 import com.torxone.app.media.VoiceNoteHelper
 import com.torxone.app.protocol.ReactionOperation
+import android.util.Log
+import com.torxone.app.media.VoiceNoteRecorder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -72,8 +74,13 @@ class ChatViewModel(
     private val contactName: String,
     private val chatService: ChatService,
     private val presenceService: PresenceService? = null,
-    private val mediaService: MediaService? = null
+    private val mediaService: MediaService? = null,
+    private val voiceNoteRecorder: VoiceNoteRecorder? = null
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "ChatViewModel"
+    }
 
     private val _uiState = MutableStateFlow(ChatUiState(title = contactName))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -459,6 +466,11 @@ class ChatViewModel(
     // ═══════════════════════════════════════════════════════════════
 
     fun startVoiceRecording() {
+        val started = voiceNoteRecorder?.startRecording() ?: true
+        if (!started) {
+            _uiState.update { it.copy(error = "Microphone recording permission or device unavailable") }
+            return
+        }
         _uiState.update {
             it.copy(
                 voiceRecording = VoiceRecordingState(
@@ -471,15 +483,18 @@ class ChatViewModel(
         recordingTimerJob?.cancel()
         recordingTimerJob = viewModelScope.launch {
             val startTime = System.currentTimeMillis()
+            val ampHistory = mutableListOf<Float>()
             while (isActive) {
                 delay(100)
                 val elapsed = System.currentTimeMillis() - startTime
-                val dummyAmps = List(30) { (it * 3 % 80 + 15) / 100f }
+                val currentAmp = voiceNoteRecorder?.amplitudeFlow?.value ?: 0.2f
+                ampHistory.add(currentAmp)
+                if (ampHistory.size > 30) ampHistory.removeAt(0)
                 _uiState.update {
                     it.copy(
                         voiceRecording = it.voiceRecording.copy(
                             elapsedDurationMs = elapsed,
-                            amplitudeLevels = dummyAmps
+                            amplitudeLevels = ampHistory.toList()
                         )
                     )
                 }
@@ -489,6 +504,7 @@ class ChatViewModel(
 
     fun cancelVoiceRecording() {
         recordingTimerJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
         _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = false)) }
     }
 
@@ -497,11 +513,18 @@ class ChatViewModel(
         recordingTimerJob?.cancel()
         _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = false)) }
 
+        val realResult = voiceNoteRecorder?.stopRecording()
+        if (realResult != null) {
+            sendVoiceNote(realResult.audioData, realResult.durationMs, realResult.waveform)
+            return
+        }
+
         if (elapsed < 500) {
             // Tap too short — treat as accidental tap
             return
         }
 
+        // Fallback for automated test environments without native mic hardware
         val syntheticAudio = VoiceNoteHelper.generateSyntheticAudio(
             durationSeconds = (elapsed / 1000).toInt().coerceAtLeast(1)
         )
@@ -524,7 +547,9 @@ class ChatViewModel(
                     localIdentityId = localIdentityId,
                     recipientId = recipientId
                 )
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to mark conversation read: ${e.message}", e)
+            }
         }
     }
 

@@ -125,7 +125,9 @@ class TorXAgent(
         scope.launch {
             try {
                 recoverStaleOutboxItems()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to recover stale outbox items during immediate retry: ${e.message}", e)
+            }
             sendSignal.trySend(Unit)
         }
     }

@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
+import com.torxone.app.calls.CallHistoryEntity
+import com.torxone.app.calls.CallHistoryDao
 
 @Database(
     entities = [
@@ -25,9 +27,10 @@ import com.torxone.app.data.entity.*
         MediaTransferEntity::class,
         GroupEntity::class,
         GroupMemberEntity::class,
-        GroupMessageDeliveryEntity::class
+        GroupMessageDeliveryEntity::class,
+        CallHistoryEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -48,6 +51,7 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
     abstract fun groupMemberDao(): GroupMemberDao
     abstract fun groupMessageDeliveryDao(): GroupMessageDeliveryDao
+    abstract fun callHistoryDao(): CallHistoryDao
 
     companion object {
         @Volatile

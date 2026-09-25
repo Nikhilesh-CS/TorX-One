@@ -86,6 +86,34 @@ class TorXOneApplication : Application() {
     lateinit var settingsRepository: AppSettingsRepository
         private set
 
+    lateinit var callManager: com.torxone.app.calls.CallManager
+        private set
+
+    lateinit var callNotificationManager: com.torxone.app.calls.CallNotificationManager
+        private set
+
+    lateinit var webRtcClient: com.torxone.app.calls.WebRtcClient
+        private set
+
+    lateinit var audioRouteManager: com.torxone.app.calls.AudioRouteManager
+        private set
+
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    var cachedLocalIdentityId: String? = null
+        private set
+
+    fun getLocalIdentityId(): String? {
+        val cached = cachedLocalIdentityId
+        if (cached != null) return cached
+        return runBlocking {
+            identityRepository.loadIdentity()?.identityId.also {
+                cachedLocalIdentityId = it
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -109,10 +137,11 @@ class TorXOneApplication : Application() {
 
         // 4. Connection Manager & Active Conversation Tracker (Restore persisted connections, Section 6)
         connectionManager = ConnectionManager()
-        runBlocking {
+        activeConversationTracker = ActiveConversationTracker()
+        applicationScope.launch {
+            cachedLocalIdentityId = identityRepository.loadIdentity()?.identityId
             connectionManager.restoreFromDatabase(database.connectionDao())
         }
-        activeConversationTracker = ActiveConversationTracker()
 
         // 4b. Notification Authority
         notificationManager = com.torxone.app.notifications.TorXNotificationManager(
@@ -142,9 +171,8 @@ class TorXOneApplication : Application() {
             sessionCrypto = sessionCrypto,
             agent = agent,
             directRouteTable = directRouteTable,
-            localIdentityIdProvider = {
-                runBlocking { identityRepository.loadIdentity()?.identityId }
-            }
+            localIdentityIdProvider = { getLocalIdentityId() },
+            appSettingsRepository = settingsRepository
         )
         val presenceHandler = PresenceHandler(presenceService)
         val typingHandler = TypingHandler(presenceService)
@@ -174,9 +202,7 @@ class TorXOneApplication : Application() {
             mediaDao = database.mediaDao(),
             mediaTransferDao = database.mediaTransferDao(),
             outboxDao = database.outboxDao(),
-            localIdentityIdProvider = {
-                runBlocking { identityRepository.loadIdentity()?.identityId }
-            },
+            localIdentityIdProvider = { getLocalIdentityId() },
             appSettingsRepository = settingsRepository,
             transactionRunner = { block -> database.withTransaction { block() } }
         )
@@ -198,21 +224,45 @@ class TorXOneApplication : Application() {
             connectionManager = connectionManager,
             sessionCrypto = sessionCrypto,
             agent = agent,
-            localIdentityIdProvider = {
-                runBlocking { identityRepository.loadIdentity()?.identityId }
-            },
+            localIdentityIdProvider = { getLocalIdentityId() },
             transactionRunner = { block -> database.withTransaction { block() } }
         )
         val groupHandler = com.torxone.app.incoming.GroupHandler(
             groupDao = database.groupDao(),
             groupMemberDao = database.groupMemberDao(),
             conversationDao = database.conversationDao(),
-            localIdentityIdProvider = {
-                runBlocking { identityRepository.loadIdentity()?.identityId }
-            },
+            localIdentityIdProvider = { getLocalIdentityId() },
             notificationManager = notificationManager,
             transactionRunner = { block -> database.withTransaction { block() } }
         )
+
+        // 7d. Call Subsystem
+        callNotificationManager = com.torxone.app.calls.CallNotificationManager(this)
+        audioRouteManager = com.torxone.app.calls.AudioRouteManager(this)
+        val callService = com.torxone.app.calls.CallService(
+            sessionCrypto = sessionCrypto,
+            connectionManager = connectionManager,
+            agent = agent,
+            conversationDao = database.conversationDao(),
+            callHistoryDao = database.callHistoryDao(),
+            localIdentityIdProvider = { getLocalIdentityId() }
+        )
+        val localId = getLocalIdentityId() ?: ""
+        callManager = com.torxone.app.calls.CallManager(
+            callService = callService,
+            localIdentityId = localId
+        )
+        webRtcClient = com.torxone.app.calls.WebRtcClient(this, callManager)
+        webRtcClient.initialize()
+        val callCoordinator = com.torxone.app.calls.CallCoordinator(
+            context = this,
+            callManager = callManager,
+            webRtcClient = webRtcClient,
+            audioRouteManager = audioRouteManager,
+            callNotificationManager = callNotificationManager,
+            contactDao = database.contactDao()
+        )
+        val callHandler = com.torxone.app.calls.CallHandler(callManager)
 
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
@@ -234,9 +284,7 @@ class TorXOneApplication : Application() {
             chatReceiver = chatReceiver,
             deliveryReceiptHandler = receiptHandler,
             agent = agent,
-            localIdentityIdProvider = {
-                runBlocking { identityRepository.loadIdentity()?.identityId }
-            },
+            localIdentityIdProvider = { getLocalIdentityId() },
             presenceHandler = presenceHandler,
             typingHandler = typingHandler,
             reactionHandler = reactionHandler,
@@ -244,6 +292,7 @@ class TorXOneApplication : Application() {
             deleteHandler = deleteHandler,
             mediaHandler = mediaHandler,
             groupHandler = groupHandler,
+            callHandler = callHandler,
             groupDao = database.groupDao(),
             groupMemberDao = database.groupMemberDao(),
             transactionRunner = { block -> database.withTransaction { block() } },
@@ -261,7 +310,8 @@ class TorXOneApplication : Application() {
             incomingTransportHub = incomingTransportHub,
             connectionManager = connectionManager,
             agent = agent,
-            directRouteTable = directRouteTable
+            directRouteTable = directRouteTable,
+            appSettingsRepository = settingsRepository
         )
         transportRouter.registerTransport(nearbyTransport)
 
@@ -276,7 +326,8 @@ class TorXOneApplication : Application() {
             outboxDao = database.outboxDao(),
             reactionDao = database.reactionDao(),
             localMessageStateDao = database.localMessageStateDao(),
-            notificationManager = notificationManager
+            notificationManager = notificationManager,
+            appSettingsRepository = settingsRepository
         )
 
         // 10. Start background agent and transport
@@ -284,7 +335,7 @@ class TorXOneApplication : Application() {
         nearbyTransport.start()
 
         // 11. Recover any interrupted media transfers & sweep orphan temp files
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        applicationScope.launch {
             mediaService.recoverPendingTransfersOnStartup()
         }
     }

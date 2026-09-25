@@ -49,6 +49,7 @@ class IncomingDispatcher(
     private val deleteHandler: DeleteHandler? = null,
     private val mediaHandler: MediaHandler? = null,
     private val groupHandler: GroupHandler? = null,
+    private val callHandler: com.torxone.app.calls.CallHandler? = null,
     private val groupDao: com.torxone.app.data.dao.GroupDao? = null,
     private val groupMemberDao: com.torxone.app.data.dao.GroupMemberDao? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
@@ -336,6 +337,16 @@ class IncomingDispatcher(
                         }
                         MessageType.GROUP_AVATAR_CHANGE -> {
                             groupHandler?.handleAvatarChange(connection, secureEnvelope)
+                        }
+                        MessageType.CALL_OFFER,
+                        MessageType.CALL_RINGING,
+                        MessageType.CALL_ANSWER,
+                        MessageType.CALL_ICE_CANDIDATE,
+                        MessageType.CALL_CONNECTED,
+                        MessageType.CALL_END,
+                        MessageType.CALL_DECLINE,
+                        MessageType.CALL_BUSY -> {
+                            callHandler?.handleCallSignal(connection, secureEnvelope)
                         }
                         else -> {
                             Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")

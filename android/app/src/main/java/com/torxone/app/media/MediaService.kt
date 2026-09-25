@@ -21,6 +21,7 @@ import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.protocol.SecureEnvelope
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
@@ -612,6 +613,8 @@ class MediaService(
 
     private suspend fun shouldAutoDownload(type: MediaType): Boolean {
         if (appSettingsRepository == null) return true
+        val autoDownload = appSettingsRepository.autoDownloadMedia.first()
+        if (!autoDownload) return false
         val lowBandwidth = appSettingsRepository.isLowBandwidthMode()
         return if (lowBandwidth) {
             type == MediaType.VOICE_NOTE || type == MediaType.IMAGE

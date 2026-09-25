@@ -17,7 +17,9 @@ import com.torxone.app.data.dao.LocalMessageStateDao
 import com.torxone.app.data.dao.MessageDao
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.incoming.ActiveConversationTracker
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.service.NotificationActionReceiver
+import kotlinx.coroutines.flow.first
 
 /**
  * TorXNotificationManager — Complete notification authority for TorX One.
@@ -40,7 +42,8 @@ class TorXNotificationManager(
     private val messageDao: MessageDao,
     private val localMessageStateDao: LocalMessageStateDao,
     private val privacyModeProvider: () -> NotificationPrivacyMode = { NotificationPrivacyMode.FULL },
-    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
+    private val appSettingsRepository: AppSettingsRepository? = null
 ) {
     companion object {
         private const val TAG = "TorXNotificationManager"
@@ -100,6 +103,12 @@ class TorXNotificationManager(
         val isForeground = appVisibilityTracker.isForeground()
         val activeChat = activeConversationTracker.getActiveConversationId()
 
+        val notifsEnabled = appSettingsRepository?.notificationsEnabled?.first() ?: true
+        if (!notifsEnabled) {
+            Log.d(TAG, "[NOTIFY SUPPRESSED] Notifications disabled in App Settings")
+            return
+        }
+
         if (!NotificationPolicy.shouldNotify(conversationId, isForeground, activeChat)) {
             Log.d(TAG, "[NOTIFY SUPPRESSED] Conversation $conversationId is currently active in foreground")
             return
@@ -113,6 +122,12 @@ class TorXNotificationManager(
      */
     suspend fun refreshConversationNotification(conversationId: String) {
         try {
+            val notifsEnabled = appSettingsRepository?.notificationsEnabled?.first() ?: true
+            if (!notifsEnabled) {
+                cancelForConversation(conversationId)
+                return
+            }
+
             val conv = conversationDao.getById(conversationId)
             val contactTitle = conv?.title ?: "Contact"
 
@@ -132,7 +147,16 @@ class TorXNotificationManager(
 
             val isMuted = NotificationPolicy.isConversationMuted(conv?.mutedUntil)
             val channelId = NotificationPolicy.getChannelId(isMuted)
-            val privacyMode = privacyModeProvider()
+            val privacyMode = if (appSettingsRepository != null) {
+                val modeStr = appSettingsRepository.notificationPreviewMode.first()
+                try {
+                    NotificationPrivacyMode.valueOf(modeStr)
+                } catch (_: Exception) {
+                    NotificationPrivacyMode.FULL
+                }
+            } else {
+                privacyModeProvider()
+            }
 
             // 2. Build MessagingStyle
             val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
@@ -233,6 +257,9 @@ class TorXNotificationManager(
                 markReadPendingIntent
             ).build()
 
+            val soundEnabled = appSettingsRepository?.soundEnabled?.first() ?: true
+            val vibrationEnabled = appSettingsRepository?.vibrationEnabled?.first() ?: true
+
             // 6. Build Notification
             val notificationId = NotificationPolicy.getNotificationId(conversationId)
             val notification = NotificationCompat.Builder(context, channelId)
@@ -241,6 +268,18 @@ class TorXNotificationManager(
                 .setContentIntent(openPendingIntent)
                 .setAutoCancel(true)
                 .setPriority(if (isMuted) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
+                .apply {
+                    if (isMuted || (!soundEnabled && !vibrationEnabled)) {
+                        setSilent(true)
+                    } else {
+                        if (!soundEnabled) {
+                            setSound(null)
+                        }
+                        if (!vibrationEnabled) {
+                            setVibrate(longArrayOf(0))
+                        }
+                    }
+                }
                 .addAction(replyAction)
                 .addAction(markReadAction)
                 .build()

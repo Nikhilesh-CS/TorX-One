@@ -1,5 +1,6 @@
 package com.torxone.app.transport.nearby
 
+import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 
 enum class RouteState {
@@ -34,6 +35,9 @@ data class NearbyRoute(
  * - Thread-safe updates across connection lifecycles
  */
 class DirectRouteTable {
+    companion object {
+        private const val TAG = "DirectRouteTable"
+    }
 
     // relationshipId -> NearbyRoute
     private val routesByRelationship = ConcurrentHashMap<String, NearbyRoute>()
@@ -97,7 +101,9 @@ class DirectRouteTable {
         for (listener in routeListeners) {
             try {
                 listener(relationshipId, state, lastSeen)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in route listener for relationship $relationshipId: ${e.message}", e)
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 package com.torxone.app.media
 
 import android.content.Context
+import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -14,6 +15,9 @@ class MediaStorage(
     private val context: Context? = null,
     private val customBaseDir: File? = null
 ) {
+    companion object {
+        private const val TAG = "MediaStorage"
+    }
 
     val mediaBaseDir: File
         get() = customBaseDir ?: File(context?.filesDir ?: File(System.getProperty("java.io.tmpdir"), "torx_media"), "media").apply { if (!exists()) mkdirs() }
@@ -102,14 +106,21 @@ class MediaStorage(
             val file = getTempEncryptedFile(mediaId)
             if (!file.exists()) return
             if (!file.delete()) {
-                // On Windows, file handles from RandomAccessFile may linger briefly.
-                // Retry once after a short pause, then fall back to deleteOnExit.
+                // On Windows, file handles or antivirus scanners may linger briefly.
+                // Retry with System.gc() hints to clear any lingering handles.
+                System.gc()
                 Thread.sleep(50)
                 if (!file.delete()) {
-                    file.deleteOnExit()
+                    System.gc()
+                    Thread.sleep(100)
+                    if (!file.delete()) {
+                        file.deleteOnExit()
+                    }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to cleanup temp transfer for mediaId=$mediaId: ${e.message}", e)
+        }
     }
 
     /**
@@ -122,7 +133,9 @@ class MediaStorage(
             if (file.exists() && file.canonicalPath.startsWith(mediaBaseDir.canonicalPath)) {
                 file.delete()
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to delete local file at path=$path: ${e.message}", e)
+        }
     }
 
     /**
@@ -137,6 +150,8 @@ class MediaStorage(
                     file.delete()
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to cleanup orphan temp transfers: ${e.message}", e)
+        }
     }
 }
