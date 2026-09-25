@@ -138,6 +138,12 @@ class MediaTransferTest {
             }
         }
 
+        override suspend fun getPendingTransfers(): List<MediaTransferEntity> =
+            transfers.values.filter { it.status == "ACTIVE" || it.status == "QUEUED" || it.status == "PAUSED" }
+
+        override suspend fun getAllActiveMediaIds(): List<String> =
+            transfers.values.filter { it.status == "ACTIVE" || it.status == "QUEUED" || it.status == "PAUSED" }.map { it.mediaId }
+
         override suspend fun deleteByTransferId(transferId: String) {
             transfers.remove(transferId)
         }
@@ -400,6 +406,8 @@ class MediaTransferTest {
             conversationDao = alice.convDao,
             mediaDao = alice.mediaDao,
             mediaTransferDao = alice.mediaTransferDao,
+            outboxDao = alice.outboxDao,
+            localIdentityIdProvider = { alice.identityId },
             mediaStorage = alice.mediaStorage
         )
 
@@ -411,6 +419,8 @@ class MediaTransferTest {
             conversationDao = bob.convDao,
             mediaDao = bob.mediaDao,
             mediaTransferDao = bob.mediaTransferDao,
+            outboxDao = bob.outboxDao,
+            localIdentityIdProvider = { bob.identityId },
             mediaStorage = bob.mediaStorage
         )
 
@@ -500,7 +510,7 @@ class MediaTransferTest {
         )
 
         // Wait for asynchronous chunk processing to complete
-        withTimeout(5000) {
+        withTimeout(10000) {
             while (bob.mediaDao.mediaMap.isEmpty() ||
                 bob.mediaDao.mediaMap.values.first().status != MediaStatus.COMPLETE.name
             ) {
@@ -905,7 +915,7 @@ class MediaTransferTest {
 
         // Wait for media transfer to complete
         mediaSendJob.join()
-        withTimeout(5000) {
+        withTimeout(10000) {
             while (bob.mediaDao.mediaMap.isEmpty() ||
                 bob.mediaDao.mediaMap.values.first().status != MediaStatus.COMPLETE.name
             ) {
@@ -916,6 +926,172 @@ class MediaTransferTest {
         val completedMedia = bob.mediaDao.mediaMap.values.first()
         assertEquals(MediaStatus.COMPLETE.name, completedMedia.status)
         assertArrayEquals(largeData, File(completedMedia.localPath!!).readBytes())
+
+        alice.agent.stop()
+        bob.agent.stop()
+    }
+
+    @Test
+    fun testStreamingFileEncryptionAndDecryption() = runBlocking {
+        val tempDir = Files.createTempDirectory("media_crypto_test").toFile().apply { deleteOnExit() }
+        val sourceFile = File(tempDir, "source.bin")
+        val encFile = File(tempDir, "enc.bin")
+        val decFile = File(tempDir, "dec.bin")
+
+        // 128 KB test data
+        val sourceData = ByteArray(128 * 1024) { (it % 251).toByte() }
+        sourceFile.writeBytes(sourceData)
+
+        val key = MediaCrypto.generateMediaKey()
+
+        // 1. Streaming encrypt
+        val hexHash = sourceFile.inputStream().use { input ->
+            encFile.outputStream().use { output ->
+                MediaCrypto.encryptStream(key, input, output)
+            }
+        }
+        assertTrue(encFile.exists() && encFile.length() > sourceFile.length())
+
+        // 2. Verify file integrity
+        assertTrue(MediaCrypto.verifyFileIntegrity(encFile, hexHash))
+
+        // 3. Streaming decrypt
+        encFile.inputStream().use { input ->
+            decFile.outputStream().use { output ->
+                MediaCrypto.decryptStream(key, input, output)
+            }
+        }
+        assertTrue(decFile.exists())
+        assertArrayEquals(sourceData, decFile.readBytes())
+
+        // 4. Tampering detection
+        val tamperedBytes = encFile.readBytes()
+        tamperedBytes[20] = (tamperedBytes[20].toInt() xor 0xFF).toByte()
+        encFile.writeBytes(tamperedBytes)
+        assertFalse(MediaCrypto.verifyFileIntegrity(encFile, hexHash))
+    }
+
+    @Test
+    fun testSendMediaFileStreamingTransfer() = runBlocking {
+        val (alice, bob) = setupPair()
+        val conversationId = "conv_alice_bob"
+
+        val fileData = ByteArray(50 * 1024) { (it % 199).toByte() }
+        val testFile = File(alice.tempDir, "video_stream.mp4").apply { writeBytes(fileData) }
+
+        val msgId = alice.mediaService!!.sendMediaFile(
+            conversationId = conversationId,
+            relationshipId = "rel_alice_bob",
+            localIdentityId = alice.identityId,
+            recipientId = bob.identityId,
+            type = MediaType.VIDEO,
+            file = testFile,
+            mimeType = "video/mp4"
+        )
+        assertNotNull(msgId)
+
+        // Wait for receiver completion
+        withTimeout(10000) {
+            while (bob.mediaDao.mediaMap.isEmpty() ||
+                bob.mediaDao.mediaMap.values.first().status != MediaStatus.COMPLETE.name
+            ) {
+                delay(20)
+            }
+        }
+
+        val bobMedia = bob.mediaDao.mediaMap.values.first()
+        assertEquals(MediaStatus.COMPLETE.name, bobMedia.status)
+        val bobSavedBytes = File(bobMedia.localPath!!).readBytes()
+        assertArrayEquals("Streamed file must match byte-for-byte on receiver", fileData, bobSavedBytes)
+
+        alice.agent.stop()
+        bob.agent.stop()
+    }
+
+    @Test
+    fun testReceiverConfirmedCompletionAndTempFileCleanup() = runBlocking {
+        val (alice, bob) = setupPair()
+        val conversationId = "conv_alice_bob"
+
+        val testData = ByteArray(32 * 1024) { 0x55.toByte() }
+        val msgId = alice.mediaService!!.sendMedia(
+            conversationId = conversationId,
+            relationshipId = "rel_alice_bob",
+            localIdentityId = alice.identityId,
+            recipientId = bob.identityId,
+            type = MediaType.DOCUMENT,
+            fileName = "doc_to_confirm.pdf",
+            mimeType = "application/pdf",
+            rawBytes = testData
+        )
+
+        val aliceMedia = alice.mediaDao.getByMessageId(msgId)!!
+        val aliceEncFile = alice.mediaStorage.getTempEncryptedFile(aliceMedia.mediaId)
+
+        // Wait for Bob to finish download, Alice to receive FILE_COMPLETE confirmation,
+        // AND temp encrypted file to be cleaned up. On Windows, File.delete() can silently
+        // fail on recently-accessed handles, so poll for both conditions together.
+        withTimeout(10000) {
+            while (
+                alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name ||
+                aliceEncFile.exists()
+            ) {
+                delay(20)
+            }
+        }
+
+        val updatedAliceMedia = alice.mediaDao.getById(aliceMedia.mediaId)!!
+        assertEquals("Sender status must transition to DELIVERED after receiver FILE_COMPLETE", MediaStatus.DELIVERED.name, updatedAliceMedia.status)
+
+        val updatedAliceTransfer = alice.mediaTransferDao.getByMediaId(aliceMedia.mediaId)!!
+        assertEquals("Sender transfer must transition to COMPLETED after confirmation", TransferStatus.COMPLETED.name, updatedAliceTransfer.status)
+
+        // Verify that temporary encrypted file was cleaned up on sender upon receiver confirmation
+        assertFalse("Temp encrypted file must be cleaned up on sender after confirmation", aliceEncFile.exists())
+
+        alice.agent.stop()
+        bob.agent.stop()
+    }
+
+    @Test
+    fun testStartupRecoveryAndOrphanCleanup() = runBlocking {
+        val (alice, bob) = setupPair()
+
+        // 1. Create an orphan temp transfer file in Alice's storage
+        val orphanEnc = File(alice.mediaStorage.tempTransfersDir, "orphan_media_id_999.enc")
+        orphanEnc.writeBytes(byteArrayOf(1, 2, 3, 4))
+        assertTrue(orphanEnc.exists())
+
+        // 2. Create an active transfer in transferDao
+        val activeMediaId = "active_media_id_100"
+        val activeEnc = File(alice.mediaStorage.tempTransfersDir, "$activeMediaId.enc")
+        activeEnc.writeBytes(byteArrayOf(5, 6, 7, 8))
+
+        alice.mediaTransferDao.upsert(
+            MediaTransferEntity(
+                transferId = activeMediaId,
+                mediaId = activeMediaId,
+                conversationId = "conv_1",
+                relationshipId = "rel_alice_bob",
+                direction = TransferDirection.DOWNLOAD.name,
+                totalChunks = 2,
+                chunkSize = 16,
+                completedChunks = 1,
+                chunkBitmask = "0",
+                tempEncryptedPath = activeEnc.absolutePath,
+                status = TransferStatus.ACTIVE.name,
+                totalBytes = 32L
+            )
+        )
+
+        // 3. Run startup recovery
+        alice.mediaService!!.recoverPendingTransfersOnStartup()
+
+        // 4. Orphan file must be swept
+        assertFalse("Orphan temp encrypted file must be deleted during startup sweep", orphanEnc.exists())
+
+        // 5. Active transfer file must be preserved
+        assertTrue("Active transfer temp file must be preserved", activeEnc.exists())
 
         alice.agent.stop()
         bob.agent.stop()

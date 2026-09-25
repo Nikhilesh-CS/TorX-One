@@ -22,7 +22,7 @@ import com.torxone.app.incoming.*
 import com.torxone.app.transport.TransportRouter
 import com.torxone.app.transport.nearby.NearbyTransport
 import androidx.room.withTransaction
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 
 /**
  * TorX One Application.
@@ -169,6 +169,10 @@ class TorXOneApplication : Application() {
             conversationDao = database.conversationDao(),
             mediaDao = database.mediaDao(),
             mediaTransferDao = database.mediaTransferDao(),
+            outboxDao = database.outboxDao(),
+            localIdentityIdProvider = {
+                runBlocking { identityRepository.loadIdentity()?.identityId }
+            },
             appSettingsRepository = settingsRepository,
             transactionRunner = { block -> database.withTransaction { block() } }
         )
@@ -241,6 +245,11 @@ class TorXOneApplication : Application() {
         // 10. Start background agent and transport
         agent.start()
         nearbyTransport.start()
+
+        // 11. Recover any interrupted media transfers & sweep orphan temp files
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            mediaService.recoverPendingTransfersOnStartup()
+        }
     }
 
     private fun createOutboxStore(): OutboxStore {

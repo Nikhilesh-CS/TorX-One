@@ -351,6 +351,12 @@ interface MediaTransferDao {
     @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId")
     fun observeByMediaId(mediaId: String): Flow<MediaTransferEntity?>
 
+    @Query("SELECT * FROM media_transfers WHERE status = 'ACTIVE' OR status = 'QUEUED' OR status = 'PAUSED'")
+    suspend fun getPendingTransfers(): List<MediaTransferEntity>
+
+    @Query("SELECT media_id FROM media_transfers WHERE status = 'ACTIVE' OR status = 'QUEUED' OR status = 'PAUSED'")
+    suspend fun getAllActiveMediaIds(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(transfer: MediaTransferEntity)
 

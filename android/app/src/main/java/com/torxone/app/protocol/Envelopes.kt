@@ -146,6 +146,7 @@ enum class MessageType {
     FILE_ACCEPT,
     FILE_PROGRESS,
     FILE_COMPLETE,
+    FILE_RESUME,
     FILE_CANCEL,
 
     // Profile

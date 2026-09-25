@@ -15,6 +15,7 @@ object MediaProtocolCodec {
     private const val ACK_MAGIC = 0x54584D41        // "TXMA"
     private const val RESUME_MAGIC = 0x54584D52     // "TXMR"
     private const val CANCEL_MAGIC = 0x54584D58     // "TXMX"
+    private const val COMPLETE_MAGIC = 0x54584350   // "TXCP"
 
     // ─── MediaDescriptor ──────────────────────────────────────────────
 
@@ -190,6 +191,28 @@ object MediaProtocolCodec {
         return MediaCancelPayload(
             mediaId = dis.readUTF(),
             reason = dis.readUTF()
+        )
+    }
+
+    // ─── MediaCompletePayload ─────────────────────────────────────────
+
+    fun encodeComplete(complete: MediaCompletePayload): ByteArray {
+        val baos = ByteArrayOutputStream()
+        val dos = DataOutputStream(baos)
+        dos.writeInt(COMPLETE_MAGIC)
+        dos.writeUTF(complete.mediaId)
+        dos.writeUTF(complete.verifiedSha256)
+        dos.flush()
+        return baos.toByteArray()
+    }
+
+    fun decodeComplete(bytes: ByteArray): MediaCompletePayload {
+        val dis = DataInputStream(ByteArrayInputStream(bytes))
+        val magic = dis.readInt()
+        require(magic == COMPLETE_MAGIC) { "Invalid MediaComplete magic header" }
+        return MediaCompletePayload(
+            mediaId = dis.readUTF(),
+            verifiedSha256 = dis.readUTF()
         )
     }
 }

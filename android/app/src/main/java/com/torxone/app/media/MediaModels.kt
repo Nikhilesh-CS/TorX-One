@@ -112,3 +112,12 @@ data class MediaCancelPayload(
     val mediaId: String,
     val reason: String = "User cancelled"
 )
+
+/**
+ * Receiver completion confirmation with verified ciphertext SHA-256 hash.
+ */
+data class MediaCompletePayload(
+    val mediaId: String,
+    val verifiedSha256: String
+)
+

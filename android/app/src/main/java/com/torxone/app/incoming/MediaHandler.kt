@@ -75,4 +75,36 @@ class MediaHandler(
         mediaService.cancelTransfer(cancel.mediaId)
         return true
     }
+
+    /**
+     * Handles media transfer completion confirmation (FILE_COMPLETE) from receiver.
+     */
+    suspend fun handleMediaComplete(
+        connection: Connection,
+        envelope: SecureEnvelope
+    ): Boolean {
+        val complete = try {
+            MediaProtocolCodec.decodeComplete(envelope.payload)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode MediaComplete: ${e.message}")
+            return false
+        }
+        return mediaService.handleIncomingCompletion(complete)
+    }
+
+    /**
+     * Handles media transfer resume request (FILE_RESUME) from peer.
+     */
+    suspend fun handleMediaResume(
+        connection: Connection,
+        envelope: SecureEnvelope
+    ): Boolean {
+        val resumeReq = try {
+            MediaProtocolCodec.decodeResumeRequest(envelope.payload)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode MediaResumeRequest: ${e.message}")
+            return false
+        }
+        return mediaService.handleIncomingResume(resumeReq)
+    }
 }

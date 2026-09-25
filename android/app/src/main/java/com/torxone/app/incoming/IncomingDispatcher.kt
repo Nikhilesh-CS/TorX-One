@@ -279,6 +279,12 @@ class IncomingDispatcher(
                         MessageType.FILE_PROGRESS -> {
                             mediaHandler?.handleMediaChunk(connection, secureEnvelope)
                         }
+                        MessageType.FILE_COMPLETE -> {
+                            mediaHandler?.handleMediaComplete(connection, secureEnvelope)
+                        }
+                        MessageType.FILE_RESUME -> {
+                            mediaHandler?.handleMediaResume(connection, secureEnvelope)
+                        }
                         MessageType.FILE_CANCEL -> {
                             mediaHandler?.handleMediaCancel(secureEnvelope)
                         }

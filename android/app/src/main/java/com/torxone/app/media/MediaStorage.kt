@@ -99,7 +99,16 @@ class MediaStorage(
      */
     fun cleanupTempTransfer(mediaId: String) {
         try {
-            getTempEncryptedFile(mediaId).delete()
+            val file = getTempEncryptedFile(mediaId)
+            if (!file.exists()) return
+            if (!file.delete()) {
+                // On Windows, file handles from RandomAccessFile may linger briefly.
+                // Retry once after a short pause, then fall back to deleteOnExit.
+                Thread.sleep(50)
+                if (!file.delete()) {
+                    file.deleteOnExit()
+                }
+            }
         } catch (_: Exception) {}
     }
 
@@ -112,6 +121,21 @@ class MediaStorage(
             val file = File(path)
             if (file.exists() && file.canonicalPath.startsWith(mediaBaseDir.canonicalPath)) {
                 file.delete()
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Purges temporary transfer files that do not correspond to any active transfer.
+     */
+    fun cleanupOrphanTempTransfers(activeMediaIds: Set<String>) {
+        try {
+            val files = tempTransfersDir.listFiles() ?: return
+            for (file in files) {
+                val mediaId = file.name.removeSuffix(".enc")
+                if (!activeMediaIds.contains(mediaId)) {
+                    file.delete()
+                }
             }
         } catch (_: Exception) {}
     }

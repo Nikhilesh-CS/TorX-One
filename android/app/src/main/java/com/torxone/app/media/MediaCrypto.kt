@@ -1,5 +1,9 @@
 package com.torxone.app.media
 
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -107,6 +111,132 @@ object MediaCrypto {
      */
     fun verifyIntegrity(data: ByteArray, expectedHex: String): Boolean {
         val computedHex = sha256Hex(data)
+        return MessageDigest.isEqual(
+            computedHex.toByteArray(Charsets.UTF_8),
+            expectedHex.lowercase().toByteArray(Charsets.UTF_8)
+        )
+    }
+
+    /**
+     * Stream-encrypts plaintext from an InputStream into an OutputStream using AES-256-GCM.
+     * Writes [12-byte IV] followed by the AES-GCM ciphertext + 16-byte authentication tag.
+     * Returns the SHA-256 hex string computed across the ENTIRE encrypted output (IV + ciphertext).
+     *
+     * Memory overhead is constant (O(1), 64 KB buffer) regardless of file size.
+     */
+    fun encryptStream(
+        key: ByteArray,
+        inputStream: InputStream,
+        outputStream: OutputStream
+    ): String {
+        require(key.size == AES_KEY_SIZE_BYTES) { "Media key must be 32 bytes (256 bits)" }
+
+        val iv = ByteArray(GCM_IV_LENGTH_BYTES)
+        secureRandom.nextBytes(iv)
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        outputStream.write(iv)
+        digest.update(iv)
+
+        val cipher = Cipher.getInstance(CIPHER_ALGORITHM)
+        val keySpec = SecretKeySpec(key, KEY_ALGORITHM)
+        val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+
+        val buffer = ByteArray(64 * 1024)
+        var bytesRead: Int
+        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            val chunkCipher = cipher.update(buffer, 0, bytesRead)
+            if (chunkCipher != null && chunkCipher.isNotEmpty()) {
+                outputStream.write(chunkCipher)
+                digest.update(chunkCipher)
+            }
+        }
+
+        val finalBytes = cipher.doFinal()
+        if (finalBytes != null && finalBytes.isNotEmpty()) {
+            outputStream.write(finalBytes)
+            digest.update(finalBytes)
+        }
+        outputStream.flush()
+
+        val hashBytes = digest.digest()
+        val sb = StringBuilder(hashBytes.size * 2)
+        for (b in hashBytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Stream-decrypts ciphertext from an InputStream into an OutputStream using AES-256-GCM.
+     * Reads the leading [12-byte IV], initializes cipher, and writes decrypted plaintext.
+     * Throws an exception if authentication fails.
+     *
+     * Memory overhead is constant (O(1), 64 KB buffer) regardless of file size.
+     */
+    fun decryptStream(
+        key: ByteArray,
+        inputStream: InputStream,
+        outputStream: OutputStream
+    ) {
+        require(key.size == AES_KEY_SIZE_BYTES) { "Media key must be 32 bytes (256 bits)" }
+
+        val iv = ByteArray(GCM_IV_LENGTH_BYTES)
+        var readIv = 0
+        while (readIv < GCM_IV_LENGTH_BYTES) {
+            val count = inputStream.read(iv, readIv, GCM_IV_LENGTH_BYTES - readIv)
+            if (count == -1) throw IOException("Unexpected EOF while reading GCM IV")
+            readIv += count
+        }
+
+        val cipher = Cipher.getInstance(CIPHER_ALGORITHM)
+        val keySpec = SecretKeySpec(key, KEY_ALGORITHM)
+        val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+
+        val buffer = ByteArray(64 * 1024)
+        var bytesRead: Int
+        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            val chunkPlain = cipher.update(buffer, 0, bytesRead)
+            if (chunkPlain != null && chunkPlain.isNotEmpty()) {
+                outputStream.write(chunkPlain)
+            }
+        }
+
+        val finalPlain = cipher.doFinal()
+        if (finalPlain != null && finalPlain.isNotEmpty()) {
+            outputStream.write(finalPlain)
+        }
+        outputStream.flush()
+    }
+
+    /**
+     * Computes the SHA-256 digest of a file in streaming fashion.
+     */
+    fun sha256FileHex(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        val hashBytes = digest.digest()
+        val sb = StringBuilder(hashBytes.size * 2)
+        for (b in hashBytes) {
+            sb.append(String.format("%02x", b))
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Verifies the SHA-256 digest of a file against expected hex.
+     */
+    fun verifyFileIntegrity(file: File, expectedHex: String): Boolean {
+        if (!file.exists()) return false
+        val computedHex = sha256FileHex(file)
         return MessageDigest.isEqual(
             computedHex.toByteArray(Charsets.UTF_8),
             expectedHex.lowercase().toByteArray(Charsets.UTF_8)
