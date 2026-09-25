@@ -52,6 +52,7 @@ class ChatReceiver(
 
         val isActive = activeConversationTracker.getActiveConversationId() == conversationId
         val unreadIncrement = if (isActive) 0 else 1
+        val now = System.currentTimeMillis()
 
         val messageEntity = MessageEntity(
             logicalMessageId = messageId,
@@ -60,9 +61,11 @@ class ChatReceiver(
             type = MessageType.TEXT.name,
             body = text,
             direction = MessageDirection.INCOMING,
-            status = DeliveryStatus.DELIVERED.name,
+            status = if (isActive) DeliveryStatus.READ.name else DeliveryStatus.DELIVERED.name,
             createdAt = envelope.timestamp,
-            receivedAt = System.currentTimeMillis()
+            receivedAt = now,
+            readAt = if (isActive) now else null,
+            replyToMessageId = envelope.replyToMessageId
         )
 
         messageDao.insertIfAbsent(messageEntity)
@@ -76,6 +79,8 @@ class ChatReceiver(
 
         if (!isActive) {
             conversationDao.updateUnreadCount(conversationId, conv.unreadCount + unreadIncrement)
+        } else {
+            conversationDao.updateUnreadCount(conversationId, 0)
         }
 
         Log.i(TAG, "[DB] msg=${messageId.take(8)} persisted successfully")

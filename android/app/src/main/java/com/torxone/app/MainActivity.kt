@@ -96,33 +96,37 @@ fun TorXOneApp() {
                 }
             }
 
-            val messages by app.database.messageDao()
-                .observeByConversation(screen.conversationId)
-                .collectAsState(initial = emptyList())
+            val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
+                value = app.database.contactDao().getByConversationId(screen.conversationId)
+                    ?: app.database.contactDao().getAll().firstOrNull()
+            }
+            val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
+                value = app.identityRepository.loadIdentity()
+            }
 
-            ChatScreen(
-                contactName = screen.contactName,
-                messages = messages,
-                onSendMessage = { text ->
-                    coroutineScope.launch {
-                        val contact = app.database.contactDao().getByConversationId(screen.conversationId)
-                            ?: app.database.contactDao().getAll().firstOrNull()
-                        val localIdentity = app.identityRepository.loadIdentity()
-                        if (contact != null && localIdentity != null) {
-                            app.chatService.sendTextMessage(
-                                conversationId = screen.conversationId,
-                                relationshipId = contact.relationshipId,
-                                localIdentityId = localIdentity.identityId,
-                                recipientId = contact.contactId,
-                                text = text
-                            )
-                        }
-                    }
-                },
-                onBackClick = {
-                    currentScreen = Screen.ConversationList
+            val contact = contactState.value
+            val localIdentity = localIdentityState.value
+
+            if (contact != null && localIdentity != null) {
+                val viewModel = remember(screen.conversationId, contact.relationshipId) {
+                    com.torxone.app.chat.ChatViewModel(
+                        conversationId = screen.conversationId,
+                        relationshipId = contact.relationshipId,
+                        localIdentityId = localIdentity.identityId,
+                        recipientId = contact.contactId,
+                        contactName = screen.contactName,
+                        chatService = app.chatService,
+                        presenceService = app.presenceService
+                    )
                 }
-            )
+
+                ChatScreen(
+                    viewModel = viewModel,
+                    onBackClick = {
+                        currentScreen = Screen.ConversationList
+                    }
+                )
+            }
         }
     }
 

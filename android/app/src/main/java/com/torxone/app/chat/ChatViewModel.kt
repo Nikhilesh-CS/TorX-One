@@ -2,24 +2,40 @@ package com.torxone.app.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.connection.ConnectionState
+import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.data.entity.MessageEntity
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
+/**
+ * Rich Chat UI State for presentation.
+ */
 data class ChatUiState(
     val title: String = "",
-    val messages: List<MessageEntity> = emptyList(),
+    val messages: List<MessageUiModel> = emptyList(),
     val composerText: String = "",
+    val presence: PresenceStatus = PresenceStatus.UNKNOWN,
+    val lastSeenAt: Long? = null,
+    val isTyping: Boolean = false,
+    val replyingTo: MessageUiModel? = null,
     val connectionState: ConnectionState = ConnectionState.ACTIVE,
     val isSending: Boolean = false,
     val error: String? = null
 )
 
 /**
- * ChatViewModel (Section 43)
- * Exposes a single ChatUiState.
- * Completely decoupled from transports and protocol internals.
+ * ChatViewModel
+ *
+ * Responsibilities:
+ * - Maps Room MessageEntity -> MessageUiModel with quoted reply resolution
+ * - Manages typing debouncing (TYPING_START on first keystroke, TYPING_STOP after 2.5s pause)
+ * - Observes pairwise presence and updates header status
+ * - Manages reply state (replyingTo, cancelReply)
+ * - Dispatches batch read receipts when conversation is visible
  */
 class ChatViewModel(
     private val conversationId: String,
@@ -27,29 +43,154 @@ class ChatViewModel(
     private val localIdentityId: String,
     private val recipientId: String,
     private val contactName: String,
-    private val chatService: ChatService
+    private val chatService: ChatService,
+    private val presenceService: PresenceService? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState(title = contactName))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    private var typingDebounceJob: Job? = null
+    private var isTypingLocally = false
+
     init {
+        // 1. Observe messages and map to UI models with quote resolution
         viewModelScope.launch {
-            chatService.observeMessages(conversationId).collect { msgList ->
-                _uiState.update { it.copy(messages = msgList) }
+            chatService.observeMessages(conversationId).collect { msgEntities ->
+                val uiModels = mapToUiModels(msgEntities)
+                _uiState.update { it.copy(messages = uiModels) }
+
+                // Automatically mark incoming messages read if conversation is open
+                markConversationRead()
             }
+        }
+
+        // 2. Observe pairwise presence (Online / Offline / Typing)
+        if (presenceService != null) {
+            viewModelScope.launch {
+                presenceService.observePresence(relationshipId).collect { presence ->
+                    _uiState.update {
+                        it.copy(
+                            presence = presence.status,
+                            lastSeenAt = presence.lastSeenAt,
+                            isTyping = presence.isTyping
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun mapToUiModels(entities: List<MessageEntity>): List<MessageUiModel> {
+        val entityMap = entities.associateBy { it.logicalMessageId }
+        return entities.map { entity ->
+            val quoted = entity.replyToMessageId?.let { replyId ->
+                val original = entityMap[replyId]
+                if (original != null) {
+                    if (original.deletedAt != null) {
+                        QuotedMessageUiModel(
+                            messageId = replyId,
+                            senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
+                            previewText = "Message deleted"
+                        )
+                    } else {
+                        QuotedMessageUiModel(
+                            messageId = replyId,
+                            senderName = if (original.direction == MessageDirection.OUTGOING) "You" else contactName,
+                            previewText = original.body ?: ""
+                        )
+                    }
+                } else {
+                    QuotedMessageUiModel(
+                        messageId = replyId,
+                        senderName = "Unavailable",
+                        previewText = "Original message unavailable",
+                        isUnavailable = true
+                    )
+                }
+            }
+
+            val deliveryStatus = try {
+                DeliveryStatus.valueOf(entity.status)
+            } catch (_: Exception) {
+                DeliveryStatus.QUEUED
+            }
+
+            MessageUiModel(
+                logicalMessageId = entity.logicalMessageId,
+                conversationId = entity.conversationId,
+                senderId = entity.senderId,
+                body = entity.body,
+                direction = entity.direction,
+                status = deliveryStatus,
+                createdAt = entity.createdAt,
+                deliveredAt = entity.deliveredAt,
+                readAt = entity.readAt,
+                replyToMessageId = entity.replyToMessageId,
+                quotedMessage = quoted,
+                isDeleted = entity.deletedAt != null
+            )
         }
     }
 
     fun onComposerTextChanged(text: String) {
         _uiState.update { it.copy(composerText = text) }
+        handleTypingDebounce(text)
+    }
+
+    private fun handleTypingDebounce(text: String) {
+        if (text.isNotBlank()) {
+            if (!isTypingLocally) {
+                isTypingLocally = true
+                viewModelScope.launch {
+                    presenceService?.sendTypingStart(relationshipId, conversationId)
+                }
+            }
+            // Reset 2.5 second inactivity timer
+            typingDebounceJob?.cancel()
+            typingDebounceJob = viewModelScope.launch {
+                delay(2500L)
+                if (isTypingLocally) {
+                    isTypingLocally = false
+                    presenceService?.sendTypingStop(relationshipId, conversationId)
+                }
+            }
+        } else {
+            // Text cleared
+            typingDebounceJob?.cancel()
+            if (isTypingLocally) {
+                isTypingLocally = false
+                viewModelScope.launch {
+                    presenceService?.sendTypingStop(relationshipId, conversationId)
+                }
+            }
+        }
+    }
+
+    fun onReply(message: MessageUiModel) {
+        _uiState.update { it.copy(replyingTo = message) }
+    }
+
+    fun cancelReply() {
+        _uiState.update { it.copy(replyingTo = null) }
     }
 
     fun sendText() {
         val text = _uiState.value.composerText.trim()
         if (text.isEmpty()) return
 
-        _uiState.update { it.copy(composerText = "", isSending = true, error = null) }
+        val replyToId = _uiState.value.replyingTo?.logicalMessageId
+
+        // Stop typing immediately when message is sent
+        typingDebounceJob?.cancel()
+        if (isTypingLocally) {
+            isTypingLocally = false
+            viewModelScope.launch {
+                presenceService?.sendTypingStop(relationshipId, conversationId)
+            }
+        }
+
+        _uiState.update { it.copy(composerText = "", replyingTo = null, isSending = true, error = null) }
         viewModelScope.launch {
             try {
                 chatService.sendTextMessage(
@@ -57,7 +198,8 @@ class ChatViewModel(
                     relationshipId = relationshipId,
                     localIdentityId = localIdentityId,
                     recipientId = recipientId,
-                    text = text
+                    text = text,
+                    replyToMessageId = replyToId
                 )
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Send failed") }
@@ -67,7 +209,31 @@ class ChatViewModel(
         }
     }
 
+    fun markConversationRead() {
+        viewModelScope.launch {
+            try {
+                chatService.markConversationRead(
+                    conversationId = conversationId,
+                    relationshipId = relationshipId,
+                    localIdentityId = localIdentityId,
+                    recipientId = recipientId
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
     fun clearError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        typingDebounceJob?.cancel()
+        if (isTypingLocally) {
+            isTypingLocally = false
+            viewModelScope.launch {
+                presenceService?.sendTypingStop(relationshipId, conversationId)
+            }
+        }
     }
 }

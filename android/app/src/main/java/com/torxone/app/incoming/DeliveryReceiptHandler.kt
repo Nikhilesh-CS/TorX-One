@@ -32,8 +32,31 @@ class DeliveryReceiptHandler(
     }
 
     suspend fun handleReadReceipt(envelope: SecureEnvelope) {
+        if (envelope.payload.isNotEmpty()) {
+            try {
+                val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
+                Log.i(TAG, "[READ] Received batch READ up to message=${receipt.upToMessageId.take(8)} for conv=${receipt.conversationId.take(8)}")
+                val targetMsg = messageDao.getById(receipt.upToMessageId)
+                if (targetMsg != null) {
+                    messageDao.markOutgoingReadUpTo(
+                        conversationId = receipt.conversationId,
+                        upToCreatedAt = targetMsg.createdAt,
+                        status = DeliveryStatus.READ.name,
+                        readAt = receipt.readAt
+                    )
+                } else {
+                    messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
+                }
+                agent.markRead(receipt.upToMessageId)
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse ReadReceipt payload, falling back to messageId: ${e.message}")
+            }
+        }
+
         val messageId = envelope.logicalMessageId
         Log.i(TAG, "[READ] Received READ for message=${messageId.take(8)}")
         messageDao.markRead(messageId, DeliveryStatus.READ.name, envelope.timestamp)
+        agent.markRead(messageId)
     }
 }

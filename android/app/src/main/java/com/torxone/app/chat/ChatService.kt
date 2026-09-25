@@ -50,7 +50,8 @@ class ChatService(
         relationshipId: String,
         localIdentityId: String,
         recipientId: String,
-        text: String
+        text: String,
+        replyToMessageId: String? = null
     ): String {
         require(text.isNotBlank()) { "Message text cannot be blank" }
 
@@ -61,11 +62,11 @@ class ChatService(
         val deliveryId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
-        Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)}")
+        Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)} replyTo=${replyToMessageId?.take(8)}")
 
         val sendSeq = connectionManager.incrementSendSequence(relationshipId)
 
-        // 1. Build SecureEnvelope with directional sequence (Phase 7 & 8)
+        // 1. Build SecureEnvelope with directional sequence and optional replyToMessageId
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = messageId,
@@ -75,6 +76,7 @@ class ChatService(
             messageType = MessageType.TEXT,
             timestamp = now,
             payload = text.toByteArray(Charsets.UTF_8),
+            replyToMessageId = replyToMessageId,
             directionSequence = sendSeq
         )
         val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
@@ -97,7 +99,8 @@ class ChatService(
                 body = text,
                 direction = MessageDirection.OUTGOING,
                 status = DeliveryStatus.QUEUED.name,
-                createdAt = now
+                createdAt = now,
+                replyToMessageId = replyToMessageId
             )
 
             val outboxEntity = OutboxEntity(
@@ -146,6 +149,87 @@ class ChatService(
 
         Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery")
         return messageId
+    }
+
+    /**
+     * Mark all incoming messages in a conversation as read locally and dispatch batch READ_RECEIPT to peer.
+     */
+    suspend fun markConversationRead(
+        conversationId: String,
+        relationshipId: String,
+        localIdentityId: String,
+        recipientId: String
+    ) {
+        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId) ?: return
+        val now = System.currentTimeMillis()
+
+        // 1. Mark incoming messages in local Room database as READ
+        messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
+        conversationDao.updateUnreadCount(conversationId, 0)
+
+        // 2. Dispatch batch READ_RECEIPT up to latest incoming message
+        sendReadReceipt(
+            conversationId = conversationId,
+            relationshipId = relationshipId,
+            upToMessageId = latestUnread.logicalMessageId,
+            localIdentityId = localIdentityId,
+            recipientId = recipientId
+        )
+    }
+
+    /**
+     * Send an explicit encrypted batch READ_RECEIPT for messages up to upToMessageId.
+     * Note: Control packet does NOT trigger an ACK back.
+     */
+    suspend fun sendReadReceipt(
+        conversationId: String,
+        relationshipId: String,
+        upToMessageId: String,
+        localIdentityId: String,
+        recipientId: String
+    ) {
+        try {
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return
+            val now = System.currentTimeMillis()
+            val receipt = com.torxone.app.protocol.ReadReceipt(
+                conversationId = conversationId,
+                upToMessageId = upToMessageId,
+                readAt = now
+            )
+
+            val envelope = SecureEnvelope(
+                protocolVersion = 1,
+                logicalMessageId = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                senderIdentity = localIdentityId,
+                recipientBinding = recipientId,
+                messageType = MessageType.READ_RECEIPT,
+                timestamp = now,
+                payload = receipt.toByteArray()
+            )
+            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+
+            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
+            val ciphertext = encrypted.serialize()
+
+            val deliveryItem = DeliveryItem(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = envelope.logicalMessageId,
+                conversationId = conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED,
+                priority = com.torxone.app.agent.DeliveryPriority.HIGH
+            )
+
+            Log.i(TAG, "[READ RECEIPT] Enqueueing READ up to ${upToMessageId.take(8)} for conv=${conversationId.take(8)}")
+            agent.enqueue(deliveryItem)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send read receipt: ${e.message}")
+        }
     }
 
     /**

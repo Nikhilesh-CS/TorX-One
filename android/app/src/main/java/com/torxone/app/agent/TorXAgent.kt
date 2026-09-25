@@ -81,6 +81,43 @@ class TorXAgent(
     }
 
     /**
+     * Send an ephemeral message (e.g. TYPING_START, TYPING_STOP, PRESENCE_UPDATE).
+     *
+     * Semantics:
+     * - Best-effort immediate delivery via TransportRouter
+     * - Never stored in persistent OutboxStore (never retried after restart or reconnection)
+     * - Drops immediately if expired by TTL
+     * - Uses DeliveryPriority.LOW and doesn't pollute durable chat outbox
+     */
+    suspend fun sendEphemeral(item: DeliveryItem, ttlMs: Long = 15_000L): TransportResult {
+        val now = System.currentTimeMillis()
+        if (now - item.createdAt > ttlMs) {
+            Log.d(TAG, "[EPHEMERAL EXPIRED] Dropping expired item ${item.deliveryId.take(8)}")
+            return TransportResult.Failed(com.torxone.app.transport.TransportType.NEARBY, "Ephemeral message expired")
+        }
+
+        val authenticator = IdentityCrypto.computeQueueAuthenticator(
+            queueAuthSecret = item.queueAuthenticator,
+            envelopeId = item.deliveryId,
+            queueAddress = item.queueAddress,
+            ciphertext = item.ciphertext
+        )
+        val envelope = OpaqueTransportEnvelope(
+            version = 1,
+            envelopeId = item.deliveryId,
+            queueAddress = item.queueAddress,
+            opaqueCiphertext = item.ciphertext,
+            queueAuthenticator = authenticator
+        )
+        val rawPayload = ProtocolCodec.encodeTransportEnvelope(envelope)
+        val destination = TransportDestination(address = item.queueAddress)
+
+        val result = transportRouter.send(destination, rawPayload)
+        Log.d(TAG, "[EPHEMERAL SEND] item=${item.deliveryId.take(8)} result=$result")
+        return result
+    }
+
+    /**
      * Trigger immediate retry (e.g. when Nearby connects).
      * Resets waiting retry items so they transmit immediately without waiting for backoff timers.
      */

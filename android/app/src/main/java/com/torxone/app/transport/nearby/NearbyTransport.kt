@@ -38,7 +38,8 @@ class NearbyTransport(
     private val connectionManager: ConnectionManager? = null,
     private val agent: TorXAgent? = null,
     customEndpointName: String? = null,
-    adapter: NearbyConnectionsAdapter? = null
+    adapter: NearbyConnectionsAdapter? = null,
+    val directRouteTable: DirectRouteTable = DirectRouteTable()
 ) : Transport {
 
     companion object {
@@ -62,8 +63,6 @@ class NearbyTransport(
     val localTieBreaker: Long = customEndpointName?.removePrefix("TorX_")?.toLongOrNull(16)
         ?: (SecureRandom().nextLong() and Long.MAX_VALUE)
     val localEndpointName: String = customEndpointName ?: "TorX_${localTieBreaker.toString(16)}"
-
-    val directRouteTable = DirectRouteTable()
 
     private val _healthState = MutableStateFlow(TransportHealthState.DISCONNECTED)
     val healthState: Flow<TransportHealthState> = _healthState.asStateFlow()

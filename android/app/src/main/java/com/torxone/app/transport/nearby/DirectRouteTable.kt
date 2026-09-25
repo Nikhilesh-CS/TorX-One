@@ -80,6 +80,25 @@ class DirectRouteTable {
         if (recvQueueId != null) {
             bindQueue(recvQueueId, endpointId)
         }
+        notifyRouteChanged(relationshipId, state, now)
+    }
+
+    private val routeListeners = java.util.concurrent.CopyOnWriteArrayList<(relationshipId: String, state: RouteState, lastSeen: Long) -> Unit>()
+
+    fun addRouteListener(listener: (relationshipId: String, state: RouteState, lastSeen: Long) -> Unit) {
+        routeListeners.add(listener)
+    }
+
+    fun removeRouteListener(listener: (relationshipId: String, state: RouteState, lastSeen: Long) -> Unit) {
+        routeListeners.remove(listener)
+    }
+
+    private fun notifyRouteChanged(relationshipId: String, state: RouteState, lastSeen: Long) {
+        for (listener in routeListeners) {
+            try {
+                listener(relationshipId, state, lastSeen)
+            } catch (_: Exception) {}
+        }
     }
 
     fun bindQueue(queueAddress: String, endpointId: String) {
@@ -117,18 +136,22 @@ class DirectRouteTable {
 
     fun markStale(endpointId: String) {
         val relId = endpointToRelationship[endpointId] ?: return
+        val now = System.currentTimeMillis()
         routesByRelationship[relId]?.let {
             routesByRelationship[relId] = it.copy(state = RouteState.STALE)
         }
+        notifyRouteChanged(relId, RouteState.STALE, now)
     }
 
     fun removeEndpoint(endpointId: String): Set<String> {
+        val now = System.currentTimeMillis()
         endpointLastSeen.remove(endpointId)
         val relId = endpointToRelationship.remove(endpointId)
         val affected = mutableSetOf<String>()
         if (relId != null) {
             routesByRelationship.remove(relId)
             affected.add(relId)
+            notifyRouteChanged(relId, RouteState.DISCONNECTED, now)
         }
         val queues = endpointToQueues.remove(endpointId)
         queues?.forEach { queueToEndpoint.remove(it) }
@@ -136,11 +159,16 @@ class DirectRouteTable {
     }
 
     fun clear() {
+        val now = System.currentTimeMillis()
+        val relationships = routesByRelationship.keys.toList()
         routesByRelationship.clear()
         endpointToRelationship.clear()
         queueToEndpoint.clear()
         endpointToQueues.clear()
         endpointLastSeen.clear()
+        for (rel in relationships) {
+            notifyRouteChanged(rel, RouteState.DISCONNECTED, now)
+        }
     }
 
     fun getAllReadyRoutes(): List<NearbyRoute> =

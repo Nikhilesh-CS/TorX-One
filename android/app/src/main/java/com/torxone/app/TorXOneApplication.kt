@@ -56,6 +56,9 @@ class TorXOneApplication : Application() {
     lateinit var chatService: ChatService
         private set
 
+    lateinit var presenceService: com.torxone.app.chat.PresenceService
+        private set
+
     lateinit var incomingTransportHub: IncomingTransportHub
         private set
 
@@ -92,7 +95,21 @@ class TorXOneApplication : Application() {
             processedStore = createProcessedStore()
         )
 
-        // 7. Incoming Dispatcher & Hub
+        // 7. Direct Route Table & Presence Service
+        val directRouteTable = com.torxone.app.transport.nearby.DirectRouteTable()
+        presenceService = com.torxone.app.chat.PresenceService(
+            connectionManager = connectionManager,
+            sessionCrypto = sessionCrypto,
+            agent = agent,
+            directRouteTable = directRouteTable,
+            localIdentityIdProvider = {
+                runBlocking { identityRepository.loadIdentity()?.identityId }
+            }
+        )
+        val presenceHandler = PresenceHandler(presenceService)
+        val typingHandler = TypingHandler(presenceService)
+
+        // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
             messageDao = database.messageDao(),
             conversationDao = database.conversationDao(),
@@ -113,6 +130,8 @@ class TorXOneApplication : Application() {
             localIdentityIdProvider = {
                 runBlocking { identityRepository.loadIdentity()?.identityId }
             },
+            presenceHandler = presenceHandler,
+            typingHandler = typingHandler,
             transactionRunner = { block -> database.withTransaction { block() } },
             pendingInviteDao = database.pendingInviteDao(),
             identityRepository = identityRepository,
@@ -122,12 +141,13 @@ class TorXOneApplication : Application() {
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
-        // 8. Nearby Transport
+        // 9. Nearby Transport
         nearbyTransport = NearbyTransport(
             context = this,
             incomingTransportHub = incomingTransportHub,
             connectionManager = connectionManager,
-            agent = agent
+            agent = agent,
+            directRouteTable = directRouteTable
         )
         transportRouter.registerTransport(nearbyTransport)
 

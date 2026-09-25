@@ -42,6 +42,8 @@ class IncomingDispatcher(
     private val deliveryReceiptHandler: DeliveryReceiptHandler,
     private val agent: TorXAgent,
     private val localIdentityIdProvider: () -> String?,
+    private val presenceHandler: PresenceHandler? = null,
+    private val typingHandler: TypingHandler? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
@@ -248,8 +250,14 @@ class IncomingDispatcher(
                         MessageType.READ_RECEIPT -> {
                             deliveryReceiptHandler.handleReadReceipt(secureEnvelope)
                         }
+                        MessageType.PRESENCE_UPDATE -> {
+                            presenceHandler?.handlePresenceUpdate(connection, secureEnvelope)
+                        }
+                        MessageType.TYPING_START, MessageType.TYPING_STOP -> {
+                            typingHandler?.handleTypingEvent(connection, secureEnvelope)
+                        }
                         else -> {
-                            throw IllegalArgumentException("Unsupported message type ${secureEnvelope.messageType}")
+                            Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")
                         }
                     }
 

@@ -58,6 +58,15 @@ interface MessageDao {
 
     @Query("UPDATE messages SET status = :status, read_at = :readAt WHERE logical_message_id = :messageId")
     suspend fun markRead(messageId: String, status: String, readAt: Long)
+
+    @Query("UPDATE messages SET status = :status, read_at = :readAt WHERE conversation_id = :conversationId AND direction = 'OUTGOING' AND status != 'READ' AND created_at <= :upToCreatedAt")
+    suspend fun markOutgoingReadUpTo(conversationId: String, upToCreatedAt: Long, status: String, readAt: Long)
+
+    @Query("UPDATE messages SET status = :status, read_at = :readAt WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ'")
+    suspend fun markAllIncomingRead(conversationId: String, status: String, readAt: Long)
+
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ' ORDER BY created_at DESC LIMIT 1")
+    suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity?
 }
 
 @Dao

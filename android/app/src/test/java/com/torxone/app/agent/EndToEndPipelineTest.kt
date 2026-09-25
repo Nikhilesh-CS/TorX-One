@@ -93,6 +93,25 @@ class EndToEndPipelineTest {
         override suspend fun markRead(messageId: String, status: String, readAt: Long) {
             messages[messageId]?.let { messages[messageId] = it.copy(status = status, readAt = readAt) }
         }
+        override suspend fun markOutgoingReadUpTo(conversationId: String, upToCreatedAt: Long, status: String, readAt: Long) {
+            for ((id, msg) in messages) {
+                if (msg.conversationId == conversationId && msg.direction == MessageDirection.OUTGOING && msg.createdAt <= upToCreatedAt) {
+                    messages[id] = msg.copy(status = status, readAt = readAt)
+                }
+            }
+        }
+        override suspend fun markAllIncomingRead(conversationId: String, status: String, readAt: Long) {
+            for ((id, msg) in messages) {
+                if (msg.conversationId == conversationId && msg.direction == MessageDirection.INCOMING) {
+                    messages[id] = msg.copy(status = status, readAt = readAt)
+                }
+            }
+        }
+        override suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity? {
+            return messages.values
+                .filter { it.conversationId == conversationId && it.direction == MessageDirection.INCOMING && it.status != "READ" }
+                .maxByOrNull { it.createdAt }
+        }
     }
 
     class InMemoryConversationDao : ConversationDao {
