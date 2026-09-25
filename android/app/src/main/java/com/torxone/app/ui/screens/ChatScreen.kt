@@ -23,6 +23,10 @@ import com.torxone.app.data.entity.MessageEntity
 import java.text.SimpleDateFormat
 import java.util.*
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import com.torxone.app.ui.components.DeliveryInspectorDialog
+
 /**
  * Chat screen — the 1:1 conversation view.
  *
@@ -43,12 +47,20 @@ fun ChatScreen(
 ) {
     var messageText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    var inspectingMessage by remember { mutableStateOf<MessageEntity?>(null) }
 
     // Auto-scroll to bottom when new messages arrive
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
+    }
+
+    if (inspectingMessage != null) {
+        DeliveryInspectorDialog(
+            message = inspectingMessage!!,
+            onDismiss = { inspectingMessage = null }
+        )
     }
 
     Scaffold(
@@ -111,7 +123,10 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 items(messages, key = { it.logicalMessageId }) { message ->
-                    MessageBubble(message = message)
+                    MessageBubble(
+                        message = message,
+                        onLongClick = { inspectingMessage = message }
+                    )
                 }
             }
 
@@ -130,8 +145,12 @@ fun ChatScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(message: MessageEntity) {
+private fun MessageBubble(
+    message: MessageEntity,
+    onLongClick: () -> Unit
+) {
     val isOutgoing = message.direction == MessageDirection.OUTGOING
 
     Row(
@@ -139,7 +158,12 @@ private fun MessageBubble(message: MessageEntity) {
         horizontalArrangement = if (isOutgoing) Arrangement.End else Arrangement.Start
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 300.dp),
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = onLongClick
+                ),
             shape = RoundedCornerShape(
                 topStart = 16.dp,
                 topEnd = 16.dp,

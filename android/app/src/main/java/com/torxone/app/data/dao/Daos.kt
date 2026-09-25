@@ -71,13 +71,19 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE relationship_id = :relationshipId")
     suspend fun getByRelationshipId(relationshipId: String): ContactEntity?
 
+    @Query("SELECT * FROM contacts WHERE conversation_id = :conversationId")
+    suspend fun getByConversationId(conversationId: String): ContactEntity?
+
+    @Query("SELECT * FROM contacts")
+    suspend fun getAll(): List<ContactEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(contact: ContactEntity)
 }
 
 @Dao
 interface OutboxDao {
-    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING') AND next_attempt_at <= :now ORDER BY created_at ASC")
+    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY created_at ASC")
     suspend fun getPending(now: Long = System.currentTimeMillis()): List<OutboxEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -107,3 +113,67 @@ interface ProcessedEnvelopeDao {
     @Query("DELETE FROM processed_envelopes WHERE processed_at < :before")
     suspend fun pruneOlderThan(before: Long)
 }
+
+@Dao
+interface PairRelationshipDao {
+    @Query("SELECT * FROM pair_relationships WHERE relationship_id = :id")
+    suspend fun getById(id: String): PairRelationshipEntity?
+
+    @Query("SELECT * FROM pair_relationships WHERE contact_id = :contactId")
+    suspend fun getByContactId(contactId: String): PairRelationshipEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(relationship: PairRelationshipEntity)
+
+    @Query("UPDATE pair_relationships SET state = :state WHERE relationship_id = :id")
+    suspend fun updateState(id: String, state: String)
+}
+
+@Dao
+interface ConnectionDao {
+    @Query("SELECT * FROM connections WHERE relationship_id = :relationshipId")
+    suspend fun getByRelationshipId(relationshipId: String): ConnectionDbEntity?
+
+    @Query("SELECT * FROM connections WHERE recv_queue_id = :recvQueueId")
+    suspend fun getByRecvQueue(recvQueueId: String): ConnectionDbEntity?
+
+    @Query("SELECT * FROM connections WHERE send_queue_id = :sendQueueId")
+    suspend fun getBySendQueue(sendQueueId: String): ConnectionDbEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(connection: ConnectionDbEntity)
+
+    @Query("UPDATE connections SET state = :state WHERE connection_id = :connectionId")
+    suspend fun updateState(connectionId: String, state: String)
+}
+
+@Dao
+interface SessionDao {
+    @Query("SELECT * FROM sessions WHERE relationship_id = :relationshipId")
+    suspend fun getByRelationshipId(relationshipId: String): SessionDbEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(session: SessionDbEntity)
+
+    @Query("DELETE FROM sessions WHERE relationship_id = :relationshipId")
+    suspend fun deleteByRelationshipId(relationshipId: String)
+}
+
+@Dao
+interface SkippedKeyDao {
+    @Query("SELECT * FROM skipped_message_keys WHERE session_id = :sessionId")
+    suspend fun getKeysForSession(sessionId: String): List<SkippedKeyEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(key: SkippedKeyEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(keys: List<SkippedKeyEntity>)
+
+    @Query("DELETE FROM skipped_message_keys WHERE session_id = :sessionId AND ratchet_public_key_hex = :ratchetPubHex AND counter = :counter")
+    suspend fun deleteKey(sessionId: String, ratchetPubHex: String, counter: Int)
+
+    @Query("DELETE FROM skipped_message_keys WHERE session_id = :sessionId")
+    suspend fun deleteKeysForSession(sessionId: String)
+}
+

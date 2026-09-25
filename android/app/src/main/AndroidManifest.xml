@@ -20,8 +20,7 @@
         android:usesPermissionFlags="neverForLocation" />
 
     <!-- Wi-Fi Direct -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- (ACCESS_WIFI_STATE and CHANGE_WIFI_STATE declared above) -->
 
     <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -37,7 +36,8 @@
     <application
         android:name=".TorXOneApplication"
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
         android:label="TorX One"
         android:supportsRtl="true"
         android:theme="@style/Theme.TorXOne"
@@ -52,5 +52,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".service.TorXCoreService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

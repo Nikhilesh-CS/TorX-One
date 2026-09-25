@@ -9,11 +9,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import com.torxone.app.contacts.ContactsViewModel
 import com.torxone.app.data.entity.ConversationEntity
 import com.torxone.app.data.entity.MessageEntity
+import com.torxone.app.ui.components.ContactInviteDialog
 import com.torxone.app.ui.screens.ChatScreen
 import com.torxone.app.ui.screens.ConversationListScreen
 import com.torxone.app.ui.theme.TorXOneTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,34 +39,106 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun TorXOneApp() {
-    // Simple navigation state for Milestone 1
+    val context = LocalContext.current
+    val app = context.applicationContext as TorXOneApplication
+    val coroutineScope = rememberCoroutineScope()
+
     var currentScreen by remember { mutableStateOf<Screen>(Screen.ConversationList) }
+    var showInviteDialog by remember { mutableStateOf(false) }
+
+    // Ensure identity exists on startup
+    LaunchedEffect(Unit) {
+        if (app.identityRepository.loadIdentity() == null) {
+            app.identityRepository.createIdentity("Me")
+        }
+    }
+
+    val contactsViewModel = remember {
+        ContactsViewModel(
+            database = app.database,
+            identityRepository = app.identityRepository,
+            sessionCrypto = app.sessionCrypto,
+            connectionManager = app.connectionManager
+        )
+    }
 
     when (val screen = currentScreen) {
         is Screen.ConversationList -> {
+            val conversations by app.database.conversationDao()
+                .observeAll()
+                .collectAsState(initial = emptyList())
+
             ConversationListScreen(
-                conversations = emptyList(), // Will be connected to Room
+                conversations = conversations,
                 onConversationClick = { id ->
-                    currentScreen = Screen.Chat(conversationId = id, contactName = "Contact")
+                    val clicked = conversations.find { it.conversationId == id }
+                    currentScreen = Screen.Chat(
+                        conversationId = id,
+                        contactName = clicked?.title ?: "Chat"
+                    )
                 },
                 onScanQrClick = {
-                    // TODO: Navigate to QR scanner
+                    showInviteDialog = true
                 }
             )
         }
 
         is Screen.Chat -> {
+            // Track active conversation for notification suppression and unread counts (Section 42)
+            DisposableEffect(screen.conversationId) {
+                app.activeConversationTracker.setActiveConversation(screen.conversationId)
+                coroutineScope.launch {
+                    app.database.conversationDao().updateUnreadCount(screen.conversationId, 0)
+                }
+                onDispose {
+                    app.activeConversationTracker.clearActiveConversation()
+                }
+            }
+
+            val messages by app.database.messageDao()
+                .observeByConversation(screen.conversationId)
+                .collectAsState(initial = emptyList())
+
             ChatScreen(
                 contactName = screen.contactName,
-                messages = emptyList(), // Will be connected to Room
+                messages = messages,
                 onSendMessage = { text ->
-                    // TODO: Connect to ChatService
+                    coroutineScope.launch {
+                        val contact = app.database.contactDao().getByConversationId(screen.conversationId)
+                            ?: app.database.contactDao().getAll().firstOrNull()
+                        val localIdentity = app.identityRepository.loadIdentity()
+                        if (contact != null && localIdentity != null) {
+                            app.chatService.sendTextMessage(
+                                conversationId = screen.conversationId,
+                                relationshipId = contact.relationshipId,
+                                localIdentityId = localIdentity.identityId,
+                                recipientId = contact.contactId,
+                                text = text
+                            )
+                        }
+                    }
                 },
                 onBackClick = {
                     currentScreen = Screen.ConversationList
                 }
             )
         }
+    }
+
+    if (showInviteDialog) {
+        ContactInviteDialog(
+            viewModel = contactsViewModel,
+            onContactAdded = { conversationId ->
+                showInviteDialog = false
+                currentScreen = Screen.Chat(
+                    conversationId = conversationId,
+                    contactName = "Peer"
+                )
+            },
+            onDismiss = {
+                showInviteDialog = false
+            }
+        )
     }
 }
 

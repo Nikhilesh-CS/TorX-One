@@ -13,10 +13,14 @@ import com.torxone.app.data.entity.*
         MessageEntity::class,
         ContactEntity::class,
         OutboxEntity::class,
-        ProcessedEnvelopeEntity::class
+        ProcessedEnvelopeEntity::class,
+        PairRelationshipEntity::class,
+        ConnectionDbEntity::class,
+        SessionDbEntity::class,
+        SkippedKeyEntity::class
     ],
     version = 1,
-    exportSchema = true
+    exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
@@ -24,6 +28,10 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun outboxDao(): OutboxDao
     abstract fun processedEnvelopeDao(): ProcessedEnvelopeDao
+    abstract fun pairRelationshipDao(): PairRelationshipDao
+    abstract fun connectionDao(): ConnectionDao
+    abstract fun sessionDao(): SessionDao
+    abstract fun skippedKeyDao(): SkippedKeyDao
 
     companion object {
         @Volatile
@@ -36,8 +44,6 @@ abstract class TorXDatabase : RoomDatabase() {
         }
 
         private fun buildDatabase(context: Context): TorXDatabase {
-            // TODO: Enable SQLCipher for database encryption in production.
-            // Database encryption key should be random, wrapped by Android Keystore.
             return Room.databaseBuilder(
                 context.applicationContext,
                 TorXDatabase::class.java,

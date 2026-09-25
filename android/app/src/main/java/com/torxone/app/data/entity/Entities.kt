@@ -228,3 +228,197 @@ data class ProcessedEnvelopeEntity(
     @ColumnInfo(name = "processed_at")
     val processedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * PairRelationship — First-class cryptographic relationship between local user and contact.
+ */
+@Entity(
+    tableName = "pair_relationships",
+    indices = [Index("contact_id"), Index("local_identity_id")]
+)
+data class PairRelationshipEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "relationship_id")
+    val relationshipId: String,
+
+    @ColumnInfo(name = "local_identity_id")
+    val localIdentityId: String,
+
+    @ColumnInfo(name = "contact_id")
+    val contactId: String,
+
+    @ColumnInfo(name = "root_secret", typeAffinity = ColumnInfo.BLOB)
+    val rootSecret: ByteArray,
+
+    @ColumnInfo(name = "state")
+    val state: String = "ACTIVE",
+
+    @ColumnInfo(name = "generation")
+    val generation: Int = 1,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "verified_at")
+    val verifiedAt: Long? = null
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PairRelationshipEntity) return false
+        return relationshipId == other.relationshipId
+    }
+
+    override fun hashCode(): Int = relationshipId.hashCode()
+}
+
+/**
+ * Connection — Replaceable routing generation for a relationship.
+ */
+@Entity(
+    tableName = "connections",
+    indices = [
+        Index("relationship_id"),
+        Index("send_queue_id"),
+        Index("recv_queue_id")
+    ]
+)
+data class ConnectionDbEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "connection_id")
+    val connectionId: String,
+
+    @ColumnInfo(name = "relationship_id")
+    val relationshipId: String,
+
+    @ColumnInfo(name = "generation")
+    val generation: Int = 1,
+
+    @ColumnInfo(name = "send_queue_id")
+    val sendQueueId: String,
+
+    @ColumnInfo(name = "recv_queue_id")
+    val recvQueueId: String,
+
+    @ColumnInfo(name = "send_auth", typeAffinity = ColumnInfo.BLOB)
+    val sendAuth: ByteArray,
+
+    @ColumnInfo(name = "recv_auth", typeAffinity = ColumnInfo.BLOB)
+    val recvAuth: ByteArray,
+
+    @ColumnInfo(name = "state")
+    val state: String = "ACTIVE",
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ConnectionDbEntity) return false
+        return connectionId == other.connectionId
+    }
+
+    override fun hashCode(): Int = connectionId.hashCode()
+}
+
+/**
+ * Double Ratchet Session state persistence.
+ */
+@Entity(
+    tableName = "sessions",
+    indices = [Index("relationship_id", unique = true)]
+)
+data class SessionDbEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "session_id")
+    val sessionId: String,
+
+    @ColumnInfo(name = "relationship_id")
+    val relationshipId: String,
+
+    @ColumnInfo(name = "root_key", typeAffinity = ColumnInfo.BLOB)
+    val rootKey: ByteArray,
+
+    @ColumnInfo(name = "local_dh_public", typeAffinity = ColumnInfo.BLOB)
+    val localDhPublicKey: ByteArray,
+
+    @ColumnInfo(name = "local_dh_private", typeAffinity = ColumnInfo.BLOB)
+    val localDhPrivateKey: ByteArray,
+
+    @ColumnInfo(name = "remote_dh_public", typeAffinity = ColumnInfo.BLOB)
+    val remoteDhPublicKey: ByteArray,
+
+    @ColumnInfo(name = "send_chain_key", typeAffinity = ColumnInfo.BLOB)
+    val sendChainKey: ByteArray?,
+
+    @ColumnInfo(name = "recv_chain_key", typeAffinity = ColumnInfo.BLOB)
+    val recvChainKey: ByteArray?,
+
+    @ColumnInfo(name = "send_message_number")
+    val sendMessageNumber: Int,
+
+    @ColumnInfo(name = "receive_message_number")
+    val receiveMessageNumber: Int,
+
+    @ColumnInfo(name = "previous_send_count")
+    val previousSendCount: Int,
+
+    @ColumnInfo(name = "state")
+    val state: String = "ACTIVE",
+
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is SessionDbEntity) return false
+        return sessionId == other.sessionId && relationshipId == other.relationshipId
+    }
+
+    override fun hashCode(): Int = sessionId.hashCode()
+}
+
+/**
+ * Skipped message keys for out-of-order delivery.
+ */
+@Entity(
+    tableName = "skipped_message_keys",
+    indices = [
+        Index("session_id"),
+        Index(value = ["session_id", "ratchet_public_key_hex", "counter"], unique = true)
+    ]
+)
+data class SkippedKeyEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0,
+
+    @ColumnInfo(name = "session_id")
+    val sessionId: String,
+
+    @ColumnInfo(name = "ratchet_public_key_hex")
+    val ratchetPublicKeyHex: String,
+
+    @ColumnInfo(name = "counter")
+    val counter: Int,
+
+    @ColumnInfo(name = "message_key", typeAffinity = ColumnInfo.BLOB)
+    val messageKey: ByteArray,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is SkippedKeyEntity) return false
+        return sessionId == other.sessionId &&
+                ratchetPublicKeyHex == other.ratchetPublicKeyHex &&
+                counter == other.counter
+    }
+
+    override fun hashCode(): Int {
+        var result = sessionId.hashCode()
+        result = 31 * result + ratchetPublicKeyHex.hashCode()
+        result = 31 * result + counter
+        return result
+    }
+}
+

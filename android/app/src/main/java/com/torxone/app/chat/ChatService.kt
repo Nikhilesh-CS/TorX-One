@@ -1,111 +1,145 @@
 package com.torxone.app.chat
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.torxone.app.agent.DeliveryItem
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.agent.TorXAgent
-import com.torxone.app.crypto.CryptoEngine
+import com.torxone.app.connection.ConnectionManager
+import com.torxone.app.crypto.SessionCrypto
+import com.torxone.app.data.TorXDatabase
 import com.torxone.app.data.dao.ConversationDao
 import com.torxone.app.data.dao.MessageDao
+import com.torxone.app.data.dao.OutboxDao
 import com.torxone.app.data.entity.*
 import com.torxone.app.protocol.MessageType
+import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.protocol.SecureEnvelope
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 
 /**
- * ChatService — the feature-layer entry point for chat operations.
+ * ChatService — Application feature layer for messaging.
  *
- * Architecture: ChatScreen → ChatViewModel → ChatService → TorXAgent
- * Never: ChatScreen → TorXAgent directly
- * Never: ChatService → TransportRouter directly
+ * Responsibilities:
+ * - Validates text inputs and conversational semantics
+ * - Encrypts SecureEnvelope via Double Ratchet SessionCrypto
+ * - Commits Message + Outbox atomically in Room database transaction
+ * - Awakens TorXAgent for network delivery
+ *
+ * Invariant: Never calls Nearby or network transports directly.
  */
 class ChatService(
+    private val database: TorXDatabase,
+    private val sessionCrypto: SessionCrypto,
+    private val connectionManager: ConnectionManager,
     private val agent: TorXAgent,
     private val messageDao: MessageDao,
-    private val conversationDao: ConversationDao
+    private val conversationDao: ConversationDao,
+    private val outboxDao: OutboxDao
 ) {
     companion object {
         private const val TAG = "ChatService"
     }
 
     /**
-     * Send a text message.
-     *
-     * Flow (from section 10 of master plan):
-     * 1. Generate messageId
-     * 2. Insert local message with PREPARING status
-     * 3. Build SecureEnvelope
-     * 4. Encrypt via Double Ratchet
-     * 5. Persist encrypted delivery item atomically with ratchet state
-     * 6. Update message status to QUEUED
-     * 7. TorXAgent wakes and drives transport
+     * Send a text message through the golden path.
      */
     suspend fun sendTextMessage(
         conversationId: String,
-        connectionId: String,
-        queueAddress: String,
+        relationshipId: String,
         localIdentityId: String,
         recipientId: String,
         text: String
     ): String {
+        require(text.isNotBlank()) { "Message text cannot be blank" }
+
+        val connection = connectionManager.getConnectionByRelationship(relationshipId)
+            ?: throw IllegalStateException("No active connection for relationship $relationshipId")
+
         val messageId = UUID.randomUUID().toString()
+        val deliveryId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
 
-        Log.d(TAG, "Sending text message $messageId to conversation $conversationId")
+        Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)}")
 
-        // Step 1: Insert local UI state immediately
-        val message = MessageEntity(
+        // 1. Build SecureEnvelope
+        val envelope = SecureEnvelope(
+            protocolVersion = 1,
+            logicalMessageId = messageId,
+            conversationId = conversationId,
+            senderIdentity = localIdentityId,
+            recipientBinding = recipientId,
+            messageType = MessageType.TEXT,
+            timestamp = now,
+            payload = text.toByteArray(Charsets.UTF_8)
+        )
+        val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+
+        // 2. Cryptographically bind AAD to prevent routing metadata tampering
+        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+
+        // 3. Encrypt via Double Ratchet
+        val encryptedSessionMessage = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
+        val opaqueCiphertext = encryptedSessionMessage.serialize()
+
+        // 4. Prepare database entities
+        val messageEntity = MessageEntity(
             logicalMessageId = messageId,
             conversationId = conversationId,
             senderId = localIdentityId,
             type = MessageType.TEXT.name,
             body = text,
             direction = MessageDirection.OUTGOING,
-            status = DeliveryStatus.CREATED.name
+            status = DeliveryStatus.QUEUED.name,
+            createdAt = now
         )
-        messageDao.upsert(message)
 
-        // Step 2: Build SecureEnvelope
-        val envelope = SecureEnvelope(
+        val outboxEntity = OutboxEntity(
+            deliveryId = deliveryId,
             logicalMessageId = messageId,
             conversationId = conversationId,
-            senderIdentity = localIdentityId,
-            recipientBinding = recipientId,
-            messageType = MessageType.TEXT,
-            payload = text.toByteArray(Charsets.UTF_8)
+            connectionId = connection.connectionId,
+            queueAddress = connection.sendQueueId,
+            ciphertext = opaqueCiphertext,
+            queueAuthenticator = connection.sendAuth,
+            status = DeliveryStatus.QUEUED.name,
+            attemptCount = 0,
+            nextAttemptAt = now,
+            createdAt = now,
+            updatedAt = now
         )
 
-        // Step 3: Encrypt (placeholder — full Double Ratchet in crypto layer)
-        // TODO: Replace with actual SessionCrypto.encrypt() call
-        val envelopeBytes = serializeEnvelope(envelope)
-        val encryptionKey = CryptoEngine.randomBytes(32) // Placeholder
-        val ciphertext = CryptoEngine.encryptAesGcm(encryptionKey, envelopeBytes)
-        val queueAuth = CryptoEngine.hmacSha256(encryptionKey, queueAddress.toByteArray())
+        // 5. Critical atomic send transaction: Message + Outbox committed together
+        database.withTransaction {
+            messageDao.insertIfAbsent(messageEntity)
+            outboxDao.insert(outboxEntity)
+            conversationDao.updateLastMessage(
+                conversationId = conversationId,
+                messageId = messageId,
+                preview = text.take(100),
+                time = now
+            )
+        }
 
-        // Step 4: Update status to ENCRYPTED
-        messageDao.updateStatus(messageId, DeliveryStatus.ENCRYPTED.name)
-
-        // Step 5: Create delivery item and enqueue
+        // 6. Notify TorXAgent to drive transport
         val deliveryItem = DeliveryItem(
+            deliveryId = deliveryId,
             logicalMessageId = messageId,
             conversationId = conversationId,
-            connectionId = connectionId,
-            queueAddress = queueAddress,
-            ciphertext = ciphertext,
-            queueAuthenticator = queueAuth
+            connectionId = connection.connectionId,
+            queueAddress = connection.sendQueueId,
+            ciphertext = opaqueCiphertext,
+            queueAuthenticator = connection.sendAuth,
+            status = DeliveryStatus.QUEUED,
+            attemptCount = 0,
+            nextAttemptAt = now,
+            createdAt = now,
+            updatedAt = now
         )
-
         agent.enqueue(deliveryItem)
 
-        // Step 6: Update conversation preview
-        conversationDao.updateLastMessage(
-            conversationId = conversationId,
-            messageId = messageId,
-            preview = text.take(100),
-            time = System.currentTimeMillis()
-        )
-
-        Log.d(TAG, "Message $messageId queued for delivery")
+        Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery")
         return messageId
     }
 
@@ -121,25 +155,5 @@ class ChatService(
      */
     fun observeConversations(): Flow<List<ConversationEntity>> {
         return conversationDao.observeAll()
-    }
-
-    /**
-     * Placeholder serializer for SecureEnvelope.
-     * TODO: Use proper protobuf or CBOR serialization.
-     */
-    private fun serializeEnvelope(envelope: SecureEnvelope): ByteArray {
-        // Simple format for now: version|messageId|conversationId|sender|recipient|type|timestamp|payloadLen|payload
-        val parts = listOf(
-            envelope.protocolVersion.toString(),
-            envelope.logicalMessageId,
-            envelope.conversationId,
-            envelope.senderIdentity,
-            envelope.recipientBinding,
-            envelope.messageType.name,
-            envelope.timestamp.toString(),
-            envelope.payload.size.toString()
-        )
-        val header = parts.joinToString("|").toByteArray(Charsets.UTF_8)
-        return header + byteArrayOf(0x00) + envelope.payload
     }
 }

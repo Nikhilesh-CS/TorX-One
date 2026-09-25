@@ -1,19 +1,49 @@
 package com.torxone.app
 
 import android.app.Application
+import com.torxone.app.agent.DeliveryItem
+import com.torxone.app.agent.DeliveryStatus
+import com.torxone.app.agent.OutboxStore
+import com.torxone.app.agent.ProcessedEnvelope
+import com.torxone.app.agent.ProcessedEnvelopeStore
 import com.torxone.app.agent.TorXAgent
+import com.torxone.app.chat.ChatService
+import com.torxone.app.connection.ConnectionManager
+import com.torxone.app.crypto.DoubleRatchetSessionCrypto
+import com.torxone.app.crypto.RoomSessionStore
+import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.TorXDatabase
+import com.torxone.app.data.entity.OutboxEntity
+import com.torxone.app.data.entity.ProcessedEnvelopeEntity
+import com.torxone.app.identity.IdentityRepository
+import com.torxone.app.identity.KeystoreIdentityRepository
+import com.torxone.app.incoming.*
 import com.torxone.app.transport.TransportRouter
+import com.torxone.app.transport.nearby.NearbyTransport
+import kotlinx.coroutines.runBlocking
 
 /**
  * TorX One Application.
  *
- * Initializes the core architecture stack:
- * Database → TransportRouter → TorXAgent
+ * Strict startup sequence (Section 49):
+ * Application → Database → Keystore/Identity → Crypto → ConnectionManager →
+ * TransportRouter → Agent → IncomingDispatcher → Nearby
  */
 class TorXOneApplication : Application() {
 
     lateinit var database: TorXDatabase
+        private set
+
+    lateinit var identityRepository: IdentityRepository
+        private set
+
+    lateinit var sessionCrypto: SessionCrypto
+        private set
+
+    lateinit var connectionManager: ConnectionManager
+        private set
+
+    lateinit var activeConversationTracker: ActiveConversationTracker
         private set
 
     lateinit var transportRouter: TransportRouter
@@ -22,48 +52,111 @@ class TorXOneApplication : Application() {
     lateinit var agent: TorXAgent
         private set
 
+    lateinit var chatService: ChatService
+        private set
+
+    lateinit var incomingTransportHub: IncomingTransportHub
+        private set
+
+    lateinit var nearbyTransport: NearbyTransport
+        private set
+
     override fun onCreate() {
         super.onCreate()
 
-        // Initialize database
+        // 1. Database
         database = TorXDatabase.getInstance(this)
 
-        // Initialize transport router (transports registered later)
+        // 2. Keystore / Identity
+        identityRepository = KeystoreIdentityRepository(this)
+
+        // 3. Crypto / Session
+        val sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao())
+        sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
+
+        // 4. Connection Manager & Active Conversation Tracker
+        connectionManager = ConnectionManager()
+        activeConversationTracker = ActiveConversationTracker()
+
+        // 5. Transport Router
         transportRouter = TransportRouter()
 
-        // Initialize TorXAgent — the single delivery authority
+        // 6. TorXAgent
         agent = TorXAgent(
             transportRouter = transportRouter,
             outboxStore = createOutboxStore(),
             processedStore = createProcessedStore()
         )
 
-        // Start the agent
+        // 7. Incoming Dispatcher & Hub
+        val chatReceiver = ChatReceiver(
+            messageDao = database.messageDao(),
+            conversationDao = database.conversationDao(),
+            activeConversationTracker = activeConversationTracker
+        )
+        val receiptHandler = DeliveryReceiptHandler(
+            messageDao = database.messageDao(),
+            outboxDao = database.outboxDao(),
+            agent = agent
+        )
+        val incomingDispatcher = IncomingDispatcher(
+            connectionManager = connectionManager,
+            sessionCrypto = sessionCrypto,
+            processedEnvelopeDao = database.processedEnvelopeDao(),
+            chatReceiver = chatReceiver,
+            deliveryReceiptHandler = receiptHandler,
+            agent = agent,
+            localIdentityIdProvider = {
+                runBlocking { identityRepository.loadIdentity()?.identityId }
+            }
+        )
+        incomingTransportHub = IncomingTransportHub(incomingDispatcher)
+
+        // 8. Nearby Transport
+        nearbyTransport = NearbyTransport(this, incomingTransportHub)
+        transportRouter.registerTransport(nearbyTransport)
+
+        // 9. Chat Feature Service
+        chatService = ChatService(
+            database = database,
+            sessionCrypto = sessionCrypto,
+            connectionManager = connectionManager,
+            agent = agent,
+            messageDao = database.messageDao(),
+            conversationDao = database.conversationDao(),
+            outboxDao = database.outboxDao()
+        )
+
+        // 10. Start background agent and transport
         agent.start()
+        nearbyTransport.start()
     }
 
-    private fun createOutboxStore(): com.torxone.app.agent.OutboxStore {
+    private fun createOutboxStore(): OutboxStore {
         val dao = database.outboxDao()
-        return object : com.torxone.app.agent.OutboxStore {
-            override suspend fun insert(item: com.torxone.app.agent.DeliveryItem) {
-                dao.insert(com.torxone.app.data.entity.OutboxEntity(
-                    deliveryId = item.deliveryId,
-                    logicalMessageId = item.logicalMessageId,
-                    conversationId = item.conversationId,
-                    connectionId = item.connectionId,
-                    queueAddress = item.queueAddress,
-                    ciphertext = item.ciphertext,
-                    queueAuthenticator = item.queueAuthenticator,
-                    status = item.status.name,
-                    attemptCount = item.attemptCount,
-                    nextAttemptAt = item.nextAttemptAt,
-                    createdAt = item.createdAt
-                ))
+        return object : OutboxStore {
+            override suspend fun insert(item: DeliveryItem) {
+                dao.insert(
+                    OutboxEntity(
+                        deliveryId = item.deliveryId,
+                        logicalMessageId = item.logicalMessageId,
+                        conversationId = item.conversationId,
+                        connectionId = item.connectionId,
+                        queueAddress = item.queueAddress,
+                        ciphertext = item.ciphertext,
+                        queueAuthenticator = item.queueAuthenticator,
+                        status = item.status.name,
+                        attemptCount = item.attemptCount,
+                        nextAttemptAt = item.nextAttemptAt,
+                        createdAt = item.createdAt,
+                        updatedAt = item.updatedAt
+                    )
+                )
             }
 
-            override suspend fun getPendingItems(): List<com.torxone.app.agent.DeliveryItem> {
+            override suspend fun getPendingItems(): List<DeliveryItem> {
                 return dao.getPending().map { entity ->
-                    com.torxone.app.agent.DeliveryItem(
+                    DeliveryItem(
                         deliveryId = entity.deliveryId,
                         logicalMessageId = entity.logicalMessageId,
                         conversationId = entity.conversationId,
@@ -71,15 +164,16 @@ class TorXOneApplication : Application() {
                         queueAddress = entity.queueAddress,
                         ciphertext = entity.ciphertext,
                         queueAuthenticator = entity.queueAuthenticator,
-                        status = com.torxone.app.agent.DeliveryStatus.valueOf(entity.status),
+                        status = DeliveryStatus.valueOf(entity.status),
                         attemptCount = entity.attemptCount,
                         nextAttemptAt = entity.nextAttemptAt,
-                        createdAt = entity.createdAt
+                        createdAt = entity.createdAt,
+                        updatedAt = entity.updatedAt
                     )
                 }
             }
 
-            override suspend fun updateStatus(deliveryId: String, status: com.torxone.app.agent.DeliveryStatus) {
+            override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
                 dao.updateStatus(deliveryId, status.name)
             }
 
@@ -93,9 +187,9 @@ class TorXOneApplication : Application() {
         }
     }
 
-    private fun createProcessedStore(): com.torxone.app.agent.ProcessedEnvelopeStore {
+    private fun createProcessedStore(): ProcessedEnvelopeStore {
         val dao = database.processedEnvelopeDao()
-        return object : com.torxone.app.agent.ProcessedEnvelopeStore {
+        return object : ProcessedEnvelopeStore {
             override suspend fun isProcessed(envelopeId: String): Boolean {
                 return dao.isProcessed(envelopeId)
             }
@@ -104,12 +198,14 @@ class TorXOneApplication : Application() {
                 return dao.isMessageProcessed(logicalMessageId)
             }
 
-            override suspend fun markProcessed(record: com.torxone.app.agent.ProcessedEnvelope) {
-                dao.insert(com.torxone.app.data.entity.ProcessedEnvelopeEntity(
-                    envelopeId = record.envelopeId,
-                    logicalMessageId = record.logicalMessageId,
-                    processedAt = record.processedAt
-                ))
+            override suspend fun markProcessed(record: ProcessedEnvelope) {
+                dao.insert(
+                    ProcessedEnvelopeEntity(
+                        envelopeId = record.envelopeId,
+                        logicalMessageId = record.logicalMessageId,
+                        processedAt = record.processedAt
+                    )
+                )
             }
         }
     }
