@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.TorXOne" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
