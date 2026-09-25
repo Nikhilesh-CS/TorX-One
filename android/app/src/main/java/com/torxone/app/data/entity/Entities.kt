@@ -502,3 +502,26 @@ data class ReactionEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+/**
+ * Local-only message state (e.g. Delete for Me).
+ * Kept strictly separate from synced MessageEntity to avoid protocol leakage.
+ */
+@Entity(
+    tableName = "local_message_state",
+    indices = [Index("conversation_id")]
+)
+data class LocalMessageStateEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "message_id")
+    val messageId: String,
+
+    @ColumnInfo(name = "conversation_id")
+    val conversationId: String,
+
+    @ColumnInfo(name = "hidden_locally")
+    val hiddenLocally: Boolean = true,
+
+    @ColumnInfo(name = "hidden_at")
+    val hiddenAt: Long = System.currentTimeMillis()
+)
+

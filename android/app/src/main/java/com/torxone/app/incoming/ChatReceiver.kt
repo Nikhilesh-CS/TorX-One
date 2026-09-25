@@ -9,13 +9,15 @@ import com.torxone.app.data.entity.ConversationEntity
 import com.torxone.app.data.entity.ConversationType
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.data.entity.MessageEntity
+import com.torxone.app.notifications.TorXNotificationManager
 import com.torxone.app.protocol.MessageType
 import com.torxone.app.protocol.SecureEnvelope
 
 class ChatReceiver(
     private val messageDao: MessageDao,
     private val conversationDao: ConversationDao,
-    private val activeConversationTracker: ActiveConversationTracker
+    private val activeConversationTracker: ActiveConversationTracker,
+    private val notificationManager: TorXNotificationManager? = null
 ) {
     companion object {
         private const val TAG = "ChatReceiver"
@@ -82,6 +84,14 @@ class ChatReceiver(
         } else {
             conversationDao.updateUnreadCount(conversationId, 0)
         }
+
+        notificationManager?.handleIncomingTextMessage(
+            conversationId = conversationId,
+            messageId = messageId,
+            senderId = envelope.senderIdentity,
+            text = text,
+            timestamp = envelope.timestamp
+        )
 
         Log.i(TAG, "[DB] msg=${messageId.take(8)} persisted successfully")
         return true

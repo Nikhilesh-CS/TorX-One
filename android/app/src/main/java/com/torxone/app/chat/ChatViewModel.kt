@@ -62,14 +62,17 @@ class ChatViewModel(
     private var isTypingLocally = false
 
     init {
-        // 1. Observe messages and reactions and map to UI models with quote & reaction resolution
+        // 1. Observe messages, reactions, and local hidden state and map to UI models with quote & reaction resolution
         viewModelScope.launch {
             combine(
                 chatService.observeMessages(conversationId),
-                chatService.observeReactions(conversationId)
-            ) { msgEntities, reactionEntities ->
+                chatService.observeReactions(conversationId),
+                chatService.observeHiddenMessageIds(conversationId)
+            ) { msgEntities, reactionEntities, hiddenIds ->
                 currentReactionEntities = reactionEntities
-                mapToUiModels(msgEntities, reactionEntities)
+                val hiddenSet = hiddenIds.toSet()
+                val visibleEntities = msgEntities.filter { !hiddenSet.contains(it.logicalMessageId) }
+                mapToUiModels(visibleEntities, reactionEntities)
             }.collect { uiModels ->
                 _uiState.update { it.copy(messages = uiModels) }
 
@@ -134,7 +137,12 @@ class ChatViewModel(
                 DeliveryStatus.QUEUED
             }
 
-            val messageReactions = reactionsByMessage[entity.logicalMessageId].orEmpty()
+            // Reactions on tombstoned messages are suppressed in UI
+            val messageReactions = if (entity.deletedAt != null) {
+                emptyList()
+            } else {
+                reactionsByMessage[entity.logicalMessageId].orEmpty()
+            }
             val reactionSummaries = messageReactions
                 .groupBy { it.emoji }
                 .map { (emoji, list) ->
@@ -242,10 +250,23 @@ class ChatViewModel(
         }
     }
 
-    fun deleteMessage(messageId: String) {
+    fun deleteForMe(messageId: String) {
         viewModelScope.launch {
             try {
-                chatService.deleteMessage(
+                chatService.deleteForMe(
+                    conversationId = conversationId,
+                    messageId = messageId
+                )
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to delete message locally") }
+            }
+        }
+    }
+
+    fun deleteForEveryone(messageId: String) {
+        viewModelScope.launch {
+            try {
+                chatService.deleteForEveryone(
                     conversationId = conversationId,
                     relationshipId = relationshipId,
                     localIdentityId = localIdentityId,
@@ -253,9 +274,13 @@ class ChatViewModel(
                     targetMessageId = messageId
                 )
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message ?: "Failed to delete message") }
+                _uiState.update { it.copy(error = e.message ?: "Failed to delete message for everyone") }
             }
         }
+    }
+
+    fun deleteMessage(messageId: String) {
+        deleteForEveryone(messageId)
     }
 
     fun sendText() {

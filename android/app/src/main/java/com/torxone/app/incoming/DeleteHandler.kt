@@ -8,7 +8,8 @@ import com.torxone.app.protocol.SecureEnvelope
 
 class DeleteHandler(
     private val messageDao: MessageDao,
-    private val conversationDao: ConversationDao
+    private val conversationDao: ConversationDao,
+    private val notificationManager: com.torxone.app.notifications.TorXNotificationManager? = null
 ) {
     companion object {
         private const val TAG = "DeleteHandler"
@@ -53,6 +54,11 @@ class DeleteHandler(
         conversationDao.updateLastMessagePreviewIfLatest(
             messageId = delete.targetMessageId,
             preview = "This message was deleted"
+        )
+
+        notificationManager?.onMessageTombstoned(
+            conversationId = envelope.conversationId,
+            messageId = delete.targetMessageId
         )
 
         return true

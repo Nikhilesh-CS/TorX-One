@@ -76,6 +76,9 @@ interface MessageDao {
 
     @Query("UPDATE messages SET body = null, deleted_at = :deletedAt WHERE logical_message_id = :messageId")
     suspend fun markDeleted(messageId: String, deletedAt: Long)
+
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at DESC")
+    suspend fun getMessagesForConversationDesc(conversationId: String): List<MessageEntity>
 }
 
 @Dao
@@ -233,4 +236,26 @@ interface ReactionDao {
     @Query("DELETE FROM reactions WHERE message_id = :messageId AND sender_id = :senderId")
     suspend fun removeAllFromSender(messageId: String, senderId: String)
 }
+
+@Dao
+interface LocalMessageStateDao {
+    @Query("SELECT * FROM local_message_state WHERE message_id = :messageId")
+    suspend fun getByMessageId(messageId: String): LocalMessageStateEntity?
+
+    @Query("SELECT message_id FROM local_message_state WHERE conversation_id = :conversationId AND hidden_locally = 1")
+    fun observeHiddenMessageIds(conversationId: String): Flow<List<String>>
+
+    @Query("SELECT message_id FROM local_message_state WHERE conversation_id = :conversationId AND hidden_locally = 1")
+    suspend fun getHiddenMessageIds(conversationId: String): List<String>
+
+    @Query("SELECT message_id FROM local_message_state WHERE hidden_locally = 1")
+    fun observeAllHiddenMessageIds(): Flow<List<String>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: LocalMessageStateEntity)
+
+    @Query("DELETE FROM local_message_state WHERE message_id = :messageId")
+    suspend fun delete(messageId: String)
+}
+
 

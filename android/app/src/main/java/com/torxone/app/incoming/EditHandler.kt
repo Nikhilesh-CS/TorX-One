@@ -8,7 +8,8 @@ import com.torxone.app.protocol.SecureEnvelope
 
 class EditHandler(
     private val messageDao: MessageDao,
-    private val conversationDao: ConversationDao
+    private val conversationDao: ConversationDao,
+    private val notificationManager: com.torxone.app.notifications.TorXNotificationManager? = null
 ) {
     companion object {
         private const val TAG = "EditHandler"
@@ -67,6 +68,12 @@ class EditHandler(
         conversationDao.updateLastMessagePreviewIfLatest(
             messageId = edit.targetMessageId,
             preview = edit.newText.take(100)
+        )
+
+        notificationManager?.onMessageEdited(
+            conversationId = envelope.conversationId,
+            messageId = edit.targetMessageId,
+            newText = edit.newText
         )
 
         return true

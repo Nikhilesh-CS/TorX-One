@@ -9,10 +9,12 @@ import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.TorXDatabase
 import com.torxone.app.data.dao.ConversationDao
+import com.torxone.app.data.dao.LocalMessageStateDao
 import com.torxone.app.data.dao.MessageDao
 import com.torxone.app.data.dao.OutboxDao
 import com.torxone.app.data.dao.ReactionDao
 import com.torxone.app.data.entity.*
+import com.torxone.app.notifications.TorXNotificationManager
 import com.torxone.app.protocol.*
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
@@ -37,6 +39,8 @@ class ChatService(
     private val conversationDao: ConversationDao,
     private val outboxDao: OutboxDao,
     private val reactionDao: ReactionDao? = null,
+    private val localMessageStateDao: LocalMessageStateDao? = null,
+    private val notificationManager: TorXNotificationManager? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
     }
@@ -169,6 +173,7 @@ class ChatService(
         // 1. Mark incoming messages in local Room database as READ
         messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
         conversationDao.updateUnreadCount(conversationId, 0)
+        notificationManager?.cancelForConversation(conversationId)
 
         // 2. Dispatch batch READ_RECEIPT up to latest incoming message
         sendReadReceipt(
@@ -368,6 +373,11 @@ class ChatService(
             messageId = targetMessageId,
             preview = newText.take(100)
         )
+        notificationManager?.onMessageEdited(
+            conversationId = conversationId,
+            messageId = targetMessageId,
+            newText = newText
+        )
 
         // 2. Build and transmit secure protocol event
         try {
@@ -417,7 +427,7 @@ class ChatService(
     }
 
     /**
-     * Delete a previously sent message, turning it into a tombstone.
+     * Delete a previously sent message, turning it into a tombstone ("Delete for everyone").
      */
     suspend fun deleteMessage(
         conversationId: String,
@@ -445,6 +455,10 @@ class ChatService(
         conversationDao.updateLastMessagePreviewIfLatest(
             messageId = targetMessageId,
             preview = "This message was deleted"
+        )
+        notificationManager?.onMessageTombstoned(
+            conversationId = conversationId,
+            messageId = targetMessageId
         )
 
         // 2. Build and transmit secure protocol event
@@ -490,6 +504,87 @@ class ChatService(
             Log.e(TAG, "Failed to send delete: ${e.message}")
         }
         return true
+    }
+
+    /**
+     * Explicit alias for deleteMessage ("Delete for everyone").
+     */
+    suspend fun deleteForEveryone(
+        conversationId: String,
+        relationshipId: String,
+        localIdentityId: String,
+        recipientId: String,
+        targetMessageId: String
+    ): Boolean {
+        return deleteMessage(conversationId, relationshipId, localIdentityId, recipientId, targetMessageId)
+    }
+
+    /**
+     * Delete a message locally only ("Delete for me").
+     *
+     * Invariants:
+     * - Strictly local: Never sends any protocol packet to peer or transport.
+     * - Works on both outgoing and incoming messages.
+     * - Records hiddenLocally = true in local_message_state table.
+     * - Recalculates conversation.last_message_preview to the latest locally visible message.
+     * - Updates active system notification if unread.
+     */
+    suspend fun deleteForMe(
+        conversationId: String,
+        messageId: String
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        localMessageStateDao?.upsert(
+            LocalMessageStateEntity(
+                messageId = messageId,
+                conversationId = conversationId,
+                hiddenLocally = true,
+                hiddenAt = now
+            )
+        )
+
+        // Recalculate conversation last message preview
+        recalculateConversationPreviewAfterLocalDelete(conversationId)
+
+        // Notify notification manager to update active notifications
+        notificationManager?.onMessageDeletedLocally(conversationId, messageId)
+
+        Log.i(TAG, "[DELETE FOR ME] Message $messageId hidden locally for conversation $conversationId")
+        return true
+    }
+
+    private suspend fun recalculateConversationPreviewAfterLocalDelete(conversationId: String) {
+        val allMessages = messageDao.getMessagesForConversationDesc(conversationId)
+        val hiddenIds = localMessageStateDao?.getHiddenMessageIds(conversationId)?.toSet() ?: emptySet()
+        val latestVisible = allMessages.firstOrNull { !hiddenIds.contains(it.logicalMessageId) }
+
+        if (latestVisible != null) {
+            val preview = if (latestVisible.deletedAt != null) {
+                "This message was deleted"
+            } else {
+                latestVisible.body?.take(100)
+            }
+            conversationDao.updateLastMessage(
+                conversationId = conversationId,
+                messageId = latestVisible.logicalMessageId,
+                preview = preview,
+                time = latestVisible.createdAt
+            )
+        } else {
+            conversationDao.updateLastMessage(
+                conversationId = conversationId,
+                messageId = "",
+                preview = null,
+                time = 0L
+            )
+        }
+    }
+
+    /**
+     * Observe IDs of messages that have been deleted locally ("Delete for me").
+     */
+    fun observeHiddenMessageIds(conversationId: String): Flow<List<String>> {
+        return localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
 
     /**

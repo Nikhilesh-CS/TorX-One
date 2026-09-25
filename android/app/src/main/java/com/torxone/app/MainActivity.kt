@@ -43,7 +43,14 @@ fun TorXOneApp() {
     val app = context.applicationContext as TorXOneApplication
     val coroutineScope = rememberCoroutineScope()
 
-    var currentScreen by remember { mutableStateOf<Screen>(Screen.ConversationList) }
+    var currentScreen by remember {
+        val launchConvId = (context as? ComponentActivity)?.intent?.getStringExtra("conversationId")
+        if (!launchConvId.isNullOrBlank()) {
+            mutableStateOf<Screen>(Screen.Chat(launchConvId, "Chat"))
+        } else {
+            mutableStateOf<Screen>(Screen.ConversationList)
+        }
+    }
     var showInviteDialog by remember { mutableStateOf(false) }
 
     // Ensure identity exists on startup
@@ -88,6 +95,7 @@ fun TorXOneApp() {
             // Track active conversation for notification suppression and unread counts (Section 42)
             DisposableEffect(screen.conversationId) {
                 app.activeConversationTracker.setActiveConversation(screen.conversationId)
+                app.notificationManager.cancelForConversation(screen.conversationId)
                 coroutineScope.launch {
                     app.database.conversationDao().updateUnreadCount(screen.conversationId, 0)
                 }

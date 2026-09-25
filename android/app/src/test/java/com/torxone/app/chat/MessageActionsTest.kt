@@ -106,6 +106,12 @@ class MessageActionsTest {
                 messages[messageId] = it.copy(body = null, deletedAt = deletedAt)
             }
         }
+
+        override suspend fun getMessagesForConversationDesc(conversationId: String): List<MessageEntity> {
+            return messages.values
+                .filter { it.conversationId == conversationId }
+                .sortedByDescending { it.createdAt }
+        }
     }
 
     class TestConversationDao : ConversationDao {

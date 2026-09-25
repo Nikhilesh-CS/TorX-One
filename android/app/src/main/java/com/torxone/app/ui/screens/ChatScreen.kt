@@ -70,7 +70,8 @@ fun ChatScreen(
         onStartEdit = viewModel::startEditing,
         onCancelEdit = viewModel::cancelEditing,
         onToggleReaction = viewModel::toggleReaction,
-        onDeleteMessage = viewModel::deleteMessage,
+        onDeleteForMe = viewModel::deleteForMe,
+        onDeleteForEveryone = viewModel::deleteForEveryone,
         onBackClick = onBackClick,
         modifier = modifier
     )
@@ -108,7 +109,8 @@ fun ChatScreen(
     onStartEdit: (MessageUiModel) -> Unit = {},
     onCancelEdit: () -> Unit = {},
     onToggleReaction: (String, String) -> Unit = { _, _ -> },
-    onDeleteMessage: (String) -> Unit = {},
+    onDeleteForMe: (String) -> Unit = {},
+    onDeleteForEveryone: (String) -> Unit = {},
     onBackClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -116,6 +118,7 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var selectedMessageForMenu by remember { mutableStateOf<MessageUiModel?>(null) }
+    var messagePendingDelete by remember { mutableStateOf<MessageUiModel?>(null) }
     val clipboardManager = LocalClipboardManager.current
 
     // Auto-scroll to bottom on new message
@@ -322,21 +325,69 @@ fun ChatScreen(
                     )
                 }
 
-                // 4. Delete (own outgoing messages only)
-                if (selected.direction == MessageDirection.OUTGOING && !selected.isDeleted) {
-                    ListItem(
-                        headlineContent = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) },
-                        modifier = Modifier.clickable {
-                            onDeleteMessage(selected.logicalMessageId)
-                            selectedMessageForMenu = null
-                        }
-                    )
-                }
+                // 4. Delete
+                ListItem(
+                    headlineContent = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    leadingContent = { Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.clickable {
+                        messagePendingDelete = selected
+                        selectedMessageForMenu = null
+                    }
+                )
 
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
+    }
+
+    // Delete Confirmation Dialog with Delete for Me / Delete for Everyone / Cancel
+    if (messagePendingDelete != null) {
+        val target = messagePendingDelete!!
+        val canDeleteForEveryone = target.direction == MessageDirection.OUTGOING && !target.isDeleted
+
+        AlertDialog(
+            onDismissRequest = { messagePendingDelete = null },
+            title = { Text("Delete message?") },
+            text = {
+                Text(
+                    if (canDeleteForEveryone)
+                        "You can delete this message just for yourself, or for everyone in this chat."
+                    else
+                        "Delete this message for yourself? Other participants will still be able to see it."
+                )
+            },
+            confirmButton = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (canDeleteForEveryone) {
+                        TextButton(
+                            onClick = {
+                                onDeleteForEveryone(target.logicalMessageId)
+                                messagePendingDelete = null
+                            }
+                        ) {
+                            Text("Delete for everyone", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            onDeleteForMe(target.logicalMessageId)
+                            messagePendingDelete = null
+                        }
+                    ) {
+                        Text("Delete for me", color = MaterialTheme.colorScheme.error)
+                    }
+                    TextButton(
+                        onClick = { messagePendingDelete = null }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
     }
 }
 

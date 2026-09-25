@@ -32,6 +32,11 @@ import kotlinx.coroutines.runBlocking
  */
 class TorXOneApplication : Application() {
 
+    companion object {
+        lateinit var instance: TorXOneApplication
+            private set
+    }
+
     lateinit var database: TorXDatabase
         private set
 
@@ -45,6 +50,12 @@ class TorXOneApplication : Application() {
         private set
 
     lateinit var activeConversationTracker: ActiveConversationTracker
+        private set
+
+    lateinit var appVisibilityTracker: com.torxone.app.notifications.AppVisibilityTracker
+        private set
+
+    lateinit var notificationManager: com.torxone.app.notifications.TorXNotificationManager
         private set
 
     lateinit var transportRouter: TransportRouter
@@ -67,6 +78,11 @@ class TorXOneApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
+
+        // 0. App Lifecycle & Visibility Tracking
+        appVisibilityTracker = com.torxone.app.notifications.AppVisibilityTracker()
+        registerActivityLifecycleCallbacks(appVisibilityTracker)
 
         // 1. Database
         database = TorXDatabase.getInstance(this)
@@ -84,6 +100,16 @@ class TorXOneApplication : Application() {
             connectionManager.restoreFromDatabase(database.connectionDao())
         }
         activeConversationTracker = ActiveConversationTracker()
+
+        // 4b. Notification Authority
+        notificationManager = com.torxone.app.notifications.TorXNotificationManager(
+            context = this,
+            activeConversationTracker = activeConversationTracker,
+            appVisibilityTracker = appVisibilityTracker,
+            conversationDao = database.conversationDao(),
+            messageDao = database.messageDao(),
+            localMessageStateDao = database.localMessageStateDao()
+        )
 
         // 5. Transport Router
         transportRouter = TransportRouter()
@@ -114,18 +140,21 @@ class TorXOneApplication : Application() {
         )
         val editHandler = EditHandler(
             messageDao = database.messageDao(),
-            conversationDao = database.conversationDao()
+            conversationDao = database.conversationDao(),
+            notificationManager = notificationManager
         )
         val deleteHandler = DeleteHandler(
             messageDao = database.messageDao(),
-            conversationDao = database.conversationDao()
+            conversationDao = database.conversationDao(),
+            notificationManager = notificationManager
         )
 
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
             messageDao = database.messageDao(),
             conversationDao = database.conversationDao(),
-            activeConversationTracker = activeConversationTracker
+            activeConversationTracker = activeConversationTracker,
+            notificationManager = notificationManager
         )
         val receiptHandler = DeliveryReceiptHandler(
             messageDao = database.messageDao(),
@@ -175,7 +204,9 @@ class TorXOneApplication : Application() {
             messageDao = database.messageDao(),
             conversationDao = database.conversationDao(),
             outboxDao = database.outboxDao(),
-            reactionDao = database.reactionDao()
+            reactionDao = database.reactionDao(),
+            localMessageStateDao = database.localMessageStateDao(),
+            notificationManager = notificationManager
         )
 
         // 10. Start background agent and transport

@@ -19,15 +19,17 @@ import com.torxone.app.data.entity.*
         SessionDbEntity::class,
         SkippedKeyEntity::class,
         PendingInviteEntity::class,
-        ReactionEntity::class
+        ReactionEntity::class,
+        LocalMessageStateEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
     abstract fun reactionDao(): ReactionDao
+    abstract fun localMessageStateDao(): LocalMessageStateDao
     abstract fun contactDao(): ContactDao
     abstract fun outboxDao(): OutboxDao
     abstract fun processedEnvelopeDao(): ProcessedEnvelopeDao

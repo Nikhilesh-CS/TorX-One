@@ -118,6 +118,11 @@ class EndToEndPipelineTest {
         override suspend fun markDeleted(messageId: String, deletedAt: Long) {
             messages[messageId]?.let { messages[messageId] = it.copy(body = null, deletedAt = deletedAt) }
         }
+        override suspend fun getMessagesForConversationDesc(conversationId: String): List<MessageEntity> {
+            return messages.values
+                .filter { it.conversationId == conversationId }
+                .sortedByDescending { it.createdAt }
+        }
     }
 
     class InMemoryConversationDao : ConversationDao {
