@@ -6,8 +6,17 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ConversationDao {
-    @Query("SELECT * FROM conversations ORDER BY last_message_time DESC")
+    @Query("SELECT * FROM conversations WHERE is_archived = 0 ORDER BY is_pinned DESC, pinned_at DESC, last_message_time DESC")
     fun observeAll(): Flow<List<ConversationEntity>>
+
+    @Query("SELECT * FROM conversations WHERE is_archived = 0 ORDER BY is_pinned DESC, pinned_at DESC, last_message_time DESC")
+    fun observeActive(): Flow<List<ConversationEntity>>
+
+    @Query("SELECT * FROM conversations WHERE is_archived = 1 ORDER BY archived_at DESC, last_message_time DESC")
+    fun observeArchived(): Flow<List<ConversationEntity>>
+
+    @Query("SELECT COUNT(*) FROM conversations WHERE is_archived = 1")
+    fun observeArchivedCount(): Flow<Int>
 
     @Query("SELECT * FROM conversations WHERE conversationId = :id")
     suspend fun getById(id: String): ConversationEntity?
@@ -17,6 +26,9 @@ interface ConversationDao {
 
     @Query("UPDATE conversations SET unread_count = :count WHERE conversationId = :id")
     suspend fun updateUnreadCount(id: String, count: Int)
+
+    @Query("UPDATE conversations SET manually_unread = :manuallyUnread WHERE conversationId = :id")
+    suspend fun updateManuallyUnread(id: String, manuallyUnread: Boolean)
 
     @Query("""
         UPDATE conversations SET 
@@ -34,6 +46,31 @@ interface ConversationDao {
 
     @Query("UPDATE conversations SET last_message_preview = :preview WHERE last_message_id = :messageId")
     suspend fun updateLastMessagePreviewIfLatest(messageId: String, preview: String?)
+
+    @Query("UPDATE conversations SET is_pinned = :isPinned, pinned_at = :pinnedAt WHERE conversationId = :id")
+    suspend fun setPinned(id: String, isPinned: Boolean, pinnedAt: Long?)
+
+    @Query("UPDATE conversations SET is_archived = :isArchived, archived_at = :archivedAt WHERE conversationId = :id")
+    suspend fun setArchived(id: String, isArchived: Boolean, archivedAt: Long?)
+
+    @Query("UPDATE conversations SET is_archived = 0, archived_at = null WHERE conversationId = :id")
+    suspend fun unarchive(id: String)
+
+    @Query("UPDATE conversations SET muted_until = :mutedUntil WHERE conversationId = :id")
+    suspend fun setMutedUntil(id: String, mutedUntil: Long?)
+
+    @Query("DELETE FROM conversations WHERE conversationId = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("""
+        SELECT DISTINCT c.* FROM conversations c
+        LEFT JOIN messages m ON c.conversationId = m.conversation_id
+        WHERE c.title LIKE '%' || :query || '%' 
+           OR c.last_message_preview LIKE '%' || :query || '%'
+           OR (m.body LIKE '%' || :query || '%' AND m.deleted_at IS NULL)
+        ORDER BY c.is_pinned DESC, c.pinned_at DESC, c.last_message_time DESC
+    """)
+    fun searchConversations(query: String): Flow<List<ConversationEntity>>
 }
 
 @Dao
@@ -79,6 +116,9 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId ORDER BY created_at DESC")
     suspend fun getMessagesForConversationDesc(conversationId: String): List<MessageEntity>
+
+    @Query("DELETE FROM messages WHERE conversation_id = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao
@@ -235,6 +275,9 @@ interface ReactionDao {
 
     @Query("DELETE FROM reactions WHERE message_id = :messageId AND sender_id = :senderId")
     suspend fun removeAllFromSender(messageId: String, senderId: String)
+
+    @Query("DELETE FROM reactions WHERE conversation_id = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao
@@ -256,6 +299,9 @@ interface LocalMessageStateDao {
 
     @Query("DELETE FROM local_message_state WHERE message_id = :messageId")
     suspend fun delete(messageId: String)
+
+    @Query("DELETE FROM local_message_state WHERE conversation_id = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 

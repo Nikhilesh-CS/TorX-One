@@ -3,21 +3,25 @@ package com.torxone.app.chat
 import com.torxone.app.agent.*
 import com.torxone.app.connection.Connection
 import com.torxone.app.connection.ConnectionManager
+import com.torxone.app.conversations.ConversationListViewModel
+import com.torxone.app.conversations.ConversationUiModel
 import com.torxone.app.crypto.DoubleRatchetSessionCrypto
 import com.torxone.app.crypto.SessionState
 import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
 import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.incoming.*
+import com.torxone.app.notifications.NotificationPolicy
 import com.torxone.app.protocol.*
 import com.torxone.app.transport.*
 import com.torxone.app.transport.nearby.DirectRouteTable
 import com.torxone.app.transport.nearby.RouteState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
@@ -26,20 +30,19 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class DeleteSemanticsTest {
+class ConversationManagementTest {
 
     @Before
     fun setUp() {
-        kotlinx.coroutines.Dispatchers.setMain(Dispatchers.Unconfined)
+        Dispatchers.setMain(Dispatchers.Unconfined)
     }
 
     @After
     fun tearDown() {
-        kotlinx.coroutines.Dispatchers.resetMain()
+        Dispatchers.resetMain()
     }
 
     // ── In-Memory DAOs ──
@@ -308,6 +311,25 @@ class DeleteSemanticsTest {
         }
     }
 
+    class TestContactDao : ContactDao {
+        val contacts = ConcurrentHashMap<String, ContactEntity>()
+
+        override fun observeAll(): Flow<List<ContactEntity>> = flowOf(contacts.values.toList())
+        override suspend fun getById(id: String): ContactEntity? = contacts[id]
+        override suspend fun getByRelationshipId(relationshipId: String): ContactEntity? =
+            contacts.values.find { it.relationshipId == relationshipId }
+        override suspend fun getByConversationId(conversationId: String): ContactEntity? =
+            contacts.values.find { it.conversationId == conversationId }
+        override suspend fun getAll(): List<ContactEntity> = contacts.values.toList()
+        override suspend fun upsert(contact: ContactEntity) { contacts[contact.contactId] = contact }
+    }
+
+    class InMemorySessionStore : com.torxone.app.crypto.SessionStore {
+        val sessions = ConcurrentHashMap<String, SessionState>()
+        override suspend fun loadSession(relationshipId: String): SessionState? = sessions[relationshipId]?.copyState()
+        override suspend fun saveSession(state: SessionState) { sessions[state.relationshipId] = state.copyState() }
+    }
+
     class InMemoryOutboxStore : OutboxStore {
         val items = ConcurrentHashMap<String, DeliveryItem>()
         override suspend fun insert(item: DeliveryItem) { items[item.deliveryId] = item }
@@ -330,15 +352,7 @@ class DeleteSemanticsTest {
         override suspend fun markProcessed(record: ProcessedEnvelope) { processed.add(record.envelopeId) }
     }
 
-    class InMemorySessionStore : com.torxone.app.crypto.SessionStore {
-        val sessions = ConcurrentHashMap<String, SessionState>()
-        override suspend fun loadSession(relationshipId: String): SessionState? = sessions[relationshipId]?.copyState()
-        override suspend fun saveSession(state: SessionState) { sessions[state.relationshipId] = state.copyState() }
-    }
-
-    class DirectLoopbackTransport(
-        val destinationHub: IncomingTransportHub
-    ) : Transport {
+    class DirectLoopbackTransport(val destinationHub: IncomingTransportHub) : Transport {
         override val type: TransportType = TransportType.NEARBY
         override fun availability(): Flow<TransportAvailability> = flowOf(TransportAvailability.Available)
         override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult {
@@ -366,7 +380,7 @@ class DeleteSemanticsTest {
         var incomingHub: IncomingTransportHub? = null
     )
 
-    private suspend fun createBilateralNodes(relationshipId: String = "rel-delete-test"): Pair<TestNode, TestNode> {
+    private suspend fun createBilateralNodes(relationshipId: String = "rel-conv-test"): Pair<TestNode, TestNode> {
         val rootKey = "shared-test-root-key-32-bytes!!!".toByteArray()
         val aliceRatchet = IdentityCrypto.generateX25519KeyPair()
         val bobRatchet = IdentityCrypto.generateX25519KeyPair()
@@ -421,9 +435,6 @@ class DeleteSemanticsTest {
         alice.agent = TorXAgent(alice.router, alice.outboxStore, alice.processedStore, Dispatchers.Default)
         bob.agent = TorXAgent(bob.router, bob.outboxStore, bob.processedStore, Dispatchers.Default)
 
-        val routeTableAlice = DirectRouteTable().apply { bindRoute(relationshipId, "ep-bob", RouteState.READY) }
-        val routeTableBob = DirectRouteTable().apply { bindRoute(relationshipId, "ep-alice", RouteState.READY) }
-
         val activeTrackerAlice = ActiveConversationTracker()
         val activeTrackerBob = ActiveConversationTracker()
 
@@ -432,18 +443,6 @@ class DeleteSemanticsTest {
 
         val receiptHandlerAlice = DeliveryReceiptHandler(alice.msgDao, TestOutboxDao(), alice.agent!!)
         val receiptHandlerBob = DeliveryReceiptHandler(bob.msgDao, TestOutboxDao(), bob.agent!!)
-
-        val presenceServiceAlice = PresenceService(alice.connManager, alice.crypto, alice.agent!!, routeTableAlice, { "alice" })
-        val presenceServiceBob = PresenceService(bob.connManager, bob.crypto, bob.agent!!, routeTableBob, { "bob" })
-
-        val rxHandlerAlice = ReactionHandler(alice.rxDao, alice.msgDao)
-        val rxHandlerBob = ReactionHandler(bob.rxDao, bob.msgDao)
-
-        val editHandlerAlice = EditHandler(alice.msgDao, alice.convDao)
-        val editHandlerBob = EditHandler(bob.msgDao, bob.convDao)
-
-        val deleteHandlerAlice = DeleteHandler(alice.msgDao, alice.convDao)
-        val deleteHandlerBob = DeleteHandler(bob.msgDao, bob.convDao)
 
         alice.incomingDispatcher = IncomingDispatcher(
             connectionManager = alice.connManager,
@@ -458,11 +457,6 @@ class DeleteSemanticsTest {
             deliveryReceiptHandler = receiptHandlerAlice,
             agent = alice.agent!!,
             localIdentityIdProvider = { "alice" },
-            presenceHandler = PresenceHandler(presenceServiceAlice),
-            typingHandler = TypingHandler(presenceServiceAlice),
-            reactionHandler = rxHandlerAlice,
-            editHandler = editHandlerAlice,
-            deleteHandler = deleteHandlerAlice,
             transactionRunner = { it() }
         )
 
@@ -479,11 +473,6 @@ class DeleteSemanticsTest {
             deliveryReceiptHandler = receiptHandlerBob,
             agent = bob.agent!!,
             localIdentityIdProvider = { "bob" },
-            presenceHandler = PresenceHandler(presenceServiceBob),
-            typingHandler = TypingHandler(presenceServiceBob),
-            reactionHandler = rxHandlerBob,
-            editHandler = editHandlerBob,
-            deleteHandler = deleteHandlerBob,
             transactionRunner = { it() }
         )
 
@@ -523,251 +512,349 @@ class DeleteSemanticsTest {
         return Pair(alice, bob)
     }
 
-    // ── Tests ──
-
     @Test
-    fun testDeleteForMe_outgoingMessage_localStateSavedAndNoWirePacketEmitted() = runBlocking {
-        val (alice, bob) = createBilateralNodes()
-        val convId = "conv-1"
-
-        alice.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Bob"))
-        val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Secret Outgoing")
-
-        // Wait for delivery to Bob
-        delay(200)
-        assertNotNull(bob.msgDao.getById(msgId))
-
-        // Alice performs Delete for Me
-        val outboxCountBefore = alice.outboxStore.items.size
-        val result = alice.chatService!!.deleteForMe(convId, msgId)
-        assertTrue(result)
-
-        // 1. Verify local_message_state is marked hidden locally
-        val localState = alice.localStateDao.getByMessageId(msgId)
-        assertNotNull(localState)
-        assertTrue(localState!!.hiddenLocally)
-
-        // 2. Zero network/wire packets emitted (outbox item count unchanged)
-        assertEquals(outboxCountBefore, alice.outboxStore.items.size)
-
-        // 3. Bob's state is completely untouched (still has message and body intact)
-        val bobMsg = bob.msgDao.getById(msgId)
-        assertNotNull(bobMsg)
-        assertEquals("Secret Outgoing", bobMsg!!.body)
-        assertNull(bobMsg.deletedAt)
-
-        alice.agent!!.stop()
-        bob.agent!!.stop()
-    }
-
-    @Test
-    fun testDeleteForMe_incomingMessage_localStateSavedAndPeerUntouched() = runBlocking {
-        val (alice, bob) = createBilateralNodes()
-        val convId = "conv-2"
-
-        bob.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Alice"))
-        alice.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Bob"))
-
-        val msgId = bob.chatService!!.sendTextMessage(convId, bob.relationshipId, "bob", "alice", "Hello Alice from Bob")
-        delay(200)
-
-        // Alice received the message
-        val aliceMsg = alice.msgDao.getById(msgId)
-        assertNotNull(aliceMsg)
-
-        val outboxCountAliceBefore = alice.outboxStore.items.size
-
-        // Alice deletes Bob's incoming message FOR ME
-        val result = alice.chatService!!.deleteForMe(convId, msgId)
-        assertTrue(result)
-
-        // Local state marked hidden
-        val hiddenIds = alice.localStateDao.getHiddenMessageIds(convId)
-        assertTrue(hiddenIds.contains(msgId))
-
-        // Alice emitted ZERO wire packets
-        assertEquals(outboxCountAliceBefore, alice.outboxStore.items.size)
-
-        // Bob's message remains completely untouched
-        val bobMsg = bob.msgDao.getById(msgId)
-        assertNotNull(bobMsg)
-        assertEquals("Hello Alice from Bob", bobMsg!!.body)
-        assertNull(bobMsg.deletedAt)
-
-        alice.agent!!.stop()
-        bob.agent!!.stop()
-    }
-
-    @Test
-    fun testDeleteForMe_recalculatesConversationPreviewToLatestVisible() = runBlocking {
+    fun testPinOrderingAndUnpin() = runBlocking {
         val (alice, _) = createBilateralNodes()
-        val convId = "conv-preview-test"
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
 
-        alice.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Bob"))
+        val c1 = ConversationEntity(conversationId = "conv_1", title = "Alice", lastMessageTime = 100L)
+        val c2 = ConversationEntity(conversationId = "conv_2", title = "Bob", lastMessageTime = 200L)
+        val c3 = ConversationEntity(conversationId = "conv_3", title = "Charlie", lastMessageTime = 300L)
+        convDao.upsert(c1)
+        convDao.upsert(c2)
+        convDao.upsert(c3)
 
-        val msg1 = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "First message")
-        delay(50)
-        val msg2 = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Second message (latest)")
+        // Initial order by lastMessageTime DESC -> Charlie (300), Bob (200), Alice (100)
+        var active = convDao.observeActive().first()
+        assertEquals(listOf("conv_3", "conv_2", "conv_1"), active.map { it.conversationId })
 
-        // Initially, conversation preview is msg2
-        val convInitial = alice.convDao.getById(convId)
-        assertNotNull(convInitial)
-        assertEquals("Second message (latest)", convInitial!!.lastMessagePreview)
-        assertEquals(msg2, convInitial.lastMessageId)
+        // Pin Bob
+        chatService.setChatPinned("conv_2", true)
+        active = convDao.observeActive().first()
+        assertEquals("conv_2", active[0].conversationId)
+        assertTrue(active[0].isPinned)
+        assertNotNull(active[0].pinnedAt)
 
-        // Alice deletes msg2 for me -> preview should revert to msg1
-        alice.chatService!!.deleteForMe(convId, msg2)
+        // Pin Alice
+        chatService.setChatPinned("conv_1", true)
+        active = convDao.observeActive().first()
+        assertEquals("conv_1", active[0].conversationId)
+        assertEquals("conv_2", active[1].conversationId)
+        assertEquals("conv_3", active[2].conversationId)
 
-        val convAfterDelete2 = alice.convDao.getById(convId)
-        assertNotNull(convAfterDelete2)
-        assertEquals("First message", convAfterDelete2!!.lastMessagePreview)
-        assertEquals(msg1, convAfterDelete2.lastMessageId)
-
-        // Alice deletes msg1 for me -> preview should be cleared
-        alice.chatService!!.deleteForMe(convId, msg1)
-
-        val convAfterDeleteAll = alice.convDao.getById(convId)
-        assertNotNull(convAfterDeleteAll)
-        assertNull(convAfterDeleteAll!!.lastMessagePreview)
-
-        alice.agent!!.stop()
+        // Unpin Bob
+        chatService.setChatPinned("conv_2", false)
+        active = convDao.observeActive().first()
+        assertEquals("conv_1", active[0].conversationId)
+        assertEquals("conv_3", active[1].conversationId)
+        assertEquals("conv_2", active[2].conversationId)
     }
 
     @Test
-    fun testDeleteForEveryone_convertsToTombstoneAndSyncsToPeer() = runBlocking {
-        val (alice, bob) = createBilateralNodes()
-        val convId = "conv-everyone-test"
-
-        alice.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Bob"))
-        bob.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Alice"))
-
-        val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Mistake message")
-        delay(200)
-
-        // Both have the message body
-        assertEquals("Mistake message", alice.msgDao.getById(msgId)?.body)
-        assertEquals("Mistake message", bob.msgDao.getById(msgId)?.body)
-
-        // Alice deletes for everyone
-        val deleted = alice.chatService!!.deleteForEveryone(convId, alice.relationshipId, "alice", "bob", msgId)
-        assertTrue(deleted)
-
-        // Alice's local message becomes a tombstone
-        val aliceMsg = alice.msgDao.getById(msgId)
-        assertNotNull(aliceMsg)
-        assertNull(aliceMsg!!.body)
-        assertNotNull(aliceMsg.deletedAt)
-
-        // Wait for DELETE envelope delivery to Bob
-        delay(300)
-
-        // Bob's message is also converted to a tombstone
-        val bobMsg = bob.msgDao.getById(msgId)
-        assertNotNull(bobMsg)
-        assertNull(bobMsg!!.body)
-        assertNotNull(bobMsg.deletedAt)
-
-        // Conversation preview updated to "This message was deleted"
-        assertEquals("This message was deleted", alice.convDao.getById(convId)?.lastMessagePreview)
-        assertEquals("This message was deleted", bob.convDao.getById(convId)?.lastMessagePreview)
-
-        alice.agent!!.stop()
-        bob.agent!!.stop()
-    }
-
-    @Test
-    fun testDeleteForEveryone_rejectsIfNotOriginalAuthor() = runBlocking {
-        val (alice, bob) = createBilateralNodes()
-        val convId = "conv-auth-test"
-
-        val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Alice's Message")
-        delay(200)
-
-        // Bob attempts to delete Alice's message for everyone -> MUST BE REJECTED
-        val bobDeleted = bob.chatService!!.deleteForEveryone(convId, bob.relationshipId, "bob", "alice", msgId)
-        assertFalse(bobDeleted)
-
-        // Verify message remains intact
-        val aliceMsg = alice.msgDao.getById(msgId)
-        assertEquals("Alice's Message", aliceMsg?.body)
-        assertNull(aliceMsg?.deletedAt)
-
-        alice.agent!!.stop()
-        bob.agent!!.stop()
-    }
-
-    @Test
-    fun testDeleteForEveryone_rejectsEditOnDeletedMessage() = runBlocking {
+    fun testArchiveAndUnarchive() = runBlocking {
         val (alice, _) = createBilateralNodes()
-        val convId = "conv-edit-del-test"
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
 
-        val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Will be deleted")
-        delay(100)
+        val c1 = ConversationEntity(conversationId = "conv_1", title = "Alice")
+        val c2 = ConversationEntity(conversationId = "conv_2", title = "Bob")
+        convDao.upsert(c1)
+        convDao.upsert(c2)
 
-        alice.chatService!!.deleteForEveryone(convId, alice.relationshipId, "alice", "bob", msgId)
+        assertEquals(2, convDao.observeActive().first().size)
+        assertEquals(0, convDao.observeArchivedCount().first())
 
-        // Attempting to edit a deleted message must be rejected
-        val editResult = alice.chatService!!.editMessage(convId, alice.relationshipId, "alice", "bob", msgId, "Try to revive")
-        assertFalse(editResult)
+        // Archive Bob
+        chatService.setChatArchived("conv_2", true)
 
-        val msg = alice.msgDao.getById(msgId)
-        assertNull(msg?.body)
-        assertNotNull(msg?.deletedAt)
+        val active = convDao.observeActive().first()
+        val archived = convDao.observeArchived().first()
+        val archivedCount = convDao.observeArchivedCount().first()
 
-        alice.agent!!.stop()
+        assertEquals(1, active.size)
+        assertEquals("conv_1", active[0].conversationId)
+
+        assertEquals(1, archived.size)
+        assertEquals("conv_2", archived[0].conversationId)
+        assertTrue(archived[0].isArchived)
+        assertNotNull(archived[0].archivedAt)
+        assertEquals(1, archivedCount)
+
+        // Unarchive Bob
+        chatService.setChatArchived("conv_2", false)
+
+        assertEquals(2, convDao.observeActive().first().size)
+        assertEquals(0, convDao.observeArchived().first().size)
+        assertEquals(0, convDao.observeArchivedCount().first())
     }
 
     @Test
-    fun testDeleteSemantics_viewModelFiltersHiddenAndHidesReactionsOnDeleted() = runBlocking {
+    fun testOutgoingMessageAutoUnarchives() = runBlocking {
         val (alice, _) = createBilateralNodes()
-        val convId = "conv-vm-test"
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
 
-        val msg1 = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Message 1 (Visible)")
-        delay(50)
-        val msg2 = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Message 2 (Delete for me)")
-        delay(50)
-        val msg3 = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Message 3 (Tombstone)")
-
-        // Add reaction to msg3
-        alice.rxDao.insertOrUpdate(
-            ReactionEntity(messageId = msg3, conversationId = convId, senderId = "alice", emoji = "👍", createdAt = System.currentTimeMillis())
+        val c1 = ConversationEntity(
+            conversationId = "conv_1",
+            title = "Bob",
+            isArchived = true,
+            archivedAt = System.currentTimeMillis()
         )
+        convDao.upsert(c1)
 
-        // Delete msg3 for everyone (tombstone)
-        alice.chatService!!.deleteForEveryone(convId, alice.relationshipId, "alice", "bob", msg3)
+        assertTrue(convDao.getById("conv_1")!!.isArchived)
 
-        // Delete msg2 for me
-        alice.chatService!!.deleteForMe(convId, msg2)
-
-        val vm = ChatViewModel(
-            conversationId = convId,
+        // Send a text message from Alice to Bob
+        chatService.sendTextMessage(
+            conversationId = "conv_1",
             relationshipId = alice.relationshipId,
             localIdentityId = "alice",
             recipientId = "bob",
-            contactName = "Bob",
-            chatService = alice.chatService!!
+            text = "Hey Bob!"
         )
 
-        delay(100)
-        val uiMessages = vm.uiState.value.messages
+        val updated = convDao.getById("conv_1")!!
+        assertFalse("Conversation must auto-unarchive on sendTextMessage", updated.isArchived)
+        assertNull(updated.archivedAt)
+    }
 
-        // 1. msg2 must be completely absent from UI messages (filtered out by delete for me)
-        assertFalse(uiMessages.any { it.logicalMessageId == msg2 })
+    @Test
+    fun testIncomingMessageAutoUnarchives() = runBlocking {
+        val (alice, bob) = createBilateralNodes()
 
-        // 2. msg1 is present and normal
-        val uiMsg1 = uiMessages.find { it.logicalMessageId == msg1 }
-        assertNotNull(uiMsg1)
-        assertEquals("Message 1 (Visible)", uiMsg1!!.body)
-        assertFalse(uiMsg1.isDeleted)
+        // Alice archives conversation with Bob
+        val convAlice = ConversationEntity(
+            conversationId = "conv_ab",
+            title = "Bob",
+            isArchived = true,
+            archivedAt = 12345L,
+            unreadCount = 0
+        )
+        alice.convDao.upsert(convAlice)
+        assertTrue(alice.convDao.getById("conv_ab")!!.isArchived)
 
-        // 3. msg3 is present as a tombstone
-        val uiMsg3 = uiMessages.find { it.logicalMessageId == msg3 }
-        assertNotNull(uiMsg3)
-        assertTrue(uiMsg3!!.isDeleted)
+        // Bob sends message to Alice
+        bob.chatService!!.sendTextMessage(
+            conversationId = "conv_ab",
+            relationshipId = bob.relationshipId,
+            localIdentityId = "bob",
+            recipientId = "alice",
+            text = "Are you there Alice?"
+        )
 
-        // 4. Reactions on tombstoned message are suppressed in UI
-        assertTrue(uiMsg3.reactions.isEmpty())
+        // Wait briefly for direct loopback delivery
+        delay(200)
 
-        alice.agent!!.stop()
+        val updatedAlice = alice.convDao.getById("conv_ab")!!
+        assertFalse("Conversation must auto-unarchive upon receiving incoming message", updatedAlice.isArchived)
+        assertNull(updatedAlice.archivedAt)
+        assertEquals(1, updatedAlice.unreadCount)
+    }
+
+    @Test
+    fun testMuteControls() = runBlocking {
+        val (alice, _) = createBilateralNodes()
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
+
+        val c = ConversationEntity(conversationId = "conv_1", title = "Bob")
+        convDao.upsert(c)
+
+        // Not muted initially
+        assertFalse(NotificationPolicy.isConversationMuted(convDao.getById("conv_1")!!.mutedUntil))
+
+        // Mute 8 hours
+        val eightHoursMs = System.currentTimeMillis() + 8 * 3600_000L
+        chatService.setChatMuted("conv_1", eightHoursMs)
+        val mutedConv = convDao.getById("conv_1")!!
+        assertTrue(NotificationPolicy.isConversationMuted(mutedConv.mutedUntil))
+
+        // Mute Always
+        chatService.setChatMuted("conv_1", Long.MAX_VALUE)
+        val alwaysMuted = convDao.getById("conv_1")!!
+        assertEquals(Long.MAX_VALUE, alwaysMuted.mutedUntil)
+        assertTrue(NotificationPolicy.isConversationMuted(alwaysMuted.mutedUntil))
+
+        // Unmute
+        chatService.setChatMuted("conv_1", null)
+        val unmuted = convDao.getById("conv_1")!!
+        assertNull(unmuted.mutedUntil)
+        assertFalse(NotificationPolicy.isConversationMuted(unmuted.mutedUntil))
+
+        // Expired mute in past
+        convDao.setMutedUntil("conv_1", System.currentTimeMillis() - 5000L)
+        assertFalse(NotificationPolicy.isConversationMuted(convDao.getById("conv_1")!!.mutedUntil))
+    }
+
+    @Test
+    fun testMarkUnreadIsLocalOnly() = runBlocking {
+        val (alice, _) = createBilateralNodes()
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
+
+        val c = ConversationEntity(
+            conversationId = "conv_1",
+            title = "Bob",
+            unreadCount = 0,
+            manuallyUnread = false
+        )
+        convDao.upsert(c)
+
+        val outboxInitialCount = alice.outboxStore.items.size
+
+        chatService.markChatUnread("conv_1")
+
+        val conv = convDao.getById("conv_1")!!
+        assertTrue("manuallyUnread must be true", conv.manuallyUnread)
+        assertEquals("Zero packets must be queued for local mark-unread", outboxInitialCount, alice.outboxStore.items.size)
+
+        // Mark read clears both
+        chatService.markConversationRead("conv_1")
+        val clearedConv = convDao.getById("conv_1")!!
+        assertFalse("manuallyUnread must be reset to false", clearedConv.manuallyUnread)
+        assertEquals(0, clearedConv.unreadCount)
+    }
+
+    @Test
+    fun testDeleteChatPreservesContactAndSession() = runBlocking {
+        val (alice, bob) = createBilateralNodes()
+        val convId = "conv_ab"
+
+        alice.convDao.upsert(ConversationEntity(conversationId = convId, title = "Bob"))
+        bob.convDao.upsert(ConversationEntity(conversationId = convId, title = "Alice"))
+
+        // Send a message back and forth so session is advanced
+        alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Hello Bob")
+        delay(150)
+        bob.chatService!!.sendTextMessage(convId, bob.relationshipId, "bob", "alice", "Hello Alice")
+        delay(150)
+
+        assertTrue(alice.msgDao.getMessagesForConversationDesc(convId).isNotEmpty())
+
+        // Alice deletes chat locally
+        alice.chatService!!.deleteChatLocally(convId)
+
+        // Assert local conversation and messages are removed for Alice
+        assertNull("Conversation record must be deleted", alice.convDao.getById(convId))
+        assertTrue("Messages must be deleted", alice.msgDao.getMessagesForConversationDesc(convId).isEmpty())
+
+        // Cryptographic session in Alice's crypto is still alive and intact!
+        val sessionBeforeNewMsg = alice.crypto.hasSession(alice.relationshipId)
+        assertTrue("Session must NOT be destroyed by local chat deletion", sessionBeforeNewMsg)
+
+        // Now Bob sends another message to Alice
+        bob.chatService!!.sendTextMessage(convId, bob.relationshipId, "bob", "alice", "Can you still hear me?")
+        delay(200)
+
+        // Alice successfully decrypts and automatically recreates conversation record!
+        val newConvAlice = alice.convDao.getById(convId)
+        assertNotNull("Incoming message after delete chat must successfully decrypt and recreate conversation", newConvAlice)
+        val aliceMessages = alice.msgDao.getMessagesForConversationDesc(convId)
+        assertEquals(1, aliceMessages.size)
+        assertEquals("Can you still hear me?", aliceMessages[0].body)
+    }
+
+    @Test
+    fun testSearchByTitleAndMessageText() = runBlocking {
+        val convDao = TestConversationDao()
+        val c1 = ConversationEntity(conversationId = "c1", title = "Alice Wonderland", lastMessagePreview = "See you tomorrow")
+        val c2 = ConversationEntity(conversationId = "c2", title = "Bob Builder", lastMessagePreview = "Can we fix it?")
+        val c3 = ConversationEntity(conversationId = "c3", title = "Charlie", lastMessagePreview = "Classified secret")
+
+        convDao.upsert(c1)
+        convDao.upsert(c2)
+        convDao.upsert(c3)
+
+        // Search title
+        val r1 = convDao.searchConversations("Alice").first()
+        assertEquals(1, r1.size)
+        assertEquals("c1", r1[0].conversationId)
+
+        // Search message preview
+        val r2 = convDao.searchConversations("fix").first()
+        assertEquals(1, r2.size)
+        assertEquals("c2", r2[0].conversationId)
+
+        // Case insensitive
+        val r3 = convDao.searchConversations("BUILDER").first()
+        assertEquals(1, r3.size)
+        assertEquals("c2", r3[0].conversationId)
+
+        val r4 = convDao.searchConversations("nonexistent").first()
+        assertTrue(r4.isEmpty())
+    }
+
+    @Test
+    fun testConversationUiModelMapping() {
+        val conv = ConversationEntity(
+            conversationId = "c1",
+            title = "Alice",
+            lastMessagePreview = "Hello there",
+            lastMessageTime = 123456789L,
+            unreadCount = 3,
+            manuallyUnread = true,
+            isPinned = true,
+            pinnedAt = 100L,
+            isArchived = false,
+            mutedUntil = Long.MAX_VALUE
+        )
+
+        val lastMsg = MessageEntity(
+            logicalMessageId = "m1",
+            conversationId = "c1",
+            senderId = "me",
+            type = "TEXT",
+            body = "Hello there",
+            direction = MessageDirection.OUTGOING,
+            status = DeliveryStatus.DELIVERED.name
+        )
+
+        val uiModel = ConversationUiModel.from(conv, lastMsg)
+
+        assertEquals("c1", uiModel.conversationId)
+        assertEquals("Alice", uiModel.title)
+        assertEquals("Hello there", uiModel.preview)
+        assertEquals(3, uiModel.unreadCount)
+        assertTrue(uiModel.manuallyUnread)
+        assertTrue(uiModel.isPinned)
+        assertFalse(uiModel.isArchived)
+        assertTrue(uiModel.isMuted)
+        assertEquals(DeliveryStatus.DELIVERED, uiModel.lastMessageStatus)
+        assertTrue(uiModel.isLastMessageOutgoing)
+
+        // Test deleted message tombstone
+        val deletedMsg = lastMsg.copy(body = null, deletedAt = 999L)
+        val deletedUi = ConversationUiModel.from(conv, deletedMsg)
+        assertEquals("This message was deleted", deletedUi.preview)
+    }
+
+    @Test
+    fun testViewModelSearchAndFiltering() = runBlocking {
+        val (alice, _) = createBilateralNodes()
+        val chatService = alice.chatService!!
+        val convDao = alice.convDao
+        val msgDao = alice.msgDao
+
+        val c1 = ConversationEntity(conversationId = "c1", title = "Alice", lastMessagePreview = "Hey", lastMessageTime = 1000L)
+        val c2 = ConversationEntity(conversationId = "c2", title = "Bob", lastMessagePreview = "Hi", lastMessageTime = 2000L, isArchived = true, archivedAt = 500L)
+        convDao.upsert(c1)
+        convDao.upsert(c2)
+
+        val vm = ConversationListViewModel(chatService, msgDao)
+
+        val state = vm.uiState.first { it.conversations.isNotEmpty() && it.archivedConversations.isNotEmpty() }
+        assertEquals(1, state.conversations.size)
+        assertEquals("c1", state.conversations[0].conversationId)
+        assertEquals(1, state.archivedConversations.size)
+        assertEquals("c2", state.archivedConversations[0].conversationId)
+        assertEquals(1, state.archivedCount)
+
+        // Toggle search
+        vm.toggleSearch(true)
+        assertTrue(vm.uiState.first { it.isSearching }.isSearching)
+
+        vm.onSearchQueryChanged("Alice")
+        assertEquals("Alice", vm.uiState.first { it.searchQuery == "Alice" }.searchQuery)
     }
 }

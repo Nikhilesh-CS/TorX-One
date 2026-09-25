@@ -78,6 +78,8 @@ class ChatReceiver(
             preview = text.take(100),
             time = envelope.timestamp
         )
+        conversationDao.unarchive(conversationId)
+        conversationDao.updateManuallyUnread(conversationId, false)
 
         if (!isActive) {
             conversationDao.updateUnreadCount(conversationId, conv.unreadCount + unreadIncrement)

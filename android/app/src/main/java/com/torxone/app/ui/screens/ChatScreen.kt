@@ -50,6 +50,7 @@ import kotlin.math.roundToInt
 fun ChatScreen(
     viewModel: ChatViewModel,
     onBackClick: () -> Unit,
+    onHeaderClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -72,6 +73,7 @@ fun ChatScreen(
         onToggleReaction = viewModel::toggleReaction,
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
+        onHeaderClick = onHeaderClick,
         onBackClick = onBackClick,
         modifier = modifier
     )
@@ -111,6 +113,7 @@ fun ChatScreen(
     onToggleReaction: (String, String) -> Unit = { _, _ -> },
     onDeleteForMe: (String) -> Unit = {},
     onDeleteForEveryone: (String) -> Unit = {},
+    onHeaderClick: () -> Unit = {},
     onBackClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -147,7 +150,11 @@ fun ChatScreen(
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onHeaderClick() }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
                     ) {
                         Box(
                             modifier = Modifier

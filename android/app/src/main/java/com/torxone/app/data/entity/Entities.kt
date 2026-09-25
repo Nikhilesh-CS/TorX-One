@@ -12,7 +12,7 @@ data class ConversationEntity(
     val conversationId: String,
 
     @ColumnInfo(name = "type")
-    val type: ConversationType,
+    val type: ConversationType = ConversationType.DIRECT,
 
     @ColumnInfo(name = "title")
     val title: String?,
@@ -34,6 +34,21 @@ data class ConversationEntity(
 
     @ColumnInfo(name = "muted_until")
     val mutedUntil: Long? = null,
+
+    @ColumnInfo(name = "is_pinned")
+    val isPinned: Boolean = false,
+
+    @ColumnInfo(name = "pinned_at")
+    val pinnedAt: Long? = null,
+
+    @ColumnInfo(name = "is_archived")
+    val isArchived: Boolean = false,
+
+    @ColumnInfo(name = "archived_at")
+    val archivedAt: Long? = null,
+
+    @ColumnInfo(name = "manually_unread")
+    val manuallyUnread: Boolean = false,
 
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis()

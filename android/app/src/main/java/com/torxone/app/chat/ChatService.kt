@@ -134,6 +134,8 @@ class ChatService(
                     preview = text.take(100),
                     time = now
                 )
+                conversationDao.unarchive(conversationId)
+                conversationDao.updateManuallyUnread(conversationId, false)
             }
         }
 
@@ -167,13 +169,15 @@ class ChatService(
         localIdentityId: String,
         recipientId: String
     ) {
-        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId) ?: return
         val now = System.currentTimeMillis()
 
         // 1. Mark incoming messages in local Room database as READ
         messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
         conversationDao.updateUnreadCount(conversationId, 0)
+        conversationDao.updateManuallyUnread(conversationId, false)
         notificationManager?.cancelForConversation(conversationId)
+
+        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId) ?: return
 
         // 2. Dispatch batch READ_RECEIPT up to latest incoming message
         sendReadReceipt(
@@ -183,6 +187,18 @@ class ChatService(
             localIdentityId = localIdentityId,
             recipientId = recipientId
         )
+    }
+
+    /**
+     * Mark all incoming messages in a conversation as read locally, clear unread count,
+     * reset manuallyUnread flag, and cancel notifications.
+     */
+    suspend fun markConversationRead(conversationId: String) {
+        val now = System.currentTimeMillis()
+        messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
+        conversationDao.updateUnreadCount(conversationId, 0)
+        conversationDao.updateManuallyUnread(conversationId, false)
+        notificationManager?.cancelForConversation(conversationId)
     }
 
     /**
@@ -248,10 +264,91 @@ class ChatService(
     }
 
     /**
-     * Observe all conversations.
+     * Observe active (unarchived) conversations ordered by pinned and recent activity.
      */
     fun observeConversations(): Flow<List<ConversationEntity>> {
-        return conversationDao.observeAll()
+        return conversationDao.observeActive()
+    }
+
+    /**
+     * Observe archived conversations.
+     */
+    fun observeArchivedConversations(): Flow<List<ConversationEntity>> {
+        return conversationDao.observeArchived()
+    }
+
+    /**
+     * Observe count of archived conversations.
+     */
+    fun observeArchivedCount(): Flow<Int> {
+        return conversationDao.observeArchivedCount()
+    }
+
+    /**
+     * Search conversations by title and message content.
+     */
+    fun searchConversations(query: String): Flow<List<ConversationEntity>> {
+        return if (query.isBlank()) {
+            conversationDao.observeActive()
+        } else {
+            conversationDao.searchConversations(query.trim())
+        }
+    }
+
+    /**
+     * Pin or unpin a conversation.
+     */
+    suspend fun setChatPinned(conversationId: String, isPinned: Boolean) {
+        val pinnedAt = if (isPinned) System.currentTimeMillis() else null
+        conversationDao.setPinned(conversationId, isPinned, pinnedAt)
+        Log.i(TAG, "[PIN] Conversation $conversationId pinned=$isPinned")
+    }
+
+    /**
+     * Archive or unarchive a conversation.
+     */
+    suspend fun setChatArchived(conversationId: String, isArchived: Boolean) {
+        val archivedAt = if (isArchived) System.currentTimeMillis() else null
+        conversationDao.setArchived(conversationId, isArchived, archivedAt)
+        Log.i(TAG, "[ARCHIVE] Conversation $conversationId archived=$isArchived")
+    }
+
+    /**
+     * Mute or unmute notifications for a conversation.
+     */
+    suspend fun setChatMuted(conversationId: String, mutedUntil: Long?) {
+        conversationDao.setMutedUntil(conversationId, mutedUntil)
+        Log.i(TAG, "[MUTE] Conversation $conversationId mutedUntil=$mutedUntil")
+    }
+
+    /**
+     * Mark a conversation as manually unread or read.
+     * Note: Purely local UI state, never emits any protocol envelope.
+     */
+    suspend fun markChatUnread(conversationId: String, unread: Boolean = true) {
+        conversationDao.updateManuallyUnread(conversationId, unread)
+        Log.i(TAG, "[MANUAL UNREAD] Conversation $conversationId unread=$unread")
+    }
+
+    /**
+     * Delete chat and all local message history.
+     *
+     * Invariants:
+     * - Strictly LOCAL: Never sends any protocol packet to peer or transport.
+     * - Preserves Contact, PairRelationship, Session, Connection.
+     * - Deletes messages, reactions, local message state, and conversation record.
+     * - Cancels active notifications for this conversation.
+     */
+    suspend fun deleteChatLocally(conversationId: String): Boolean {
+        transactionRunner {
+            messageDao.deleteByConversation(conversationId)
+            reactionDao?.deleteByConversation(conversationId)
+            localMessageStateDao?.deleteByConversation(conversationId)
+            conversationDao.deleteById(conversationId)
+        }
+        notificationManager?.cancelForConversation(conversationId)
+        Log.i(TAG, "[DELETE CHAT] Conversation $conversationId deleted locally")
+        return true
     }
 
     /**

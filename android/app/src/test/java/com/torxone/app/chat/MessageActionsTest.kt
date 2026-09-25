@@ -112,12 +112,32 @@ class MessageActionsTest {
                 .filter { it.conversationId == conversationId }
                 .sortedByDescending { it.createdAt }
         }
+
+        override suspend fun deleteByConversation(conversationId: String) {
+            messages.entries.removeIf { it.value.conversationId == conversationId }
+        }
     }
 
     class TestConversationDao : ConversationDao {
         val convs = ConcurrentHashMap<String, ConversationEntity>()
 
         override fun observeAll(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
+
+        override fun observeActive(): Flow<List<ConversationEntity>> =
+            flowOf(convs.values.filter { !it.isArchived }.sortedWith(
+                compareByDescending<ConversationEntity> { it.isPinned }
+                    .thenByDescending { it.pinnedAt ?: 0L }
+                    .thenByDescending { it.lastMessageTime ?: 0L }
+            ))
+
+        override fun observeArchived(): Flow<List<ConversationEntity>> =
+            flowOf(convs.values.filter { it.isArchived }.sortedWith(
+                compareByDescending<ConversationEntity> { it.archivedAt ?: 0L }
+                    .thenByDescending { it.lastMessageTime ?: 0L }
+            ))
+
+        override fun observeArchivedCount(): Flow<Int> =
+            flowOf(convs.values.count { it.isArchived })
 
         override suspend fun getById(id: String): ConversationEntity? = convs[id]
 
@@ -127,6 +147,10 @@ class MessageActionsTest {
 
         override suspend fun updateUnreadCount(id: String, count: Int) {
             convs[id]?.let { convs[id] = it.copy(unreadCount = count) }
+        }
+
+        override suspend fun updateManuallyUnread(id: String, manuallyUnread: Boolean) {
+            convs[id]?.let { convs[id] = it.copy(manuallyUnread = manuallyUnread) }
         }
 
         override suspend fun updateLastMessage(
@@ -150,6 +174,33 @@ class MessageActionsTest {
                     convs[id] = conv.copy(lastMessagePreview = preview)
                 }
             }
+        }
+
+        override suspend fun setPinned(id: String, isPinned: Boolean, pinnedAt: Long?) {
+            convs[id]?.let { convs[id] = it.copy(isPinned = isPinned, pinnedAt = pinnedAt) }
+        }
+
+        override suspend fun setArchived(id: String, isArchived: Boolean, archivedAt: Long?) {
+            convs[id]?.let { convs[id] = it.copy(isArchived = isArchived, archivedAt = archivedAt) }
+        }
+
+        override suspend fun unarchive(id: String) {
+            convs[id]?.let { convs[id] = it.copy(isArchived = false, archivedAt = null) }
+        }
+
+        override suspend fun setMutedUntil(id: String, mutedUntil: Long?) {
+            convs[id]?.let { convs[id] = it.copy(mutedUntil = mutedUntil) }
+        }
+
+        override suspend fun deleteById(id: String) {
+            convs.remove(id)
+        }
+
+        override fun searchConversations(query: String): Flow<List<ConversationEntity>> {
+            val q = query.trim().lowercase()
+            return flowOf(convs.values.filter {
+                it.title?.lowercase()?.contains(q) == true || (it.lastMessagePreview?.lowercase()?.contains(q) == true)
+            })
         }
     }
 
@@ -176,6 +227,10 @@ class MessageActionsTest {
 
         override suspend fun removeAllFromSender(messageId: String, senderId: String) {
             reactions.values.removeAll { it.messageId == messageId && it.senderId == senderId }
+        }
+
+        override suspend fun deleteByConversation(conversationId: String) {
+            reactions.entries.removeIf { it.value.conversationId == conversationId }
         }
     }
 

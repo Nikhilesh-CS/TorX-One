@@ -70,23 +70,49 @@ fun TorXOneApp() {
         )
     }
 
+    val conversationListViewModel = remember {
+        com.torxone.app.conversations.ConversationListViewModel(
+            chatService = app.chatService,
+            messageDao = app.database.messageDao()
+        )
+    }
+
     when (val screen = currentScreen) {
         is Screen.ConversationList -> {
-            val conversations by app.database.conversationDao()
-                .observeAll()
-                .collectAsState(initial = emptyList())
+            val uiState by conversationListViewModel.uiState.collectAsState()
 
             ConversationListScreen(
-                conversations = conversations,
+                viewModel = conversationListViewModel,
                 onConversationClick = { id ->
-                    val clicked = conversations.find { it.conversationId == id }
+                    val clicked = uiState.conversations.find { it.conversationId == id }
                     currentScreen = Screen.Chat(
                         conversationId = id,
                         contactName = clicked?.title ?: "Chat"
                     )
                 },
+                onArchivedClick = {
+                    currentScreen = Screen.ArchivedList
+                },
                 onScanQrClick = {
                     showInviteDialog = true
+                }
+            )
+        }
+
+        is Screen.ArchivedList -> {
+            val uiState by conversationListViewModel.uiState.collectAsState()
+
+            com.torxone.app.ui.screens.ArchivedConversationsScreen(
+                viewModel = conversationListViewModel,
+                onConversationClick = { id ->
+                    val clicked = uiState.archivedConversations.find { it.conversationId == id }
+                    currentScreen = Screen.Chat(
+                        conversationId = id,
+                        contactName = clicked?.title ?: "Chat"
+                    )
+                },
+                onBackClick = {
+                    currentScreen = Screen.ConversationList
                 }
             )
         }
@@ -97,7 +123,7 @@ fun TorXOneApp() {
                 app.activeConversationTracker.setActiveConversation(screen.conversationId)
                 app.notificationManager.cancelForConversation(screen.conversationId)
                 coroutineScope.launch {
-                    app.database.conversationDao().updateUnreadCount(screen.conversationId, 0)
+                    app.chatService.markConversationRead(screen.conversationId)
                 }
                 onDispose {
                     app.activeConversationTracker.clearActiveConversation()
@@ -132,9 +158,34 @@ fun TorXOneApp() {
                     viewModel = viewModel,
                     onBackClick = {
                         currentScreen = Screen.ConversationList
+                    },
+                    onHeaderClick = {
+                        currentScreen = Screen.ContactInfo(screen.conversationId, screen.contactName)
                     }
                 )
             }
+        }
+
+        is Screen.ContactInfo -> {
+            val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
+                value = app.database.contactDao().getByConversationId(screen.conversationId)
+                    ?: app.database.contactDao().getAll().firstOrNull()
+            }
+            val conversationState = produceState<com.torxone.app.data.entity.ConversationEntity?>(initialValue = null, screen.conversationId) {
+                value = app.database.conversationDao().getById(screen.conversationId)
+            }
+
+            com.torxone.app.ui.screens.ContactInfoScreen(
+                contact = contactState.value,
+                conversation = conversationState.value,
+                chatService = app.chatService,
+                onBackClick = {
+                    currentScreen = Screen.Chat(screen.conversationId, screen.contactName)
+                },
+                onChatDeleted = {
+                    currentScreen = Screen.ConversationList
+                }
+            )
         }
     }
 
@@ -157,5 +208,7 @@ fun TorXOneApp() {
 
 sealed class Screen {
     data object ConversationList : Screen()
+    data object ArchivedList : Screen()
     data class Chat(val conversationId: String, val contactName: String) : Screen()
+    data class ContactInfo(val conversationId: String, val contactName: String) : Screen()
 }

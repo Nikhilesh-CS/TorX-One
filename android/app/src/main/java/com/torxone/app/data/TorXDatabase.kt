@@ -22,7 +22,7 @@ import com.torxone.app.data.entity.*
         ReactionEntity::class,
         LocalMessageStateEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
