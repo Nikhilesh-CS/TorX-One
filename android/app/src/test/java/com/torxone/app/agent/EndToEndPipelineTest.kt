@@ -9,9 +9,7 @@ import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
 import com.torxone.app.identity.*
 import com.torxone.app.incoming.*
-import com.torxone.app.protocol.MessageType
-import com.torxone.app.protocol.ProtocolCodec
-import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.protocol.*
 import com.torxone.app.relationship.ContactBootstrapPayload
 import com.torxone.app.relationship.RelationshipService
 import com.torxone.app.transport.*
@@ -581,12 +579,14 @@ class EndToEndPipelineTest {
 
         for (i in 1..20) {
             val msgId = "dup-msg-$i"
+            val seq = alice.connectionManager.incrementSendSequence(relationshipId)
             val env = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = msgId,
                 conversationId = conversationId,
                 senderIdentity = alice.identity.identityId,
                 recipientBinding = bob.identity.identityId,
+                directionSequence = seq,
                 messageType = MessageType.TEXT,
                 payload = "Message $i".toByteArray()
             )
@@ -1064,4 +1064,158 @@ class EndToEndPipelineTest {
         alice.stop()
         bob.stop()
     }
+
+    @Test
+    fun testDirectionalSequencePolicyClassification() {
+        // User-visible durable messages require directional sequence
+        assertTrue(MessageType.TEXT.requiresApplicationSequence())
+        assertTrue(MessageType.IMAGE.requiresApplicationSequence())
+        assertTrue(MessageType.VIDEO.requiresApplicationSequence())
+        assertTrue(MessageType.AUDIO.requiresApplicationSequence())
+        assertTrue(MessageType.FILE.requiresApplicationSequence())
+        assertTrue(MessageType.VOICE_NOTE.requiresApplicationSequence())
+        assertTrue(MessageType.REACTION.requiresApplicationSequence())
+        assertTrue(MessageType.EDIT.requiresApplicationSequence())
+        assertTrue(MessageType.DELETE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_CREATE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_MEMBER_INVITE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_MEMBER_ACCEPT.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_MEMBER_REMOVE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_ROLE_CHANGE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_NAME_CHANGE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_AVATAR_CHANGE.requiresApplicationSequence())
+        assertTrue(MessageType.GROUP_KEY_ROTATE.requiresApplicationSequence())
+
+        // Internal control and transfer frames are sequence-exempt
+        assertFalse(MessageType.FILE_PROGRESS.requiresApplicationSequence())
+        assertFalse(MessageType.FILE_COMPLETE.requiresApplicationSequence())
+        assertFalse(MessageType.FILE_RESUME.requiresApplicationSequence())
+        assertFalse(MessageType.FILE_CANCEL.requiresApplicationSequence())
+        assertFalse(MessageType.DELIVERY_ACK.requiresApplicationSequence())
+        assertFalse(MessageType.READ_RECEIPT.requiresApplicationSequence())
+        assertFalse(MessageType.TYPING_START.requiresApplicationSequence())
+        assertFalse(MessageType.TYPING_STOP.requiresApplicationSequence())
+        assertFalse(MessageType.PRESENCE_UPDATE.requiresApplicationSequence())
+    }
+
+    @Test
+    fun testNormalTextAndGroupMessageWithZeroSequenceRejected() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        val conversationId = "conv-seq-test"
+        val relationshipId = "rel-alice-bob"
+        val conn = alice.connectionManager.getConnectionByRelationship(relationshipId)!!
+
+        // 1. Normal TEXT with zero sequence
+        val envZeroText = SecureEnvelope(
+            protocolVersion = 1,
+            logicalMessageId = "zero-seq-text",
+            conversationId = conversationId,
+            senderIdentity = alice.identity.identityId,
+            recipientBinding = bob.identity.identityId,
+            directionSequence = 0L, // INVALID for TEXT
+            messageType = MessageType.TEXT,
+            payload = "Rejected zero seq text".toByteArray()
+        )
+        val envBytes1 = ProtocolCodec.encodeSecureEnvelope(envZeroText)
+        val aad1 = "torx-aad-v1:${conn.generation}:${conn.sendQueueId}".toByteArray()
+        val enc1 = alice.sessionCrypto.encrypt(relationshipId, envBytes1, aad1)
+        val raw1 = ProtocolCodec.encodeTransportEnvelope(
+            OpaqueTransportEnvelope(
+                version = 1,
+                queueAddress = conn.sendQueueId,
+                envelopeId = UUID.randomUUID().toString(),
+                opaqueCiphertext = enc1.serialize(),
+                queueAuthenticator = IdentityCrypto.computeQueueAuthenticator(conn.sendAuth, UUID.randomUUID().toString(), conn.sendQueueId, enc1.serialize())
+            )
+        )
+        val textSuccess = bob.dispatcher.dispatch(raw1, TransportType.NEARBY)
+        assertFalse("IncomingDispatcher must reject normal TEXT with zero sequence", textSuccess)
+        assertNull("Bob must not persist zero-sequence message", bob.messageDao.getById("zero-seq-text"))
+        assertEquals("Bob recvSequence must remain 0", 0L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        // 2. GROUP_CREATE with zero sequence
+        val envZeroGroup = SecureEnvelope(
+            protocolVersion = 1,
+            logicalMessageId = "zero-seq-group",
+            conversationId = "group-1",
+            senderIdentity = alice.identity.identityId,
+            recipientBinding = bob.identity.identityId,
+            directionSequence = 0L, // INVALID for GROUP event
+            messageType = MessageType.GROUP_CREATE,
+            payload = "Rejected group create".toByteArray()
+        )
+        val envBytes2 = ProtocolCodec.encodeSecureEnvelope(envZeroGroup)
+        val enc2 = alice.sessionCrypto.encrypt(relationshipId, envBytes2, aad1)
+        val raw2 = ProtocolCodec.encodeTransportEnvelope(
+            OpaqueTransportEnvelope(
+                version = 1,
+                queueAddress = conn.sendQueueId,
+                envelopeId = UUID.randomUUID().toString(),
+                opaqueCiphertext = enc2.serialize(),
+                queueAuthenticator = IdentityCrypto.computeQueueAuthenticator(conn.sendAuth, UUID.randomUUID().toString(), conn.sendQueueId, enc2.serialize())
+            )
+        )
+        val groupSuccess = bob.dispatcher.dispatch(raw2, TransportType.NEARBY)
+        assertFalse("IncomingDispatcher must reject GROUP event with zero sequence", groupSuccess)
+        assertEquals("Bob recvSequence must remain 0", 0L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        alice.stop()
+        bob.stop()
+    }
+
+    @Test
+    fun testExemptControlsCannotAlterRecvSequenceAndNormalMonotonic() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        val conversationId = "conv-seq-mono"
+        val relationshipId = "rel-alice-bob"
+        val conn = alice.connectionManager.getConnectionByRelationship(relationshipId)!!
+
+        // 1. Send normal message with sequence 1
+        sendMessage(alice, bob, relationshipId, conversationId, "m-seq-1", "First message")
+        waitFor { bob.messageDao.exists("m-seq-1") }
+        assertEquals("Bob recvSequence must advance to 1", 1L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        // 2. Send normal message with sequence 2
+        sendMessage(alice, bob, relationshipId, conversationId, "m-seq-2", "Second message")
+        waitFor { bob.messageDao.exists("m-seq-2") }
+        assertEquals("Bob recvSequence must advance to 2", 2L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        // 3. Send exempt control packet (DELIVERY_ACK) with directionSequence = 99L
+        val ackPayload = DeliveryAck("m-seq-2", "dummy-env", System.currentTimeMillis()).toByteArray()
+        val ackEnvelope = SecureEnvelope(
+            protocolVersion = 1,
+            logicalMessageId = "ack-exempt",
+            conversationId = conversationId,
+            senderIdentity = alice.identity.identityId,
+            recipientBinding = bob.identity.identityId,
+            directionSequence = 99L, // Injected sequence on exempt packet
+            messageType = MessageType.DELIVERY_ACK,
+            payload = ackPayload
+        )
+        val envBytes = ProtocolCodec.encodeSecureEnvelope(ackEnvelope)
+        val aad = "torx-aad-v1:${conn.generation}:${conn.sendQueueId}".toByteArray()
+        val enc = alice.sessionCrypto.encrypt(relationshipId, envBytes, aad)
+        val envelopeId = UUID.randomUUID().toString()
+        val rawAck = ProtocolCodec.encodeTransportEnvelope(
+            OpaqueTransportEnvelope(
+                version = 1,
+                queueAddress = conn.sendQueueId,
+                envelopeId = envelopeId,
+                opaqueCiphertext = enc.serialize(),
+                queueAuthenticator = IdentityCrypto.computeQueueAuthenticator(conn.sendAuth, envelopeId, conn.sendQueueId, enc.serialize())
+            )
+        )
+        val ackSuccess = bob.dispatcher.dispatch(rawAck, TransportType.NEARBY)
+        assertTrue("Exempt control frame must be accepted", ackSuccess)
+        assertEquals("Exempt control frame must NOT alter recvSequence (still 2)", 2L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        // 4. Send normal message with sequence 3
+        sendMessage(alice, bob, relationshipId, conversationId, "m-seq-3", "Third message")
+        waitFor { bob.messageDao.exists("m-seq-3") }
+        assertEquals("Bob recvSequence must advance monotonically to 3", 3L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
+
+        alice.stop()
+        bob.stop()
+    }
 }
+

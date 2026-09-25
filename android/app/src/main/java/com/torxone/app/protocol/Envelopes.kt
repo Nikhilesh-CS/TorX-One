@@ -159,3 +159,57 @@ enum class MessageType {
     // Presence
     PRESENCE_UPDATE
 }
+
+/**
+ * Policy defining whether a message type requires an application-level directional sequence.
+ * User-visible durable messages require a strictly positive sequence.
+ * Internal transfer/control frames are sequence-exempt.
+ */
+fun MessageType.requiresApplicationSequence(): Boolean = when (this) {
+    MessageType.TEXT,
+    MessageType.IMAGE,
+    MessageType.VIDEO,
+    MessageType.AUDIO,
+    MessageType.FILE,
+    MessageType.VOICE_NOTE,
+    MessageType.LOCATION,
+    MessageType.CONTACT,
+    MessageType.STICKER,
+    MessageType.REACTION,
+    MessageType.EDIT,
+    MessageType.DELETE,
+    MessageType.GROUP_CREATE,
+    MessageType.GROUP_MEMBER_INVITE,
+    MessageType.GROUP_MEMBER_ACCEPT,
+    MessageType.GROUP_MEMBER_REMOVE,
+    MessageType.GROUP_ROLE_CHANGE,
+    MessageType.GROUP_NAME_CHANGE,
+    MessageType.GROUP_AVATAR_CHANGE,
+    MessageType.GROUP_KEY_ROTATE -> true
+
+    MessageType.DELIVERY_ACK,
+    MessageType.READ_RECEIPT,
+    MessageType.TYPING_START,
+    MessageType.TYPING_STOP,
+    MessageType.CONTACT_BOOTSTRAP,
+    MessageType.CONTACT_BOOTSTRAP_ACK,
+    MessageType.CALL_OFFER,
+    MessageType.CALL_RINGING,
+    MessageType.CALL_ANSWER,
+    MessageType.CALL_ICE_CANDIDATE,
+    MessageType.CALL_CONNECTED,
+    MessageType.CALL_END,
+    MessageType.CALL_DECLINE,
+    MessageType.CALL_BUSY,
+    MessageType.FILE_OFFER,
+    MessageType.FILE_ACCEPT,
+    MessageType.FILE_PROGRESS,
+    MessageType.FILE_COMPLETE,
+    MessageType.FILE_RESUME,
+    MessageType.FILE_CANCEL,
+    MessageType.PROFILE_UPDATE,
+    MessageType.CONNECTION_ROTATE,
+    MessageType.QUEUE_ROTATE,
+    MessageType.PRESENCE_UPDATE -> false
+}
+

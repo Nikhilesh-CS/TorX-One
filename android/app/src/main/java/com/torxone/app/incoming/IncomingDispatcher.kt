@@ -236,7 +236,11 @@ class IncomingDispatcher(
                     throw IllegalStateException("Recipient binding mismatch: expected $localId, got ${secureEnvelope.recipientBinding}")
                 }
 
-                if (secureEnvelope.directionSequence > 0) {
+                // Stage 8b: Validate directional sequence requirements
+                if (secureEnvelope.messageType.requiresApplicationSequence()) {
+                    if (secureEnvelope.directionSequence <= 0) {
+                        throw IllegalStateException("Message type ${secureEnvelope.messageType} requires positive directional sequence, got ${secureEnvelope.directionSequence}")
+                    }
                     connectionManager.updateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
                 }
 

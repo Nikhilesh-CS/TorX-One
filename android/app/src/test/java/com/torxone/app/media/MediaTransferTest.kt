@@ -1030,13 +1030,14 @@ class MediaTransferTest {
 
         // Wait for Bob to finish download, Alice to receive FILE_COMPLETE confirmation,
         // AND temp encrypted file to be cleaned up. On Windows, File.delete() can silently
-        // fail on recently-accessed handles, so poll for both conditions together.
-        withTimeout(10000) {
+        // fail on recently-accessed RandomAccessFile handles, especially under GC pressure
+        // when running alongside other tests. Use a generous timeout and longer poll interval.
+        withTimeout(30000) {
             while (
                 alice.mediaDao.getById(aliceMedia.mediaId)?.status != MediaStatus.DELIVERED.name ||
                 aliceEncFile.exists()
             ) {
-                delay(20)
+                delay(50)
             }
         }
 

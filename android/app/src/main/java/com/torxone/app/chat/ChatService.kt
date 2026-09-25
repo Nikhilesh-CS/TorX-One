@@ -396,6 +396,7 @@ class ChatService(
                 operation = operation
             ).toByteArray()
 
+            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
@@ -404,7 +405,8 @@ class ChatService(
                 recipientBinding = recipientId,
                 messageType = MessageType.REACTION,
                 timestamp = now,
-                payload = payload
+                payload = payload,
+                directionSequence = sendSeq
             )
             val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
@@ -486,6 +488,7 @@ class ChatService(
                 editedAt = now
             ).toByteArray()
 
+            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
@@ -494,7 +497,8 @@ class ChatService(
                 recipientBinding = recipientId,
                 messageType = MessageType.EDIT,
                 timestamp = now,
-                payload = payload
+                payload = payload,
+                directionSequence = sendSeq
             )
             val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
@@ -566,6 +570,7 @@ class ChatService(
                 deletedAt = now
             ).toByteArray()
 
+            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
@@ -574,7 +579,8 @@ class ChatService(
                 recipientBinding = recipientId,
                 messageType = MessageType.DELETE,
                 timestamp = now,
-                payload = payload
+                payload = payload,
+                directionSequence = sendSeq
             )
             val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
