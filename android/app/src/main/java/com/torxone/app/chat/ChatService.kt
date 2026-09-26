@@ -190,14 +190,29 @@ class ChatService(
 
     /**
      * Mark all incoming messages in a conversation as read locally, clear unread count,
-     * reset manuallyUnread flag, and cancel notifications.
+     * reset manuallyUnread flag, cancel notifications, and dispatch READ_RECEIPT to peer if direct chat.
      */
     suspend fun markConversationRead(conversationId: String) {
         val now = System.currentTimeMillis()
+        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId)
         messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
         conversationDao.updateUnreadCount(conversationId, 0)
         conversationDao.updateManuallyUnread(conversationId, false)
         notificationManager?.cancelForConversation(conversationId)
+
+        if (latestUnread != null && database != null) {
+            val contact = database.contactDao().getByConversationId(conversationId)
+            val rel = contact?.let { database.pairRelationshipDao().getById(it.relationshipId) }
+            if (contact != null && rel != null) {
+                sendReadReceipt(
+                    conversationId = conversationId,
+                    relationshipId = contact.relationshipId,
+                    upToMessageId = latestUnread.logicalMessageId,
+                    localIdentityId = rel.localIdentityId,
+                    recipientId = contact.remoteIdentityId
+                )
+            }
+        }
     }
 
     /**

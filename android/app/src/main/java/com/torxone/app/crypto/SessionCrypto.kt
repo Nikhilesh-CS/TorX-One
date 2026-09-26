@@ -160,7 +160,6 @@ class SessionActor(
                 val encrypted = SessionRatchet.ratchetEncrypt(workingState, cmd.plaintext, cmd.associatedData)
                 if (cmd.commitBlock != null) {
                     cmd.commitBlock.invoke(encrypted, workingState)
-                    sessionStore.saveSession(workingState)
                 } else {
                     sessionStore.saveSession(workingState)
                 }
@@ -173,7 +172,6 @@ class SessionActor(
                 val decrypted = SessionRatchet.ratchetDecrypt(workingState, cmd.message, cmd.associatedData)
                 if (cmd.commitBlock != null) {
                     cmd.commitBlock.invoke(decrypted, workingState)
-                    sessionStore.saveSession(workingState)
                 } else {
                     sessionStore.saveSession(workingState)
                 }

@@ -246,10 +246,28 @@ class GroupE2ETest {
 
         // Upsert contacts
         nodeA.contactDao.upsert(
-            ContactEntity(nodeB.identity.identityId, relationshipId, nodeB.name, null, nodeB.identity.signingPublicKey, "VERIFIED", nodeB.identity.identityId)
+            ContactEntity(
+                contactId = nodeB.identity.identityId,
+                relationshipId = relationshipId,
+                displayName = nodeB.name,
+                avatarHash = null,
+                signingPublicKey = nodeB.identity.signingPublicKey,
+                verificationState = "VERIFIED",
+                conversationId = nodeB.identity.identityId,
+                remoteIdentityId = nodeB.identity.identityId
+            )
         )
         nodeB.contactDao.upsert(
-            ContactEntity(nodeA.identity.identityId, relationshipId, nodeA.name, null, nodeA.identity.signingPublicKey, "VERIFIED", nodeA.identity.identityId)
+            ContactEntity(
+                contactId = nodeA.identity.identityId,
+                relationshipId = relationshipId,
+                displayName = nodeA.name,
+                avatarHash = null,
+                signingPublicKey = nodeA.identity.signingPublicKey,
+                verificationState = "VERIFIED",
+                conversationId = nodeA.identity.identityId,
+                remoteIdentityId = nodeA.identity.identityId
+            )
         )
     }
 
@@ -264,8 +282,26 @@ class GroupE2ETest {
 
     @Test
     fun testCompleteGroupLifecycleE2E() = runBlocking {
-        val bobContact = ContactEntity(bob.identity.identityId, "rel_alice_bob", "Bob", null, bob.identity.signingPublicKey, "VERIFIED", bob.identity.identityId)
-        val charlieContact = ContactEntity(charlie.identity.identityId, "rel_alice_charlie", "Charlie", null, charlie.identity.signingPublicKey, "VERIFIED", charlie.identity.identityId)
+        val bobContact = ContactEntity(
+            contactId = bob.identity.identityId,
+            relationshipId = "rel_alice_bob",
+            displayName = "Bob",
+            avatarHash = null,
+            signingPublicKey = bob.identity.signingPublicKey,
+            verificationState = "VERIFIED",
+            conversationId = bob.identity.identityId,
+            remoteIdentityId = bob.identity.identityId
+        )
+        val charlieContact = ContactEntity(
+            contactId = charlie.identity.identityId,
+            relationshipId = "rel_alice_charlie",
+            displayName = "Charlie",
+            avatarHash = null,
+            signingPublicKey = charlie.identity.signingPublicKey,
+            verificationState = "VERIFIED",
+            conversationId = charlie.identity.identityId,
+            remoteIdentityId = charlie.identity.identityId
+        )
         alice.contactDao.upsert(bobContact)
         alice.contactDao.upsert(charlieContact)
 

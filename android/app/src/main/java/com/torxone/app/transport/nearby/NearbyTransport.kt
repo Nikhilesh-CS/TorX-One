@@ -115,7 +115,12 @@ class NearbyTransport(
 
             directRouteTable.updateLastSeen(endpointId)
 
-            val frame = NearbyWireFrame.decode(bytes)
+            val frame = try {
+                NearbyWireFrame.decode(bytes)
+            } catch (e: Exception) {
+                Log.w(TAG, "[RX REJECT] Malformed wire frame from $endpointId: ${e.message}")
+                return
+            }
             when (frame) {
                 is NearbyWireFrame.Data -> {
                     Log.d(TAG, "[RX DATA] Received ${frame.payload.size} data bytes from endpoint $endpointId")

@@ -87,7 +87,24 @@ class ConnectionManager(
      * Uses ConcurrentHashMap.compute to prevent lost updates when send and
      * receive sequences are modified concurrently from different threads.
      */
-    fun incrementSendSequence(relationshipId: String): Long {
+    fun commitSendSequence(relationshipId: String, sequence: Long) {
+        var changed = false
+        connectionsByRelationship.compute(relationshipId) { _, existing ->
+            if (existing == null) return@compute null
+            if (sequence <= existing.sendSequence) return@compute existing
+            changed = true
+            val updated = existing.copy(sendSequence = sequence)
+            connectionsByRecvQueue[updated.recvQueueId] = updated
+            connectionsBySendQueue[updated.sendQueueId] = updated
+            updated
+        }
+        if (changed) {
+            _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+        }
+    }
+
+    @Deprecated("Use RelationshipSendCoordinator.sendSequenced for atomic sequence allocation and encryption")
+    suspend fun incrementSendSequence(relationshipId: String): Long {
         var nextSeq = 0L
         connectionsByRelationship.compute(relationshipId) { _, existing ->
             if (existing == null) return@compute null
@@ -98,10 +115,7 @@ class ConnectionManager(
             updated
         } ?: return 0L
         _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-        // Ensure immediate database update without fire-and-forget race
-        kotlinx.coroutines.runBlocking {
-            connectionDao?.updateSendSequence(relationshipId, nextSeq)
-        }
+        connectionDao?.updateSendSequence(relationshipId, nextSeq)
         return nextSeq
     }
 
@@ -116,8 +130,9 @@ class ConnectionManager(
     }
 
     /**
-     * Phase 2 of atomic receive sequence advancement:
+     * Phase 2 of atomic receive sequence advancement (Memory-only, Phase 4):
      * Commits the validated sequence to in-memory state ONLY AFTER the database transaction has succeeded.
+     * The database transaction is the sole persistent authority.
      */
     fun commitRecvSequence(relationshipId: String, sequence: Long) {
         var changed = false
@@ -132,9 +147,6 @@ class ConnectionManager(
         }
         if (changed) {
             _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-            scope.launch {
-                connectionDao?.updateRecvSequence(relationshipId, sequence)
-            }
         }
     }
 

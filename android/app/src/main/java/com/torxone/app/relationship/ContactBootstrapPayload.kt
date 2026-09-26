@@ -70,6 +70,10 @@ data class ContactBootstrapPayload(
             }
             val sig = ByteArray(sigLen).apply { dis.readFully(this) }
 
+            if (dis.available() != 0) {
+                throw IllegalArgumentException("Trailing bytes in ContactBootstrapPayload: ${dis.available()}")
+            }
+
             return ContactBootstrapPayload(inviteId, initiatorIdentityId, name, signPub, encPub, ephPub, sig)
         }
 

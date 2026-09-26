@@ -109,6 +109,18 @@ class GroupHandler(
         return try {
             val payload = GroupProtocolCodec.decodeJoined(envelope.payload)
             val group = groupDao.getById(payload.groupId) ?: return false
+
+            // Phase 10: Authenticated sender must match actor identity (if broadcast by admin) or joined identity
+            val isAuthorized = if (!payload.actorIdentity.isNullOrBlank()) {
+                payload.actorIdentity == envelope.senderIdentity
+            } else {
+                payload.memberIdentity == envelope.senderIdentity
+            }
+            if (!isAuthorized) {
+                Log.w(TAG, "Rejecting member joined: envelope sender '${envelope.senderIdentity}' does not match actor '${payload.actorIdentity}' or member '${payload.memberIdentity}'")
+                return false
+            }
+
             val now = System.currentTimeMillis()
 
             val memberEntity = GroupMemberEntity(
@@ -148,6 +160,18 @@ class GroupHandler(
             val payload = GroupProtocolCodec.decodeRemove(envelope.payload)
             val group = groupDao.getById(payload.groupId) ?: return false
 
+            // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
+            if (payload.actorIdentity != envelope.senderIdentity) {
+                Log.w(TAG, "Rejecting member remove: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                return false
+            }
+
+            // Phase 11: Strict epoch progression (must be current epoch + 1)
+            if (payload.newEpoch != group.epoch + 1L) {
+                Log.w(TAG, "Rejecting member remove: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                return false
+            }
+
             // Authorization check
             val actor = groupMemberDao.getMember(payload.groupId, payload.actorIdentity)
             val actorRole = if (actor != null) GroupMemberRole.fromString(actor.role) else null
@@ -180,9 +204,7 @@ class GroupHandler(
             val newState = if (isSelfLeave) GroupMemberState.LEFT.name else GroupMemberState.REMOVED.name
 
             transactionRunner {
-                if (payload.newEpoch > group.epoch) {
-                    groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
-                }
+                groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
                 groupMemberDao.updateState(
                     groupId = payload.groupId,
                     memberIdentityId = payload.targetIdentity,
@@ -211,6 +233,18 @@ class GroupHandler(
             val payload = GroupProtocolCodec.decodeRoleChange(envelope.payload)
             val group = groupDao.getById(payload.groupId) ?: return false
 
+            // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
+            if (payload.actorIdentity != envelope.senderIdentity) {
+                Log.w(TAG, "Rejecting role change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                return false
+            }
+
+            // Phase 11: Strict epoch progression (must be current epoch + 1)
+            if (payload.newEpoch != group.epoch + 1L) {
+                Log.w(TAG, "Rejecting role change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                return false
+            }
+
             // Authorization: actor must be OWNER in local state
             val actor = groupMemberDao.getMember(payload.groupId, payload.actorIdentity)
             if (actor == null || GroupMemberRole.fromString(actor.role) != GroupMemberRole.OWNER) {
@@ -220,9 +254,7 @@ class GroupHandler(
 
             val now = System.currentTimeMillis()
             transactionRunner {
-                if (payload.newEpoch > group.epoch) {
-                    groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
-                }
+                groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
                 groupMemberDao.updateRole(payload.groupId, payload.targetIdentity, payload.newRole.name)
             }
 
@@ -245,6 +277,18 @@ class GroupHandler(
             val payload = GroupProtocolCodec.decodeNameChange(envelope.payload)
             val group = groupDao.getById(payload.groupId) ?: return false
 
+            // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
+            if (payload.actorIdentity != envelope.senderIdentity) {
+                Log.w(TAG, "Rejecting name change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                return false
+            }
+
+            // Phase 11: Strict epoch progression (must be current epoch + 1)
+            if (payload.newEpoch != group.epoch + 1L) {
+                Log.w(TAG, "Rejecting name change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                return false
+            }
+
             val actor = groupMemberDao.getMember(payload.groupId, payload.actorIdentity)
             val role = if (actor != null) GroupMemberRole.fromString(actor.role) else null
             if (role != GroupMemberRole.OWNER && role != GroupMemberRole.ADMIN) {
@@ -254,9 +298,7 @@ class GroupHandler(
 
             val now = System.currentTimeMillis()
             transactionRunner {
-                if (payload.newEpoch > group.epoch) {
-                    groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
-                }
+                groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
                 groupDao.updateTitle(payload.groupId, payload.newTitle, now)
                 conversationDao.getById(payload.groupId)?.let { conv ->
                     conversationDao.upsert(conv.copy(title = payload.newTitle))
@@ -282,6 +324,18 @@ class GroupHandler(
             val payload = GroupProtocolCodec.decodeAvatarChange(envelope.payload)
             val group = groupDao.getById(payload.groupId) ?: return false
 
+            // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
+            if (payload.actorIdentity != envelope.senderIdentity) {
+                Log.w(TAG, "Rejecting avatar change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                return false
+            }
+
+            // Phase 11: Strict epoch progression (must be current epoch + 1)
+            if (payload.newEpoch != group.epoch + 1L) {
+                Log.w(TAG, "Rejecting avatar change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                return false
+            }
+
             val actor = groupMemberDao.getMember(payload.groupId, payload.actorIdentity)
             val role = if (actor != null) GroupMemberRole.fromString(actor.role) else null
             if (role != GroupMemberRole.OWNER && role != GroupMemberRole.ADMIN) {
@@ -291,9 +345,7 @@ class GroupHandler(
 
             val now = System.currentTimeMillis()
             transactionRunner {
-                if (payload.newEpoch > group.epoch) {
-                    groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
-                }
+                groupDao.updateEpoch(payload.groupId, payload.newEpoch, now)
                 groupDao.updateAvatar(payload.groupId, payload.newAvatarHash, now)
                 conversationDao.getById(payload.groupId)?.let { conv ->
                     conversationDao.upsert(conv.copy(avatarHash = payload.newAvatarHash))

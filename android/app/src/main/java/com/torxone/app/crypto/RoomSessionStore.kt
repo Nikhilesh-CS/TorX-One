@@ -20,25 +20,48 @@ class RoomSessionStore(
         val entity = sessionDao.getByRelationshipId(relationshipId) ?: return@withContext null
         val skippedEntities = skippedKeyDao.getKeysForSession(entity.sessionId)
 
-        val skippedMap = mutableMapOf<SkippedKeyId, ByteArray>()
-        for (skip in skippedEntities) {
-            skippedMap[SkippedKeyId(skip.ratchetPublicKeyHex, skip.counter)] = keyProtector.unwrap(skip.messageKey)
+        var needsMigration = false
+        fun unwrapOrLegacy(bytes: ByteArray?): ByteArray? {
+            if (bytes == null || bytes.isEmpty()) return bytes
+            return if (keyProtector.isWrapped(bytes)) {
+                keyProtector.unwrap(bytes)
+            } else {
+                needsMigration = true
+                bytes
+            }
         }
 
-        SessionState(
+        val skippedMap = mutableMapOf<SkippedKeyId, ByteArray>()
+        for (skip in skippedEntities) {
+            val unwrapped = unwrapOrLegacy(skip.messageKey) ?: skip.messageKey
+            skippedMap[SkippedKeyId(skip.ratchetPublicKeyHex, skip.counter)] = unwrapped
+        }
+
+        val rootKey = unwrapOrLegacy(entity.rootKey) ?: entity.rootKey
+        val localRatchetPrivateKey = unwrapOrLegacy(entity.localDhPrivateKey) ?: entity.localDhPrivateKey
+        val sendChainKey = unwrapOrLegacy(entity.sendChainKey)
+        val recvChainKey = unwrapOrLegacy(entity.recvChainKey)
+
+        val state = SessionState(
             sessionId = entity.sessionId,
             relationshipId = entity.relationshipId,
-            rootKey = keyProtector.unwrap(entity.rootKey),
-            localRatchetPrivateKey = keyProtector.unwrap(entity.localDhPrivateKey),
+            rootKey = rootKey,
+            localRatchetPrivateKey = localRatchetPrivateKey,
             localRatchetPublicKey = entity.localDhPublicKey,
             remoteRatchetPublicKey = entity.remoteDhPublicKey,
-            sendChainKey = entity.sendChainKey?.let { keyProtector.unwrap(it) },
-            recvChainKey = entity.recvChainKey?.let { keyProtector.unwrap(it) },
+            sendChainKey = sendChainKey,
+            recvChainKey = recvChainKey,
             sendMessageNumber = entity.sendMessageNumber,
             receiveMessageNumber = entity.receiveMessageNumber,
             previousSendCount = entity.previousSendCount,
             skippedKeys = skippedMap
         )
+
+        if (needsMigration) {
+            saveSession(state)
+        }
+
+        state
     }
 
     override suspend fun saveSession(state: SessionState): Unit = withContext(Dispatchers.IO) {

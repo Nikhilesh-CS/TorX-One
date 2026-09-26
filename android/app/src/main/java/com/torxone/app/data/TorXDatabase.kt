@@ -135,6 +135,7 @@ abstract class TorXDatabase : RoomDatabase() {
             val provider = passphraseProvider ?: DatabasePassphraseProvider(context.applicationContext)
             try {
                 val passphrase = provider.getOrCreatePassphrase()
+                migratePlaintextIfNeeded(context.applicationContext, passphrase)
                 val factory = net.sqlcipher.database.SupportFactory(passphrase)
                 builder.openHelperFactory(factory)
             } catch (e: Exception) {
@@ -146,6 +147,50 @@ abstract class TorXDatabase : RoomDatabase() {
             }
 
             return builder.build()
+        }
+
+        private fun migratePlaintextIfNeeded(context: Context, passphrase: ByteArray) {
+            val dbFile = context.getDatabasePath("torxone.db")
+            if (!dbFile.exists() || dbFile.length() < 16) return
+
+            val header = ByteArray(16)
+            try {
+                java.io.FileInputStream(dbFile).use { fis ->
+                    val read = fis.read(header)
+                    if (read < 16) return
+                }
+            } catch (_: Exception) {
+                return
+            }
+
+            val expectedPlainHeader = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
+            if (header.contentEquals(expectedPlainHeader)) {
+                android.util.Log.i("TorXDatabase", "Detected legacy plaintext SQLite database. Migrating to SQLCipher...")
+                try {
+                    net.sqlcipher.database.SQLiteDatabase.loadLibs(context)
+                    val tempEncryptedFile = java.io.File(dbFile.parentFile, "torxone_encrypted.db")
+                    if (tempEncryptedFile.exists()) tempEncryptedFile.delete()
+
+                    val plaintextDb = net.sqlcipher.database.SQLiteDatabase.openOrCreateDatabase(dbFile, "", null)
+                    val hexKey = passphrase.joinToString("") { "%02x".format(it) }
+                    plaintextDb.rawExecSQL("ATTACH DATABASE '${tempEncryptedFile.absolutePath}' AS encrypted KEY \"x'$hexKey'\";")
+                    plaintextDb.rawExecSQL("SELECT sqlcipher_export('encrypted');")
+                    plaintextDb.rawExecSQL("DETACH DATABASE encrypted;")
+                    plaintextDb.close()
+
+                    val backupFile = java.io.File(dbFile.parentFile, "torxone.db.plain.bak")
+                    if (backupFile.exists()) backupFile.delete()
+                    if (dbFile.renameTo(backupFile)) {
+                        if (!tempEncryptedFile.renameTo(dbFile)) {
+                            backupFile.renameTo(dbFile)
+                            throw java.io.IOException("Failed to rename encrypted database to target")
+                        }
+                    }
+                    android.util.Log.i("TorXDatabase", "Plaintext SQLite database successfully migrated to encrypted SQLCipher.")
+                } catch (e: Exception) {
+                    android.util.Log.e("TorXDatabase", "Failed to migrate plaintext database to SQLCipher: ${e.message}", e)
+                }
+            }
         }
     }
 }

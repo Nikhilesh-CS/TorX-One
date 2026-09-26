@@ -330,6 +330,10 @@ class MessageActionsTest {
         override suspend fun removeByMessageId(logicalMessageId: String) {
             store.removeByMessageId(logicalMessageId)
         }
+
+        override suspend fun removeByDeliveryId(deliveryId: String) {
+            store.items.remove(deliveryId)
+        }
     }
 
     class InMemoryProcessedStore : ProcessedEnvelopeStore {

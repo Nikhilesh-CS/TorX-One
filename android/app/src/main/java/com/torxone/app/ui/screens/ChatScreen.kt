@@ -254,6 +254,7 @@ fun ChatScreen(
     onStartVideoCall: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
@@ -263,10 +264,50 @@ fun ChatScreen(
     var showAttachmentMenu by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
 
-    // Auto-scroll to bottom on new message
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val fileName = resolveMediaFileName(context, uri, "photo_${System.currentTimeMillis()}.jpg")
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes != null && bytes.isNotEmpty()) {
+                onSendImage(fileName, bytes)
+            }
+        }
+    }
+
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val fileName = resolveMediaFileName(context, uri, "video_${System.currentTimeMillis()}.mp4")
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes != null && bytes.isNotEmpty()) {
+                onSendImage(fileName, bytes)
+            }
+        }
+    }
+
+    val docPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val fileName = resolveMediaFileName(context, uri, "document_${System.currentTimeMillis()}.pdf")
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes != null && bytes.isNotEmpty()) {
+                onSendDocument(fileName, bytes)
+            }
+        }
+    }
+
+    // Auto-scroll to bottom only if already close to bottom or initial load (m7)
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val totalItems = listState.layoutInfo.totalItemsCount
+            if (totalItems <= 1 || (totalItems - lastVisible) <= 3) {
+                listState.animateScrollToItem(messages.size - 1)
+            }
         }
     }
 
@@ -392,7 +433,8 @@ fun ChatScreen(
                     onAttachClick = { showAttachmentMenu = true },
                     onMicClick = onStartVoiceRecording,
                     onCancelRecording = onCancelVoiceRecording,
-                    onSendRecording = onFinishVoiceRecording
+                    onSendRecording = onFinishVoiceRecording,
+                    showVoiceNote = !isGroup
                 )
             }
         },
@@ -474,8 +516,7 @@ fun ChatScreen(
                         containerColor = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         showAttachmentMenu = false
-                        val dummyImageBytes = ByteArray(1024) { 0xFF.toByte() }
-                        onSendImage("photo_${System.currentTimeMillis()}.jpg", dummyImageBytes)
+                        photoPickerLauncher.launch("image/*")
                     }
 
                     AttachmentOptionItem(
@@ -484,8 +525,7 @@ fun ChatScreen(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         showAttachmentMenu = false
-                        val dummyVideoBytes = ByteArray(2048) { 0x55.toByte() }
-                        onSendImage("video_${System.currentTimeMillis()}.mp4", dummyVideoBytes)
+                        videoPickerLauncher.launch("video/*")
                     }
 
                     AttachmentOptionItem(
@@ -494,8 +534,7 @@ fun ChatScreen(
                         containerColor = MaterialTheme.colorScheme.tertiaryContainer
                     ) {
                         showAttachmentMenu = false
-                        val dummyDocBytes = "Sample project document content".toByteArray(Charsets.UTF_8)
-                        onSendDocument("project_specs.pdf", dummyDocBytes)
+                        docPickerLauncher.launch("*/*")
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -1230,7 +1269,8 @@ private fun MessageComposer(
     onAttachClick: () -> Unit,
     onMicClick: () -> Unit,
     onCancelRecording: () -> Unit,
-    onSendRecording: () -> Unit
+    onSendRecording: () -> Unit,
+    showVoiceNote: Boolean = true
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1388,12 +1428,19 @@ private fun MessageComposer(
                                 contentDescription = if (editingMessage != null) "Confirm edit" else "Send"
                             )
                         }
-                    } else {
+                    } else if (showVoiceNote) {
                         FilledIconButton(
                             onClick = onMicClick,
                             colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
                             Icon(Icons.Default.Mic, contentDescription = "Record voice note")
+                        }
+                    } else {
+                        FilledIconButton(
+                            onClick = onSend,
+                            enabled = false
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
                 }
@@ -1441,5 +1488,18 @@ private fun formatLastSeen(timestamp: Long): String {
         diff < 60_000L -> "last seen just now"
         diff < 3600_000L -> "last seen ${diff / 60_000L}m ago"
         else -> "last seen ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))}"
+    }
+}
+
+private fun resolveMediaFileName(context: android.content.Context, uri: android.net.Uri, defaultName: String): String {
+    return try {
+        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (index != -1) cursor.getString(index) else defaultName
+            } else defaultName
+        } ?: defaultName
+    } catch (_: Exception) {
+        defaultName
     }
 }

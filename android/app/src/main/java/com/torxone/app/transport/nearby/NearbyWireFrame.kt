@@ -138,14 +138,26 @@ sealed class NearbyWireFrame {
         const val CTRL_PING: Byte = 0x04
         const val CTRL_PONG: Byte = 0x05
 
+        const val MAX_HELLO_FEATURES = 32
+        const val MAX_FEATURE_STRING_LEN = 128
+        const val MAX_PAYLOAD_SIZE = 1_048_576
+        const val MIN_CHALLENGE_SIZE = 16
+        const val MAX_CHALLENGE_SIZE = 64
+        const val MIN_PROOF_SIZE = 16
+        const val MAX_PROOF_SIZE = 64
+        const val MAX_STRING_ID_LEN = 256
+
         fun decode(bytes: ByteArray): NearbyWireFrame {
             require(bytes.isNotEmpty()) { "Empty frame cannot be decoded" }
+            require(bytes.size <= MAX_PAYLOAD_SIZE + 1024) { "Frame size ${bytes.size} exceeds maximum allowable" }
+
             return try {
                 val dis = DataInputStream(ByteArrayInputStream(bytes))
                 val frameType = dis.readByte()
-                when (frameType) {
+                val result = when (frameType) {
                     FRAME_DATA -> {
                         val len = dis.readInt()
+                        require(len in 0..MAX_PAYLOAD_SIZE) { "Invalid DATA payload length: $len" }
                         val payload = ByteArray(len)
                         dis.readFully(payload)
                         Data(payload)
@@ -157,33 +169,48 @@ sealed class NearbyWireFrame {
                                 val version = dis.readInt()
                                 val tieBreaker = dis.readLong()
                                 val featureCount = dis.readInt()
-                                val features = (0 until featureCount).map { dis.readUTF() }
+                                require(featureCount in 0..MAX_HELLO_FEATURES) { "Invalid feature count: $featureCount" }
+                                val features = (0 until featureCount).map {
+                                    val f = dis.readUTF()
+                                    require(f.length <= MAX_FEATURE_STRING_LEN) { "Feature string exceeds max length" }
+                                    f
+                                }
                                 val maxFrameSize = dis.readInt()
+                                require(maxFrameSize > 0) { "Invalid maxFrameSize: $maxFrameSize" }
                                 val challengeLen = dis.readInt()
+                                require(challengeLen in MIN_CHALLENGE_SIZE..MAX_CHALLENGE_SIZE) { "Invalid challenge length: $challengeLen" }
                                 val challenge = ByteArray(challengeLen).apply { dis.readFully(this) }
                                 Control.Hello(version, tieBreaker, features, maxFrameSize, challenge)
                             }
                             CTRL_AUTH_PROOF -> {
                                 val relId = dis.readUTF()
+                                require(relId.length <= MAX_STRING_ID_LEN) { "Relationship ID too long" }
                                 val proofLen = dis.readInt()
+                                require(proofLen in MIN_PROOF_SIZE..MAX_PROOF_SIZE) { "Invalid proof length: $proofLen" }
                                 val proof = ByteArray(proofLen).apply { dis.readFully(this) }
                                 val sendQueue = dis.readUTF()
+                                require(sendQueue.length <= MAX_STRING_ID_LEN) { "Send queue ID too long" }
                                 val recvQueue = dis.readUTF()
+                                require(recvQueue.length <= MAX_STRING_ID_LEN) { "Recv queue ID too long" }
                                 Control.AuthProof(relId, proof, sendQueue, recvQueue)
                             }
                             CTRL_AUTH_OK -> {
                                 val relId = dis.readUTF()
+                                require(relId.length <= MAX_STRING_ID_LEN) { "Relationship ID too long" }
                                 Control.AuthOk(relId)
                             }
                             CTRL_PING -> Control.Ping
                             CTRL_PONG -> Control.Pong
-                            else -> Data(bytes) // Fallback to raw data
+                            else -> Data(bytes)
                         }
                     }
-                    else -> Data(bytes) // Backward compatibility fallback
+                    else -> Data(bytes)
                 }
+                if (result !is Data || bytes[0] == FRAME_DATA) {
+                    require(dis.available() == 0) { "Trailing unparsed bytes in wire frame" }
+                }
+                result
             } catch (_: Exception) {
-                // Backward compatibility fallback: treat unrecognized frames as raw Data
                 Data(bytes)
             }
         }

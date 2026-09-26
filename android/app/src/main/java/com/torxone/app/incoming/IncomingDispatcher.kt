@@ -60,7 +60,8 @@ class IncomingDispatcher(
     private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
     private val conversationDao: com.torxone.app.data.dao.ConversationDao? = null,
     private val consumedInviteDao: com.torxone.app.data.dao.ConsumedInviteDao? = null,
-    private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null
+    private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null,
+    private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -160,6 +161,17 @@ class IncomingDispatcher(
                             )
                         )
 
+                        pairRelationshipDao?.upsert(
+                            com.torxone.app.data.entity.PairRelationshipEntity(
+                                relationshipId = responderResult.relationship.relationshipId,
+                                localIdentityId = localIdentity.identityId,
+                                contactId = contactId,
+                                rootSecret = responderResult.relationship.pairRootSecret,
+                                state = "LOCAL_ESTABLISHED",
+                                generation = 1
+                            )
+                        )
+
                         connectionDao?.upsert(
                             com.torxone.app.data.entity.ConnectionDbEntity(
                                 connectionId = conn.connectionId,
@@ -169,7 +181,7 @@ class IncomingDispatcher(
                                 recvQueueId = conn.recvQueueId,
                                 sendAuth = conn.sendAuth,
                                 recvAuth = conn.recvAuth,
-                                state = "ACTIVE"
+                                state = "LOCAL_ESTABLISHED"
                             )
                         )
 
@@ -193,7 +205,20 @@ class IncomingDispatcher(
                                 unreadCount = 0
                             )
                         )
+                    }
 
+                    // Durably initialize Double Ratchet session before invite deletion and activation
+                    sessionCrypto.initializeSession(
+                        relationshipId = responderResult.relationship.relationshipId,
+                        sessionInitializationSecret = responderResult.secrets.sessionInitializationSecret,
+                        isInitiator = false,
+                        remoteRatchetPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
+                        localRatchetPrivateKey = pendingInvite.ephemeralPrivateKey,
+                        localRatchetPublicKey = pendingInvite.ephemeralPublicKey
+                    )
+
+                    // Atomically consume invite and transition state to ACTIVE
+                    transactionRunner {
                         consumedInviteDao?.insert(
                             com.torxone.app.data.entity.ConsumedInviteEntity(
                                 inviteId = inviteId,
@@ -203,6 +228,9 @@ class IncomingDispatcher(
 
                         pendingInviteDao.delete(pendingInvite.inviteId)
 
+                        connectionDao?.updateState(conn.connectionId, "ACTIVE")
+                        pairRelationshipDao?.updateState(responderResult.relationship.relationshipId, "ACTIVE")
+
                         bootstrapStateDao?.updateStatus(
                             responderResult.relationship.relationshipId,
                             com.torxone.app.data.entity.BootstrapStatus.ACTIVE
@@ -210,15 +238,6 @@ class IncomingDispatcher(
                     }
 
                     connectionManager.registerConnection(conn)
-
-                    sessionCrypto.initializeSession(
-                        relationshipId = responderResult.relationship.relationshipId,
-                        sessionInitializationSecret = responderResult.secrets.sessionInitializationSecret,
-                        isInitiator = false,
-                        remoteRatchetPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
-                        localRatchetPrivateKey = pendingInvite.ephemeralPrivateKey,
-                        localRatchetPublicKey = pendingInvite.ephemeralPublicKey
-                    )
 
                     sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorDisplayName)
 
@@ -255,6 +274,12 @@ class IncomingDispatcher(
         }
 
         // Stage 6: Deserialize ciphertext
+        val localId = localIdentityIdProvider()
+        if (localId.isNullOrBlank()) {
+            Log.e(TAG, "[STAGE 6 FAIL CLOSED] Established relationship envelope cannot be processed: local identity is unavailable")
+            return false
+        }
+
         val encryptedMsg = try {
             EncryptedSessionMessage.deserialize(opaqueEnvelope.opaqueCiphertext)
         } catch (e: Exception) {
@@ -282,12 +307,29 @@ class IncomingDispatcher(
                     throw IllegalStateException("Timestamp skew $skew exceeds allowed ${ProtocolLimits.MAX_TIMESTAMP_SKEW_MS}")
                 }
 
-                val localId = localIdentityIdProvider()
-                if (localId != null && secureEnvelope.recipientBinding.isNotEmpty() && secureEnvelope.recipientBinding != localId) {
+                if (secureEnvelope.recipientBinding.isNotEmpty() && secureEnvelope.recipientBinding != localId) {
                     throw IllegalStateException("Recipient binding mismatch: expected $localId, got ${secureEnvelope.recipientBinding}")
                 }
 
-                // Stage 8b: Validate directional sequence requirements (read current sequence, validate incoming > current, DO NOT mutate memory or DB yet)
+                // Stage 8b: Sender-Authentication Invariant (Phase 2)
+                // Bind remote identity to authenticated relationship
+                if (contactDao != null) {
+                    val contact = contactDao.getByRelationshipId(connection.relationshipId)
+                    if (contact == null) {
+                        throw IllegalStateException("Sender-Authentication failure: No contact found for relationship ${connection.relationshipId}")
+                    }
+                    if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+                        throw IllegalStateException("Sender-Authentication failure: Contact for relationship ${connection.relationshipId} has uninitialized/unknown remote identity")
+                    }
+                    if (secureEnvelope.senderIdentity.isBlank()) {
+                        throw IllegalStateException("Sender-Authentication failure: Envelope senderIdentity is blank")
+                    }
+                    if (secureEnvelope.senderIdentity != contact.remoteIdentityId) {
+                        throw IllegalStateException("Sender-Authentication failure: Envelope senderIdentity '${secureEnvelope.senderIdentity}' does not match bound relationship remoteIdentityId '${contact.remoteIdentityId}'")
+                    }
+                }
+
+                // Stage 8c: Validate directional sequence requirements (read current sequence, validate incoming > current, DO NOT mutate memory or DB yet)
                 val requiresSequence = secureEnvelope.messageType.requiresApplicationSequence()
                 if (requiresSequence) {
                     if (secureEnvelope.directionSequence <= 0) {

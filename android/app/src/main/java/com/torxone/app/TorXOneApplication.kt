@@ -120,6 +120,8 @@ class TorXOneApplication : Application() {
 
     fun getLocalIdentityId(): String? = cachedLocalIdentityId
 
+    fun requireLocalIdentityId(): String = identityRepository.requireLocalIdentityId()
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -136,6 +138,28 @@ class TorXOneApplication : Application() {
 
         // 2. Keystore / Identity
         identityRepository = KeystoreIdentityRepository(this, database.pendingInviteDao())
+
+        // Continuously observe authoritative identity state
+        applicationScope.launch {
+            identityRepository.identityState.collect { state ->
+                when (state) {
+                    is com.torxone.app.identity.IdentityState.Ready -> {
+                        cachedLocalIdentityId = state.identity.identityId
+                        _initState.value = AppInitState.Ready(state.identity.identityId)
+                    }
+                    is com.torxone.app.identity.IdentityState.NoIdentity -> {
+                        cachedLocalIdentityId = null
+                        _initState.value = AppInitState.Ready(null)
+                    }
+                    is com.torxone.app.identity.IdentityState.Failed -> {
+                        _initState.value = AppInitState.Failed(state.error)
+                    }
+                    is com.torxone.app.identity.IdentityState.Loading -> {
+                        _initState.value = AppInitState.Initializing
+                    }
+                }
+            }
+        }
 
         // 3. Crypto / Session
         val keyProtector = AndroidKeystoreKeyProtector()
@@ -311,7 +335,8 @@ class TorXOneApplication : Application() {
             conversationDao = database.conversationDao(),
             sessionStore = sessionStore,
             consumedInviteDao = database.consumedInviteDao(),
-            bootstrapStateDao = database.bootstrapStateDao()
+            bootstrapStateDao = database.bootstrapStateDao(),
+            pairRelationshipDao = database.pairRelationshipDao()
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
@@ -426,6 +451,10 @@ class TorXOneApplication : Application() {
 
             override suspend fun removeByMessageId(logicalMessageId: String) {
                 dao.removeByMessageId(logicalMessageId)
+            }
+
+            override suspend fun removeByDeliveryId(deliveryId: String) {
+                dao.removeByDeliveryId(deliveryId)
             }
         }
     }

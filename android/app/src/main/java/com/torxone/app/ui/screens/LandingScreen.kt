@@ -3,6 +3,8 @@ package com.torxone.app.ui.screens
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -81,11 +83,12 @@ fun LandingScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 32.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 32.dp, vertical = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Spacer(modifier = Modifier.weight(0.15f))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Logo area
             val infiniteTransition = rememberInfiniteTransition(label = "logo_pulse")
@@ -131,7 +134,7 @@ fun LandingScreen(
                 color = MaterialTheme.colorScheme.onBackground
             )
 
-            Spacer(modifier = Modifier.weight(0.1f))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Page content
             AnimatedContent(
@@ -152,7 +155,7 @@ fun LandingScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(0.1f))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Page indicator dots
             Row(
@@ -231,7 +234,7 @@ fun LandingScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(0.15f))
+            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }

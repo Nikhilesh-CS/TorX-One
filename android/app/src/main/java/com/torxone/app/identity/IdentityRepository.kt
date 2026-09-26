@@ -9,9 +9,32 @@ import kotlinx.coroutines.withContext
 import java.util.Base64
 import java.util.UUID
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+sealed interface IdentityState {
+    data object NoIdentity : IdentityState
+    data object Loading : IdentityState
+    data class Ready(val identity: TorXIdentity) : IdentityState
+    data class Failed(val error: Throwable) : IdentityState
+}
+
 interface IdentityRepository {
+    val identityState: StateFlow<IdentityState>
     suspend fun createIdentity(displayName: String): TorXIdentity
     suspend fun loadIdentity(): TorXIdentity?
+    suspend fun ensureIdentity(displayName: String = "Me"): TorXIdentity =
+        loadIdentity() ?: createAndPublishIdentity(displayName)
+    suspend fun createAndPublishIdentity(displayName: String): TorXIdentity =
+        createIdentity(displayName)
+    fun requireLocalIdentityId(): String {
+        return when (val state = identityState.value) {
+            is IdentityState.Ready -> state.identity.identityId
+            else -> throw IllegalStateException("Local identity is not initialized (state: $state)")
+        }
+    }
+    fun getIdentityState(): IdentityState = identityState.value
     suspend fun sign(data: ByteArray): ByteArray
     suspend fun createContactInvite(): ContactInviteV1
     suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray?
@@ -26,6 +49,9 @@ class KeystoreIdentityRepository(
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val allowInsecureFallback: Boolean = false
 ) : IdentityRepository {
+
+    private val _identityState = MutableStateFlow<IdentityState>(IdentityState.NoIdentity)
+    override val identityState: StateFlow<IdentityState> = _identityState.asStateFlow()
 
     private var cachedIdentity: TorXIdentity? = null
 
@@ -53,6 +79,7 @@ class KeystoreIdentityRepository(
     }
 
     override suspend fun createIdentity(displayName: String): TorXIdentity = withContext(Dispatchers.IO) {
+        _identityState.value = IdentityState.Loading
         val signingPair = IdentityCrypto.generateEd25519KeyPair()
         val encryptionPair = IdentityCrypto.generateX25519KeyPair()
 
@@ -68,33 +95,73 @@ class KeystoreIdentityRepository(
 
         saveIdentity(identity)
         cachedIdentity = identity
+        _identityState.value = IdentityState.Ready(identity)
         identity
     }
+
+    override suspend fun createAndPublishIdentity(displayName: String): TorXIdentity {
+        return createIdentity(displayName)
+    }
+
+    override suspend fun ensureIdentity(displayName: String): TorXIdentity {
+        val existing = loadIdentity()
+        return existing ?: createAndPublishIdentity(displayName)
+    }
+
+    override fun requireLocalIdentityId(): String {
+        return when (val state = _identityState.value) {
+            is IdentityState.Ready -> state.identity.identityId
+            else -> cachedIdentity?.identityId
+                ?: throw IllegalStateException("Local identity is not initialized")
+        }
+    }
+
+    override fun getIdentityState(): IdentityState = _identityState.value
 
     override suspend fun loadIdentity(): TorXIdentity? = withContext(Dispatchers.IO) {
-        cachedIdentity?.let { return@withContext it }
+        cachedIdentity?.let {
+            if (_identityState.value !is IdentityState.Ready) {
+                _identityState.value = IdentityState.Ready(it)
+            }
+            return@withContext it
+        }
 
-        val id = prefs.getString("identity_id", null) ?: return@withContext null
-        val name = prefs.getString("display_name", "") ?: ""
-        val signPub = prefs.getString("sign_pub", null)?.let { Base64.getDecoder().decode(it) } ?: return@withContext null
-        val signPriv = prefs.getString("sign_priv", null)?.let { Base64.getDecoder().decode(it) } ?: return@withContext null
-        val encPub = prefs.getString("enc_pub", null)?.let { Base64.getDecoder().decode(it) } ?: return@withContext null
-        val encPriv = prefs.getString("enc_priv", null)?.let { Base64.getDecoder().decode(it) } ?: return@withContext null
-        val createdAt = prefs.getLong("created_at", System.currentTimeMillis())
+        _identityState.value = IdentityState.Loading
+        try {
+            val id = prefs.getString("identity_id", null)
+            if (id == null) {
+                _identityState.value = IdentityState.NoIdentity
+                return@withContext null
+            }
+            val name = prefs.getString("display_name", "") ?: ""
+            val signPub = prefs.getString("sign_pub", null)?.let { Base64.getDecoder().decode(it) }
+            val signPriv = prefs.getString("sign_priv", null)?.let { Base64.getDecoder().decode(it) }
+            val encPub = prefs.getString("enc_pub", null)?.let { Base64.getDecoder().decode(it) }
+            val encPriv = prefs.getString("enc_priv", null)?.let { Base64.getDecoder().decode(it) }
+            val createdAt = prefs.getLong("created_at", System.currentTimeMillis())
 
-        val identity = TorXIdentity(
-            identityId = id,
-            signingPublicKey = signPub,
-            signingPrivateKey = signPriv,
-            encryptionPublicKey = encPub,
-            encryptionPrivateKey = encPriv,
-            displayName = name,
-            createdAt = createdAt
-        )
-        cachedIdentity = identity
-        identity
+            if (signPub == null || signPriv == null || encPub == null || encPriv == null) {
+                _identityState.value = IdentityState.NoIdentity
+                return@withContext null
+            }
+
+            val identity = TorXIdentity(
+                identityId = id,
+                signingPublicKey = signPub,
+                signingPrivateKey = signPriv,
+                encryptionPublicKey = encPub,
+                encryptionPrivateKey = encPriv,
+                displayName = name,
+                createdAt = createdAt
+            )
+            cachedIdentity = identity
+            _identityState.value = IdentityState.Ready(identity)
+            identity
+        } catch (e: Throwable) {
+            _identityState.value = IdentityState.Failed(e)
+            throw e
+        }
     }
-
     override suspend fun sign(data: ByteArray): ByteArray = withContext(Dispatchers.Default) {
         val identity = loadIdentity() ?: throw IllegalStateException("Identity not initialized")
         IdentityCrypto.signEd25519(identity.signingPrivateKey, data)

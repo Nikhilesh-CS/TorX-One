@@ -100,8 +100,8 @@ class CallNotificationManager(private val context: Context) {
         )
 
         // Action: Answer
-        val answerIntent = Intent(ACTION_ANSWER).apply {
-            setPackage(context.packageName)
+        val answerIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = ACTION_ANSWER
             putExtra(EXTRA_CALL_ID, callId)
         }
         val answerPending = PendingIntent.getBroadcast(
@@ -110,8 +110,8 @@ class CallNotificationManager(private val context: Context) {
         )
 
         // Action: Decline
-        val declineIntent = Intent(ACTION_DECLINE).apply {
-            setPackage(context.packageName)
+        val declineIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = ACTION_DECLINE
             putExtra(EXTRA_CALL_ID, callId)
         }
         val declinePending = PendingIntent.getBroadcast(
@@ -168,8 +168,8 @@ class CallNotificationManager(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val hangupIntent = Intent(ACTION_HANGUP).apply {
-            setPackage(context.packageName)
+        val hangupIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = ACTION_HANGUP
             putExtra(EXTRA_CALL_ID, callId)
         }
         val hangupPending = PendingIntent.getBroadcast(

@@ -244,8 +244,25 @@ class GroupChatViewModel(
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {
             try {
-                // Send text preview or file notice
-                groupService.sendGroupText(groupId, "📷 $fileName")
+                if (mediaService != null) {
+                    val activeMembers = groupMemberDao.getActiveMembers(groupId)
+                        .filter { it.memberIdentityId != localIdentityId }
+                    val isVideo = fileName.endsWith(".mp4", ignoreCase = true) || fileName.endsWith(".mov", ignoreCase = true)
+                    for (member in activeMembers) {
+                        mediaService.sendMedia(
+                            conversationId = groupId,
+                            relationshipId = member.relationshipId,
+                            localIdentityId = localIdentityId,
+                            recipientId = member.memberIdentityId,
+                            type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
+                            fileName = fileName,
+                            mimeType = if (isVideo) "video/mp4" else "image/jpeg",
+                            rawBytes = bytes
+                        )
+                    }
+                } else {
+                    groupService.sendGroupText(groupId, "📷 $fileName")
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
             }
@@ -256,7 +273,24 @@ class GroupChatViewModel(
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {
             try {
-                groupService.sendGroupText(groupId, "📄 $fileName")
+                if (mediaService != null) {
+                    val activeMembers = groupMemberDao.getActiveMembers(groupId)
+                        .filter { it.memberIdentityId != localIdentityId }
+                    for (member in activeMembers) {
+                        mediaService.sendMedia(
+                            conversationId = groupId,
+                            relationshipId = member.relationshipId,
+                            localIdentityId = localIdentityId,
+                            recipientId = member.memberIdentityId,
+                            type = MediaType.DOCUMENT,
+                            fileName = fileName,
+                            mimeType = "application/octet-stream",
+                            rawBytes = bytes
+                        )
+                    }
+                } else {
+                    groupService.sendGroupText(groupId, "📄 $fileName")
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
             }

@@ -400,6 +400,7 @@ class DirectChatInteractionTest {
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
                 override suspend fun removeByMessageId(logicalMessageId: String) {}
+                override suspend fun removeByDeliveryId(deliveryId: String) {}
             },
             agent = agent
         )
@@ -682,6 +683,7 @@ class DirectChatInteractionTest {
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
                 override suspend fun removeByMessageId(logicalMessageId: String) { outboxAlice.removeByMessageId(logicalMessageId) }
+                override suspend fun removeByDeliveryId(deliveryId: String) { outboxAlice.items.remove(deliveryId) }
             }, agentAlice),
             agent = agentAlice,
             localIdentityIdProvider = { "alice" },
@@ -707,6 +709,7 @@ class DirectChatInteractionTest {
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
                 override suspend fun removeByMessageId(logicalMessageId: String) { outboxBob.removeByMessageId(logicalMessageId) }
+                override suspend fun removeByDeliveryId(deliveryId: String) { outboxBob.items.remove(deliveryId) }
             }, agentBob),
             agent = agentBob,
             localIdentityIdProvider = { "bob" },

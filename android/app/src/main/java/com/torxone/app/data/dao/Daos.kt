@@ -144,7 +144,7 @@ interface ContactDao {
 
 @Dao
 interface OutboxDao {
-    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY priority DESC, created_at ASC")
+    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY created_at ASC, priority DESC")
     suspend fun getPending(now: Long = System.currentTimeMillis()): List<OutboxEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -158,6 +158,9 @@ interface OutboxDao {
 
     @Query("DELETE FROM outbox WHERE logical_message_id = :logicalMessageId")
     suspend fun removeByMessageId(logicalMessageId: String)
+
+    @Query("DELETE FROM outbox WHERE deliveryId = :deliveryId")
+    suspend fun removeByDeliveryId(deliveryId: String)
 }
 
 @Dao
@@ -213,10 +216,10 @@ interface ConnectionDao {
     @Query("UPDATE connections SET state = :state WHERE connection_id = :connectionId")
     suspend fun updateState(connectionId: String, state: String)
 
-    @Query("UPDATE connections SET send_sequence = :sendSequence WHERE relationship_id = :relationshipId")
+    @Query("UPDATE connections SET send_sequence = CASE WHEN send_sequence < :sendSequence THEN :sendSequence ELSE send_sequence END WHERE relationship_id = :relationshipId")
     suspend fun updateSendSequence(relationshipId: String, sendSequence: Long)
 
-    @Query("UPDATE connections SET recv_sequence = :recvSequence WHERE relationship_id = :relationshipId")
+    @Query("UPDATE connections SET recv_sequence = CASE WHEN recv_sequence < :recvSequence THEN :recvSequence ELSE recv_sequence END WHERE relationship_id = :relationshipId")
     suspend fun updateRecvSequence(relationshipId: String, recvSequence: Long)
 
     @Query("UPDATE connections SET send_sequence = :sendSequence, recv_sequence = :recvSequence WHERE relationship_id = :relationshipId")

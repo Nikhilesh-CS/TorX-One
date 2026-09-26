@@ -267,8 +267,19 @@ class WebRtcClient(
         }
         peerConnection?.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                peerConnection?.setLocalDescription(noOpSdpObserver, sdp)
-                callback(sdp.description)
+                peerConnection?.setLocalDescription(object : SdpObserver {
+                    override fun onSetSuccess() {
+                        callback(sdp.description)
+                    }
+                    override fun onSetFailure(error: String) {
+                        Log.e(TAG, "setLocalDescription for offer failed: $error")
+                        scope.launch {
+                            activeCallId?.let { callManager.onCallFailed(it, "Set local offer failed: $error") }
+                        }
+                    }
+                    override fun onCreateSuccess(sdp: SessionDescription) {}
+                    override fun onCreateFailure(error: String) {}
+                }, sdp)
             }
             override fun onCreateFailure(error: String) {
                 Log.e(TAG, "Create offer failed: $error")
@@ -293,8 +304,19 @@ class WebRtcClient(
                 }
                 peerConnection?.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(sdp: SessionDescription) {
-                        peerConnection?.setLocalDescription(noOpSdpObserver, sdp)
-                        callback(sdp.description)
+                        peerConnection?.setLocalDescription(object : SdpObserver {
+                            override fun onSetSuccess() {
+                                callback(sdp.description)
+                            }
+                            override fun onSetFailure(error: String) {
+                                Log.e(TAG, "setLocalDescription for answer failed: $error")
+                                scope.launch {
+                                    activeCallId?.let { callManager.onCallFailed(it, "Set local answer failed: $error") }
+                                }
+                            }
+                            override fun onCreateSuccess(sdp: SessionDescription) {}
+                            override fun onCreateFailure(error: String) {}
+                        }, sdp)
                     }
                     override fun onCreateFailure(error: String) {
                         Log.e(TAG, "Create answer failed: $error")

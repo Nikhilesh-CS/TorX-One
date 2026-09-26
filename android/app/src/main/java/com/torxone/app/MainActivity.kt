@@ -39,8 +39,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
+    val intentFlow = kotlinx.coroutines.flow.MutableStateFlow<android.content.Intent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        intentFlow.value = intent
         enableEdgeToEdge()
 
         setContent {
@@ -65,6 +68,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intentFlow.value = intent
     }
 }
 
@@ -110,10 +119,8 @@ fun TorXOneApp() {
     // Ensure identity exists on startup (only when past onboarding)
     if (resolved) {
         LaunchedEffect(Unit) {
-            if (app.identityRepository.loadIdentity() == null) {
-                val name = app.settingsRepository.getDisplayName().ifEmpty { "Me" }
-                app.identityRepository.createIdentity(name)
-            }
+            val name = app.settingsRepository.getDisplayName().ifEmpty { "Me" }
+            app.identityRepository.ensureIdentity(name)
         }
     }
 
@@ -248,6 +255,67 @@ fun TorXOneApp() {
         navigateBack()
     }
 
+    val mainActivity = context as? MainActivity
+    val currentIntent by mainActivity?.intentFlow?.collectAsState() ?: remember { mutableStateOf(null) }
+
+    var pendingAnswerCallId by remember { mutableStateOf<String?>(null) }
+    var pendingAnswerIsVideo by remember { mutableStateOf(false) }
+
+    val callPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val id = pendingAnswerCallId
+        if (id != null) {
+            val audioOk = results[android.Manifest.permission.RECORD_AUDIO] ?: PermissionHelper.isRecordAudioGranted(context)
+            val cameraOk = if (pendingAnswerIsVideo) {
+                results[android.Manifest.permission.CAMERA] ?: PermissionHelper.isCameraGranted(context)
+            } else true
+            if (audioOk && cameraOk) {
+                coroutineScope.launch {
+                    app.callManager.acceptCall(id)
+                    app.callNotificationManager.cancelIncomingNotification()
+                }
+                navigateTo(Screen.ActiveCall)
+            }
+            pendingAnswerCallId = null
+        }
+    }
+
+    LaunchedEffect(currentIntent) {
+        val targetIntent = currentIntent ?: return@LaunchedEffect
+        when (targetIntent.action) {
+            "ACTION_ANSWER_CALL" -> {
+                val callId = targetIntent.getStringExtra("callId") ?: return@LaunchedEffect
+                val isVideo = targetIntent.getBooleanExtra("isVideo", false)
+                val audioGranted = PermissionHelper.isRecordAudioGranted(context)
+                val cameraGranted = PermissionHelper.isCameraGranted(context)
+                val permsGranted = if (isVideo) audioGranted && cameraGranted else audioGranted
+                if (!permsGranted) {
+                    pendingAnswerCallId = callId
+                    pendingAnswerIsVideo = isVideo
+                    val needed = mutableListOf(android.Manifest.permission.RECORD_AUDIO)
+                    if (isVideo) needed.add(android.Manifest.permission.CAMERA)
+                    callPermissionLauncher.launch(needed.toTypedArray())
+                } else {
+                    coroutineScope.launch {
+                        app.callManager.acceptCall(callId)
+                        app.callNotificationManager.cancelIncomingNotification()
+                    }
+                    navigateTo(Screen.ActiveCall)
+                }
+            }
+            else -> {
+                val nav = targetIntent.getStringExtra("navigate_to")
+                val convId = targetIntent.getStringExtra("conversationId")
+                if (nav == "active_call") {
+                    navigateTo(Screen.ActiveCall)
+                } else if (!convId.isNullOrBlank()) {
+                    navigateTo(Screen.Chat(convId, "Chat"))
+                }
+            }
+        }
+    }
+
     // Render fullscreen AppLockOverlay if App Lock is active and unauthenticated
     if (settingsState.appLockEnabled && !isAppUnlocked) {
         AppLockOverlay(
@@ -279,10 +347,8 @@ fun TorXOneApp() {
                         app.settingsRepository.updateProfile(displayName = displayName)
                         app.settingsRepository.completeOnboarding()
 
-                        // Create cryptographic identity
-                        if (app.identityRepository.loadIdentity() == null) {
-                            app.identityRepository.createIdentity(displayName)
-                        }
+                        // Create and publish authoritative cryptographic identity immediately
+                        app.identityRepository.createAndPublishIdentity(displayName)
 
                         screenStack = emptyList()
                         currentScreen = Screen.ConversationList
@@ -676,6 +742,11 @@ fun TorXOneApp() {
                             navigateTo(Screen.Chat(group.groupId, group.title))
                         } catch (e: Exception) {
                             android.util.Log.e("MainActivity", "Failed to create group: ${e.message}", e)
+                            android.widget.Toast.makeText(
+                                context,
+                                "Failed to create group: ${e.message ?: "Unknown error"}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
                 },
@@ -730,7 +801,19 @@ fun TorXOneApp() {
                 onProfileClick = { navigateTo(Screen.Profile) },
                 onPrivacyChange = { field, value -> settingsViewModel.setPrivacy(field, value) },
                 onNotificationChange = { field, value -> settingsViewModel.setNotification(field, value) },
-                onSecurityChange = { field, value -> settingsViewModel.setSecurity(field, value) },
+                onSecurityChange = { field, value ->
+                    if (field == "appLock" && value == true) {
+                        if (fragmentActivity != null && !AppLockManager.canAuthenticate(fragmentActivity)) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Device security (PIN, pattern, or biometrics) is not set up on this device.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            return@SettingsScreen
+                        }
+                    }
+                    settingsViewModel.setSecurity(field, value)
+                },
                 onConnectionChange = { field, value -> settingsViewModel.setConnection(field, value) },
                 onAppearanceChange = { field, value -> settingsViewModel.setAppearance(field, value) },
                 onDataChange = { field, value -> settingsViewModel.setData(field, value) }

@@ -12,11 +12,13 @@ import javax.crypto.spec.SecretKeySpec
 interface KeyProtector {
     fun wrap(secret: ByteArray): ByteArray
     fun unwrap(wrapped: ByteArray): ByteArray
+    fun isWrapped(bytes: ByteArray): Boolean = false
 }
 
 class NoOpKeyProtector : KeyProtector {
     override fun wrap(secret: ByteArray): ByteArray = secret
     override fun unwrap(wrapped: ByteArray): ByteArray = wrapped
+    override fun isWrapped(bytes: ByteArray): Boolean = true
 }
 
 class AesGcmKeyProtector(
@@ -61,6 +63,10 @@ class AesGcmKeyProtector(
         } catch (e: Exception) {
             throw SecurityException("Cryptographic unwrapping failed: integrity or authentication tag mismatch", e)
         }
+    }
+
+    override fun isWrapped(bytes: ByteArray): Boolean {
+        return bytes.isNotEmpty() && bytes.size > 1 + GCM_IV_LENGTH + 16 && bytes[0] == MAGIC
     }
 }
 
@@ -140,5 +146,9 @@ class AndroidKeystoreKeyProtector(
         } catch (e: Exception) {
             throw SecurityException("Cryptographic unwrapping failed: integrity or authentication tag mismatch", e)
         }
+    }
+
+    override fun isWrapped(bytes: ByteArray): Boolean {
+        return bytes.isNotEmpty() && bytes.size > 1 + GCM_IV_LENGTH + 16 && bytes[0] == MAGIC
     }
 }

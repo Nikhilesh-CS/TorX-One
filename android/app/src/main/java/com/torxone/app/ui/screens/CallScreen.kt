@@ -538,13 +538,15 @@ private fun ActiveCallControls(
                 onClick = onToggleSpeaker
             )
 
-            // Video Toggle
-            CallControlButton(
-                icon = if (uiState.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
-                label = "Video",
-                isActive = uiState.isCameraOn,
-                onClick = onToggleCamera
-            )
+            // Video Toggle (only displayed for video calls)
+            if (uiState.callType == com.torxone.app.calls.CallType.VIDEO) {
+                CallControlButton(
+                    icon = if (uiState.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                    label = "Video",
+                    isActive = uiState.isCameraOn,
+                    onClick = onToggleCamera
+                )
+            }
 
             // Hang Up Button
             IconButton(

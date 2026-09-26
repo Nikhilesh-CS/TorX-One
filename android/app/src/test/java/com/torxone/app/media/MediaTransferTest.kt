@@ -269,6 +269,11 @@ class MediaTransferTest {
                 insertOrder.remove(key)
             }
         }
+
+        override suspend fun removeByDeliveryId(deliveryId: String) {
+            items.remove(deliveryId)
+            insertOrder.remove(deliveryId)
+        }
     }
 
     class TestReactionDao : ReactionDao {

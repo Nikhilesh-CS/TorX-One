@@ -90,12 +90,13 @@ class GroupService(
             )
         )
 
-        // 2. Add invited contacts as MEMBER
+        // 2. Add invited contacts as MEMBER using their authoritative remote TorX identity ID (Phase 9)
         initialMembers.forEach { contact ->
+            val memberId = contact.remoteIdentityId.ifEmpty { contact.contactId }
             memberEntities.add(
                 GroupMemberEntity(
                     groupId = groupId,
-                    memberIdentityId = contact.contactId,
+                    memberIdentityId = memberId,
                     contactId = contact.contactId,
                     relationshipId = contact.relationshipId,
                     role = GroupMemberRole.MEMBER.name,
@@ -113,11 +114,11 @@ class GroupService(
             groupMemberDao.upsertAll(memberEntities)
         }
 
-        // 4. Build roster snapshot for invitation payload
+        // 4. Build roster snapshot for invitation payload (never expose local database contactId on wire)
         val memberSnapshots = memberEntities.map {
             GroupMemberSnapshot(
                 identityId = it.memberIdentityId,
-                contactId = it.contactId,
+                contactId = it.memberIdentityId,
                 role = GroupMemberRole.fromString(it.role),
                 state = GroupMemberState.fromString(it.state)
             )
@@ -139,7 +140,7 @@ class GroupService(
             try {
                 fanoutControlEnvelope(
                     groupId = groupId,
-                    recipientIdentityId = contact.contactId,
+                    recipientIdentityId = contact.remoteIdentityId.ifEmpty { contact.contactId },
                     relationshipId = contact.relationshipId,
                     localIdentityId = localIdentityId,
                     messageType = MessageType.GROUP_CREATE,
@@ -501,7 +502,7 @@ class GroupService(
     suspend fun getDeliverySummary(logicalMessageId: String): GroupMessageDeliverySummary? {
         val message = messageDao.getById(logicalMessageId) ?: return null
         val deliveries = groupMessageDeliveryDao.getDeliveriesForMessage(logicalMessageId)
-        val contacts = contactDao.getAll().associateBy { it.contactId }
+        val contacts = contactDao.getAll().associateBy { it.remoteIdentityId.ifEmpty { it.contactId } }
 
         val details = deliveries.map { d ->
             val contactName = contacts[d.recipientIdentityId]?.displayName ?: d.recipientIdentityId.take(8)
@@ -562,7 +563,7 @@ class GroupService(
 
         val newMemberEntity = GroupMemberEntity(
             groupId = groupId,
-            memberIdentityId = contact.contactId,
+            memberIdentityId = contact.remoteIdentityId.ifEmpty { contact.contactId },
             contactId = contact.contactId,
             relationshipId = contact.relationshipId,
             role = role.name,

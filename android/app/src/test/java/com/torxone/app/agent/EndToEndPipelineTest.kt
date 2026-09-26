@@ -246,6 +246,9 @@ class EndToEndPipelineTest {
         override suspend fun removeByMessageId(logicalMessageId: String) {
             store.removeByMessageId(logicalMessageId)
         }
+        override suspend fun removeByDeliveryId(deliveryId: String) {
+            store.items.remove(deliveryId)
+        }
     }
 
     class InMemoryConnectionDao : ConnectionDao {
@@ -311,6 +314,9 @@ class EndToEndPipelineTest {
         val identity: TorXIdentity,
         val pendingInviteDao: PendingInviteDao
     ) : IdentityRepository {
+        private val _state = kotlinx.coroutines.flow.MutableStateFlow<com.torxone.app.identity.IdentityState>(com.torxone.app.identity.IdentityState.Ready(identity))
+        override val identityState: kotlinx.coroutines.flow.StateFlow<com.torxone.app.identity.IdentityState> = _state
+
         override suspend fun createIdentity(displayName: String): TorXIdentity = identity
         override suspend fun loadIdentity(): TorXIdentity? = identity
         override suspend fun sign(data: ByteArray): ByteArray =
@@ -519,6 +525,30 @@ class EndToEndPipelineTest {
             remoteRatchetPublicKey = aliceRatchet.publicKey,
             localRatchetPrivateKey = bobRatchet.privateKey,
             localRatchetPublicKey = bobRatchet.publicKey
+        )
+
+        // Upsert verified contacts with remoteIdentityId for Stage 8b sender authentication
+        alice.contactDao.upsert(
+            ContactEntity(
+                contactId = "contact-bob",
+                relationshipId = relationshipId,
+                displayName = "Bob",
+                signingPublicKey = bob.identity.signingPublicKey,
+                verificationState = "VERIFIED",
+                conversationId = "conv-1",
+                remoteIdentityId = bob.identity.identityId
+            )
+        )
+        bob.contactDao.upsert(
+            ContactEntity(
+                contactId = "contact-alice",
+                relationshipId = relationshipId,
+                displayName = "Alice",
+                signingPublicKey = alice.identity.signingPublicKey,
+                verificationState = "VERIFIED",
+                conversationId = "conv-1",
+                remoteIdentityId = alice.identity.identityId
+            )
         )
 
         return alice to bob
@@ -880,6 +910,17 @@ class EndToEndPipelineTest {
                 sendAuth = aliceConn.sendAuth,
                 recvAuth = aliceConn.recvAuth,
                 state = "ACTIVE"
+            )
+        )
+        alice.contactDao.upsert(
+            ContactEntity(
+                contactId = contactId,
+                relationshipId = bootstrap.relationship.relationshipId,
+                displayName = scannedInvite.displayName,
+                signingPublicKey = scannedInvite.identitySigningPublicKey,
+                verificationState = "VERIFIED",
+                conversationId = conversationId,
+                remoteIdentityId = scannedInvite.identityId
             )
         )
 

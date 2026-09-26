@@ -50,12 +50,14 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == OFFER_MAGIC) { "Invalid CallOffer magic header" }
-        return CallOfferPayload(
+        val payload = CallOfferPayload(
             callId = dis.readUTF(),
             callType = CallType.valueOf(dis.readUTF()),
             sdpOffer = dis.readUTF(),
             createdAt = dis.readLong()
         )
+        require(dis.available() == 0) { "Trailing bytes in CallOffer payload" }
+        return payload
     }
 
     // ─── Call Ringing ────────────────────────────────────────────────────
@@ -73,7 +75,9 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == RINGING_MAGIC) { "Invalid CallRinging magic header" }
-        return CallRingingPayload(callId = dis.readUTF())
+        val payload = CallRingingPayload(callId = dis.readUTF())
+        require(dis.available() == 0) { "Trailing bytes in CallRinging payload" }
+        return payload
     }
 
     // ─── Call Answer ─────────────────────────────────────────────────────
@@ -92,10 +96,12 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == ANSWER_MAGIC) { "Invalid CallAnswer magic header" }
-        return CallAnswerPayload(
+        val payload = CallAnswerPayload(
             callId = dis.readUTF(),
             sdpAnswer = dis.readUTF()
         )
+        require(dis.available() == 0) { "Trailing bytes in CallAnswer payload" }
+        return payload
     }
 
     // ─── ICE Candidate ──────────────────────────────────────────────────
@@ -119,12 +125,14 @@ object CallProtocolCodec {
         val callId = dis.readUTF()
         val sdpMidRaw = dis.readUTF()
         val sdpMid = if (sdpMidRaw.isEmpty()) null else sdpMidRaw
-        return IceCandidatePayload(
+        val payload = IceCandidatePayload(
             callId = callId,
             sdpMid = sdpMid,
             sdpMLineIndex = dis.readInt(),
             candidate = dis.readUTF()
         )
+        require(dis.available() == 0) { "Trailing bytes in IceCandidate payload" }
+        return payload
     }
 
     // ─── Call Connected ──────────────────────────────────────────────────
@@ -143,10 +151,12 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == CONNECTED_MAGIC) { "Invalid CallConnected magic header" }
-        return CallConnectedPayload(
+        val payload = CallConnectedPayload(
             callId = dis.readUTF(),
             connectedAt = dis.readLong()
         )
+        require(dis.available() == 0) { "Trailing bytes in CallConnected payload" }
+        return payload
     }
 
     // ─── Call End ────────────────────────────────────────────────────────
@@ -166,11 +176,13 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == END_MAGIC) { "Invalid CallEnd magic header" }
-        return CallEndPayload(
+        val payload = CallEndPayload(
             callId = dis.readUTF(),
             reason = CallEndReason.valueOf(dis.readUTF()),
             durationMs = dis.readLong()
         )
+        require(dis.available() == 0) { "Trailing bytes in CallEnd payload" }
+        return payload
     }
 
     // ─── Call Decline ────────────────────────────────────────────────────
@@ -188,7 +200,9 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == DECLINE_MAGIC) { "Invalid CallDecline magic header" }
-        return CallDeclinePayload(callId = dis.readUTF())
+        val payload = CallDeclinePayload(callId = dis.readUTF())
+        require(dis.available() == 0) { "Trailing bytes in CallDecline payload" }
+        return payload
     }
 
     // ─── Call Busy ───────────────────────────────────────────────────────
@@ -206,7 +220,9 @@ object CallProtocolCodec {
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == BUSY_MAGIC) { "Invalid CallBusy magic header" }
-        return CallBusyPayload(callId = dis.readUTF())
+        val payload = CallBusyPayload(callId = dis.readUTF())
+        require(dis.available() == 0) { "Trailing bytes in CallBusy payload" }
+        return payload
     }
 }
 

@@ -20,22 +20,35 @@ class DeliveryReceiptHandler(
 
     suspend fun handleDeliveryAck(envelope: SecureEnvelope) {
         val ack = DeliveryAck.fromByteArray(envelope.payload)
-        Log.i(TAG, "[ACK] Received ACK for message=${ack.originalMessageId.take(8)}")
+        val envId = ack.originalEnvelopeId
+        val envPrefix = envId?.take(8) ?: "none"
+        Log.i(TAG, "[ACK] Received ACK for message=${ack.originalMessageId.take(8)} env=$envPrefix")
 
         val isGroup = groupService?.isGroupMessage(ack.originalMessageId) ?: false
         if (!isGroup) {
             // 1. Mark 1:1 message as DELIVERED in Room
             messageDao.markDelivered(ack.originalMessageId, DeliveryStatus.DELIVERED.name, ack.receivedAt)
+
+            // 2. Remove exact outbox item
+            if (!envId.isNullOrBlank()) {
+                outboxDao.removeByDeliveryId(envId)
+            }
+            outboxDao.removeByMessageId(ack.originalMessageId)
+
+            // 3. Notify agent
+            agent.markDelivered(ack.originalMessageId)
+        } else {
+            // Phase 13: Group message exact delivery ACK semantics
+            // Remove ONLY this exact recipient's delivery from outbox
+            if (!envId.isNullOrBlank()) {
+                outboxDao.removeByDeliveryId(envId)
+                agent.markDeliveryAcknowledged(envId, null)
+            }
+
+            // Notify GroupService to record per-recipient delivery status.
+            // Aggregate MessageEntity is marked DELIVERED only when all active members have acknowledged.
+            groupService?.handleDeliveryAck(ack.originalMessageId, envelope.senderIdentity, ack.receivedAt)
         }
-
-        // 2. Remove outbox record
-        outboxDao.removeByMessageId(ack.originalMessageId)
-
-        // 3. Notify agent
-        agent.markDelivered(ack.originalMessageId)
-
-        // 4. Notify GroupService if message is a group message
-        groupService?.handleDeliveryAck(ack.originalMessageId, envelope.senderIdentity, ack.receivedAt)
     }
 
     suspend fun handleReadReceipt(envelope: SecureEnvelope) {

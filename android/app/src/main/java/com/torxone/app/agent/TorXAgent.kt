@@ -53,8 +53,10 @@ class TorXAgent(
 
     /**
      * Start the agent and recover stale items from persistent outbox.
+     * Idempotent: safe to call multiple times without creating duplicate processing loops.
      */
     fun start() {
+        if (processingJob?.isActive == true) return
         Log.i(TAG, "Starting TorXAgent")
         processingJob = scope.launch {
             recoverStaleOutboxItems()
@@ -154,6 +156,18 @@ class TorXAgent(
     }
 
     /**
+     * Exact delivery-level acknowledgment (Phase 13).
+     * Removes the exact delivery item without accidentally removing pending deliveries for other group recipients.
+     */
+    suspend fun markDeliveryAcknowledged(deliveryId: String, logicalMessageId: String? = null) {
+        Log.i(TAG, "[DELIVERED] Delivery ACK confirmed delivery=${deliveryId.take(8)}")
+        outboxStore.removeByDeliveryId(deliveryId)
+        if (logicalMessageId != null) {
+            emitUpdate(logicalMessageId, DeliveryStatus.DELIVERED)
+        }
+    }
+
+    /**
      * Mark message read.
      */
     suspend fun markRead(logicalMessageId: String) {
@@ -189,8 +203,14 @@ class TorXAgent(
                     val groupedByDestination = pending.groupBy { it.queueAddress }
                     supervisorScope {
                         for ((_, destinationItems) in groupedByDestination) {
+                            // Phase 12: Sequenced durable items on the same relationship must NEVER be overtaken by priority.
+                            // Order strictly by createdAt ASC so sequence order is strictly preserved.
+                            val sortedItems = destinationItems.sortedWith(
+                                compareBy<DeliveryItem> { it.createdAt }
+                                    .thenByDescending { it.priority }
+                            )
                             launch {
-                                for (item in destinationItems) {
+                                for (item in sortedItems) {
                                     if (!isActive) break
                                     if (inflightItems.add(item.deliveryId)) {
                                         try {
@@ -309,6 +329,7 @@ interface OutboxStore {
     suspend fun updateStatus(deliveryId: String, status: DeliveryStatus)
     suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long)
     suspend fun removeByMessageId(logicalMessageId: String)
+    suspend fun removeByDeliveryId(deliveryId: String) {}
 }
 
 interface ProcessedEnvelopeStore {

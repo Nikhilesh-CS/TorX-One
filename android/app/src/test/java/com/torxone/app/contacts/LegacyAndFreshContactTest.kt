@@ -232,6 +232,9 @@ class LegacyAndFreshContactTest {
         override suspend fun removeByMessageId(logicalMessageId: String) {
             items.entries.removeIf { it.value.logicalMessageId == logicalMessageId }
         }
+        override suspend fun removeByDeliveryId(deliveryId: String) {
+            items.remove(deliveryId)
+        }
     }
 
     class FakeSessionStore : SessionStore {
