@@ -147,7 +147,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Lock,
                 title = "Privacy",
-                color = Color(0xFF8AB4F8)
+                color = MaterialTheme.colorScheme.primary
             )
 
             SettingsToggle(
@@ -177,7 +177,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Notifications,
                 title = "Notifications",
-                color = Color(0xFF82D9C8)
+                color = MaterialTheme.colorScheme.secondary
             )
 
             SettingsToggle(
@@ -213,7 +213,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Security,
                 title = "Security",
-                color = Color(0xFF4DD0E1)
+                color = MaterialTheme.colorScheme.tertiary
             )
 
             SettingsToggle(
@@ -236,7 +236,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.WifiTethering,
                 title = "Connection",
-                color = Color(0xFFBA68C8)
+                color = MaterialTheme.colorScheme.primary
             )
 
             SettingsToggle(
@@ -259,7 +259,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Palette,
                 title = "Appearance",
-                color = Color(0xFFFFB74D)
+                color = MaterialTheme.colorScheme.secondary
             )
 
             SettingsThemeRow(
@@ -280,7 +280,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Storage,
                 title = "Data & Storage",
-                color = Color(0xFFEF5350)
+                color = MaterialTheme.colorScheme.error
             )
 
             SettingsToggle(
@@ -296,7 +296,7 @@ fun SettingsScreen(
             SettingsSectionHeader(
                 icon = Icons.Filled.Info,
                 title = "About",
-                color = Color(0xFF78909C)
+                color = MaterialTheme.colorScheme.outline
             )
 
             Surface(

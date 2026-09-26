@@ -59,3 +59,19 @@ fun TorXOneTheme(
         content = content
     )
 }
+
+val ColorScheme.readReceipt: androidx.compose.ui.graphics.Color
+    @Composable
+    @androidx.compose.runtime.ReadOnlyComposable
+    get() = if (isSystemInDarkTheme()) androidx.compose.ui.graphics.Color(0xFF64B5F6) else primary
+
+val ColorScheme.onlineStatus: androidx.compose.ui.graphics.Color
+    @Composable
+    @androidx.compose.runtime.ReadOnlyComposable
+    get() = if (isSystemInDarkTheme()) androidx.compose.ui.graphics.Color(0xFF81C784) else androidx.compose.ui.graphics.Color(0xFF2E7D32)
+
+val ColorScheme.goldAccent: androidx.compose.ui.graphics.Color
+    @Composable
+    @androidx.compose.runtime.ReadOnlyComposable
+    get() = if (isSystemInDarkTheme()) androidx.compose.ui.graphics.Color(0xFFFFD54F) else androidx.compose.ui.graphics.Color(0xFFF57F17)
+

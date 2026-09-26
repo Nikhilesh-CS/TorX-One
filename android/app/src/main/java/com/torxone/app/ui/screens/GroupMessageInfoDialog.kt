@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -75,14 +76,14 @@ fun GroupMessageInfoDialog(
                                     Icon(
                                         Icons.Default.DoneAll,
                                         contentDescription = null,
-                                        tint = Color(0xFF34B7F1),
+                                        tint = MaterialTheme.colorScheme.readReceipt,
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Text(
                                         text = "Read by (${readList.size})",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF34B7F1)
+                                        color = MaterialTheme.colorScheme.readReceipt
                                     )
                                 }
                             }

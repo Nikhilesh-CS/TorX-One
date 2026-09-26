@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -616,7 +617,7 @@ private fun DeliveryStatusMiniIcon(status: DeliveryStatus) {
         imageVector = icon,
         contentDescription = null,
         modifier = Modifier.size(13.dp),
-        tint = if (isRead) Color(0xFF34B7F1) else MaterialTheme.colorScheme.onSurfaceVariant
+        tint = if (isRead) MaterialTheme.colorScheme.readReceipt else MaterialTheme.colorScheme.onSurfaceVariant
     )
 }
 

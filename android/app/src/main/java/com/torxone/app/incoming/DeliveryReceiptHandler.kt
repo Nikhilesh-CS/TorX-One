@@ -39,39 +39,32 @@ class DeliveryReceiptHandler(
     }
 
     suspend fun handleReadReceipt(envelope: SecureEnvelope) {
-        if (envelope.payload.isNotEmpty()) {
-            try {
-                val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
-                Log.i(TAG, "[READ] Received batch READ up to message=${receipt.upToMessageId.take(8)} for conv=${receipt.conversationId.take(8)}")
-                val isGroup = groupService?.isGroupMessage(receipt.upToMessageId) ?: false
-                if (!isGroup) {
-                    val targetMsg = messageDao.getById(receipt.upToMessageId)
-                    if (targetMsg != null) {
-                        messageDao.markOutgoingReadUpTo(
-                            conversationId = targetMsg.conversationId,
-                            upToCreatedAt = targetMsg.createdAt,
-                            status = DeliveryStatus.READ.name,
-                            readAt = receipt.readAt
-                        )
-                    } else {
-                        messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
-                    }
-                }
-                agent.markRead(receipt.upToMessageId)
-                groupService?.handleReadReceipt(receipt.upToMessageId, envelope.senderIdentity, receipt.readAt)
-                return
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to parse ReadReceipt payload, falling back to messageId: ${e.message}")
-            }
+        if (envelope.payload.isEmpty()) {
+            Log.w(TAG, "[READ] Received empty payload for ReadReceipt envelopeId=${envelope.logicalMessageId}; ignoring invalid receipt")
+            return
         }
 
-        val messageId = envelope.logicalMessageId
-        Log.i(TAG, "[READ] Received READ for message=${messageId.take(8)}")
-        val isGroup = groupService?.isGroupMessage(messageId) ?: false
-        if (!isGroup) {
-            messageDao.markRead(messageId, DeliveryStatus.READ.name, envelope.timestamp)
+        try {
+            val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
+            Log.i(TAG, "[READ] Received batch READ up to message=${receipt.upToMessageId.take(8)} for conv=${receipt.conversationId.take(8)}")
+            val isGroup = groupService?.isGroupMessage(receipt.upToMessageId) ?: false
+            if (!isGroup) {
+                val targetMsg = messageDao.getById(receipt.upToMessageId)
+                if (targetMsg != null) {
+                    messageDao.markOutgoingReadUpTo(
+                        conversationId = targetMsg.conversationId,
+                        upToCreatedAt = targetMsg.createdAt,
+                        status = DeliveryStatus.READ.name,
+                        readAt = receipt.readAt
+                    )
+                } else {
+                    messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
+                }
+            }
+            agent.markRead(receipt.upToMessageId)
+            groupService?.handleReadReceipt(receipt.upToMessageId, envelope.senderIdentity, receipt.readAt)
+        } catch (e: Exception) {
+            Log.w(TAG, "[READ] Failed to parse ReadReceipt payload for envelopeId=${envelope.logicalMessageId}: ${e.message}", e)
         }
-        agent.markRead(messageId)
-        groupService?.handleReadReceipt(messageId, envelope.senderIdentity, envelope.timestamp)
     }
 }

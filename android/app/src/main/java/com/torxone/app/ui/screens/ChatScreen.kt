@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -315,7 +316,7 @@ fun ChatScreen(
                             }
                             val subtitleColor = when {
                                 isTyping -> MaterialTheme.colorScheme.primary
-                                presence == PresenceStatus.ONLINE -> Color(0xFF25D366)
+                                presence == PresenceStatus.ONLINE -> MaterialTheme.colorScheme.onlineStatus
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
 
@@ -470,7 +471,7 @@ fun ChatScreen(
                     AttachmentOptionItem(
                         icon = Icons.Default.Image,
                         label = "Photo",
-                        containerColor = Color(0xFFE91E63)
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         showAttachmentMenu = false
                         val dummyImageBytes = ByteArray(1024) { 0xFF.toByte() }
@@ -480,7 +481,7 @@ fun ChatScreen(
                     AttachmentOptionItem(
                         icon = Icons.Default.Videocam,
                         label = "Video",
-                        containerColor = Color(0xFF9C27B0)
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         showAttachmentMenu = false
                         val dummyVideoBytes = ByteArray(2048) { 0x55.toByte() }
@@ -490,7 +491,7 @@ fun ChatScreen(
                     AttachmentOptionItem(
                         icon = Icons.Default.Description,
                         label = "Document",
-                        containerColor = Color(0xFF2196F3)
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
                     ) {
                         showAttachmentMenu = false
                         val dummyDocBytes = "Sample project document content".toByteArray(Charsets.UTF_8)
@@ -1335,7 +1336,7 @@ private fun MessageComposer(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Surface(shape = CircleShape, color = Color.Red, modifier = Modifier.size(10.dp)) {}
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.error, modifier = Modifier.size(10.dp)) {}
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = VoiceNoteHelper.formatDuration(voiceRecording.elapsedDurationMs),
@@ -1421,7 +1422,7 @@ private fun DeliveryStatusIcon(
         contentDescription = status.name,
         modifier = Modifier.size(14.dp),
         tint = if (isRead)
-            Color(0xFF34B7F1)
+            MaterialTheme.colorScheme.readReceipt
         else if (status == DeliveryStatus.FAILED)
             MaterialTheme.colorScheme.error
         else

@@ -143,8 +143,8 @@ private fun VoiceCallLayout(
 
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = Color(0xFF10B981).copy(alpha = 0.15f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF10B981).copy(alpha = 0.3f))
+                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -153,7 +153,7 @@ private fun VoiceCallLayout(
                     Icon(
                         Icons.Default.Lock,
                         contentDescription = "Secured",
-                        tint = Color(0xFF34D399),
+                        tint = MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.size(13.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
@@ -161,7 +161,7 @@ private fun VoiceCallLayout(
                         text = "End-to-End Secured",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF34D399)
+                        color = MaterialTheme.colorScheme.secondary
                     )
                 }
             }

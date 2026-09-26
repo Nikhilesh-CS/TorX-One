@@ -36,25 +36,29 @@ fun LandingScreen(
     var currentPage by remember { mutableIntStateOf(0) }
     var nameInput by remember { mutableStateOf("") }
 
-    val pages = remember {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+
+    val pages = remember(primaryColor, secondaryColor, tertiaryColor) {
         listOf(
             OnboardingPage(
                 icon = Icons.Filled.Shield,
                 title = "Privacy First",
                 subtitle = "End-to-end encrypted by default.\nNo phone numbers. No cloud. No tracking.",
-                accentColor = Color(0xFF8AB4F8)
+                accentColor = primaryColor
             ),
             OnboardingPage(
                 icon = Icons.Filled.WifiTethering,
                 title = "Mesh Network",
                 subtitle = "Connect directly with people nearby.\nNo servers. No internet required.",
-                accentColor = Color(0xFF82D9C8)
+                accentColor = secondaryColor
             ),
             OnboardingPage(
                 icon = Icons.Filled.VerifiedUser,
                 title = "You Own Your Identity",
                 subtitle = "Your keys, your identity.\nCryptographic proof, not a username.",
-                accentColor = Color(0xFF4DD0E1)
+                accentColor = tertiaryColor
             )
         )
     }

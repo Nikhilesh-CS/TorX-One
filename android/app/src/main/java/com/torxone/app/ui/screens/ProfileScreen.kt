@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -109,7 +110,7 @@ fun ProfileScreen(
             if (isFounder) {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = Color(0xFFFFD700).copy(alpha = 0.15f),
+                    color = MaterialTheme.colorScheme.goldAccent.copy(alpha = 0.15f),
                     modifier = Modifier.padding(horizontal = 16.dp)
                 ) {
                     Row(
@@ -119,7 +120,7 @@ fun ProfileScreen(
                         Icon(
                             Icons.Filled.Stars,
                             contentDescription = "Founder",
-                            tint = Color(0xFFFFD700),
+                            tint = MaterialTheme.colorScheme.goldAccent,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -127,7 +128,7 @@ fun ProfileScreen(
                             text = "Founder",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFFFD700)
+                            color = MaterialTheme.colorScheme.goldAccent
                         )
                     }
                 }
