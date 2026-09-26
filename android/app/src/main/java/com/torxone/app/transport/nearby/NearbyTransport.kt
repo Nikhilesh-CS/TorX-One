@@ -341,9 +341,8 @@ class NearbyTransport(
             val boundRel = directRouteTable.getRelationshipForEndpoint(endpointId)
             if (boundRel != null) {
                 activeConnections.filter { it.relationshipId == boundRel }
-            } else if (activeConnections.size == 1) {
-                activeConnections
             } else {
+                // Reject blind proofs to unauthenticated strangers
                 emptyList()
             }
         }

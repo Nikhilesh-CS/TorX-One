@@ -207,6 +207,11 @@ data class OutboxEntity(
     @ColumnInfo(name = "ciphertext", typeAffinity = ColumnInfo.BLOB)
     val ciphertext: ByteArray,
 
+    /**
+     * Shared secret key (`sendAuth` capability) used by TorXAgent to compute the
+     * HMAC-SHA256 queue authenticator for the transport envelope.
+     * Persisted as "queue_authenticator" column for database schema stability.
+     */
     @ColumnInfo(name = "queue_authenticator", typeAffinity = ColumnInfo.BLOB)
     val queueAuthenticator: ByteArray,
 
@@ -231,6 +236,12 @@ data class OutboxEntity(
     @ColumnInfo(name = "expects_ack")
     val expectsAck: Boolean = true
 ) {
+    /**
+     * Cryptographic semantic accessor: this field holds the shared secret (`sendAuth`)
+     * used to compute the HMAC, NOT the derived HMAC itself.
+     */
+    val queueAuthSecret: ByteArray get() = queueAuthenticator
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is OutboxEntity) return false

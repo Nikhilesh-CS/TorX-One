@@ -1081,7 +1081,7 @@ class GroupService(
             groupMetadata = GroupEnvelopeMetadata(
                 groupId = groupId,
                 groupEpoch = epoch.toInt(),
-                keyVersion = 1
+                keyVersion = epoch.toInt()
             ),
             directionSequence = sendSeq
         )
@@ -1167,7 +1167,7 @@ class GroupService(
             groupMetadata = GroupEnvelopeMetadata(
                 groupId = groupId,
                 groupEpoch = epoch.toInt(),
-                keyVersion = 1
+                keyVersion = epoch.toInt()
             ),
             directionSequence = sendSeq
         )

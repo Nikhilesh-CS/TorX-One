@@ -184,13 +184,26 @@ class TorXAgent(
                 val pending = outboxStore.getPendingItems()
 
                 if (pending.isNotEmpty()) {
-                    for (item in pending) {
-                        if (!currentCoroutineContext().isActive) break
-                        if (inflightItems.add(item.deliveryId)) {
-                            try {
-                                processDeliveryItem(item)
-                            } finally {
-                                inflightItems.remove(item.deliveryId)
+                    // Group by queueAddress so deliveries to the same peer/destination maintain strict FIFO ordering,
+                    // while deliveries to independent destinations execute concurrently without head-of-line blocking.
+                    val groupedByDestination = pending.groupBy { it.queueAddress }
+                    supervisorScope {
+                        for ((_, destinationItems) in groupedByDestination) {
+                            launch {
+                                for (item in destinationItems) {
+                                    if (!isActive) break
+                                    if (inflightItems.add(item.deliveryId)) {
+                                        try {
+                                            processDeliveryItem(item)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error delivering item ${item.deliveryId} to ${item.queueAddress}", e)
+                                        } finally {
+                                            inflightItems.remove(item.deliveryId)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -223,9 +236,9 @@ class TorXAgent(
         outboxStore.updateStatus(item.deliveryId, DeliveryStatus.TRANSMITTING)
         emitUpdate(item.logicalMessageId, DeliveryStatus.TRANSMITTING)
 
-        // Build transport envelope with cryptographic HMAC authenticator
+        // Build transport envelope with cryptographic HMAC authenticator derived from the shared sendAuth secret
         val authenticator = IdentityCrypto.computeQueueAuthenticator(
-            queueAuthSecret = item.queueAuthenticator,
+            queueAuthSecret = item.queueAuthSecret,
             envelopeId = item.deliveryId,
             queueAddress = item.queueAddress,
             ciphertext = item.ciphertext

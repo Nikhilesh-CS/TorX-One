@@ -276,7 +276,8 @@ class TorXOneApplication : Application() {
             conversationDao = database.conversationDao(),
             activeConversationTracker = activeConversationTracker,
             notificationManager = notificationManager,
-            contactDao = database.contactDao()
+            contactDao = database.contactDao(),
+            groupDao = database.groupDao()
         )
         val receiptHandler = DeliveryReceiptHandler(
             messageDao = database.messageDao(),

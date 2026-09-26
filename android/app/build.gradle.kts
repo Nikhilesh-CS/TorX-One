@@ -82,11 +82,12 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.navigation:navigation-compose:2.8.5")
 
-    // ── Room (encrypted DB) ──
+    // ── Room (encrypted DB via SQLCipher) ──
     val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
+    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
 
     // ── Security / Crypto ──
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

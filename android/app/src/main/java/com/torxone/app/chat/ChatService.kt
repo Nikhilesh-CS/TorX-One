@@ -728,4 +728,56 @@ class ChatService(
     fun observeReactions(conversationId: String): Flow<List<ReactionEntity>> {
         return reactionDao?.observeForConversation(conversationId) ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
+
+    /**
+     * Broadcast profile update (display name, about) to all active contacts.
+     */
+    suspend fun broadcastProfileUpdate(
+        localIdentityId: String,
+        displayName: String,
+        about: String = ""
+    ) {
+        val activeConnections = connectionManager.getAllActiveConnections()
+        val payload = "$displayName\n$about".toByteArray(Charsets.UTF_8)
+        val now = System.currentTimeMillis()
+
+        val contactDao = database?.contactDao()
+        for (connection in activeConnections) {
+            try {
+                val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: continue
+                if (contact.remoteIdentityId.isBlank()) continue
+                val recipientId = contact.remoteIdentityId
+                val sendSeq = connectionManager.allocateSendSequence(connection.relationshipId)
+                val envelope = SecureEnvelope(
+                    protocolVersion = 1,
+                    logicalMessageId = UUID.randomUUID().toString(),
+                    conversationId = contact.conversationId,
+                    senderIdentity = localIdentityId,
+                    recipientBinding = recipientId,
+                    messageType = MessageType.PROFILE_UPDATE,
+                    timestamp = now,
+                    payload = payload,
+                    directionSequence = sendSeq
+                )
+                val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+                val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+                val encrypted = sessionCrypto.encrypt(connection.relationshipId, envelopeBytes, aad)
+                val deliveryItem = DeliveryItem(
+                    deliveryId = UUID.randomUUID().toString(),
+                    logicalMessageId = envelope.logicalMessageId,
+                    conversationId = contact.conversationId,
+                    connectionId = connection.connectionId,
+                    queueAddress = connection.sendQueueId,
+                    ciphertext = encrypted.serialize(),
+                    queueAuthenticator = connection.sendAuth,
+                    status = DeliveryStatus.QUEUED,
+                    priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                    expectsAck = false
+                )
+                agent.enqueue(deliveryItem)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to broadcast profile update to ${connection.relationshipId}: ${e.message}")
+            }
+        }
+    }
 }

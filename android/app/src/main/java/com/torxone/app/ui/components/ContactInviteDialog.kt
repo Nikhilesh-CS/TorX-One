@@ -185,26 +185,50 @@ fun ContactInviteDialog(
                             CircularProgressIndicator(modifier = Modifier.padding(24.dp))
                         }
                     } else {
-                        // Enter/Paste Peer Invite
-                        OutlinedTextField(
-                            value = pasteInviteText,
-                            onValueChange = { pasteInviteText = it },
-                            label = { Text("Paste invite link (torx://contact/...)") },
-                            placeholder = { Text("torx://contact/eyJ...") },
+                        // Live CameraX QR Scanner View with manual paste fallback
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                            maxLines = 4
-                        )
-
-                        Button(
-                            onClick = {
-                                if (pasteInviteText.isNotBlank()) {
-                                    viewModel.onQrScanned(pasteInviteText.trim())
-                                }
-                            },
-                            enabled = pasteInviteText.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth()
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text("Validate & Connect")
+                            QrCameraScanner(
+                                onQrScanned = { scannedString ->
+                                    viewModel.onQrScanned(scannedString)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                            )
+
+                            Text(
+                                text = "Point camera at peer's QR code",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                            // Fallback Enter/Paste Peer Invite
+                            OutlinedTextField(
+                                value = pasteInviteText,
+                                onValueChange = { pasteInviteText = it },
+                                label = { Text("Or paste invite link (torx://contact/...)") },
+                                placeholder = { Text("torx://contact/eyJ...") },
+                                modifier = Modifier.fillMaxWidth(),
+                                maxLines = 2
+                            )
+
+                            Button(
+                                onClick = {
+                                    if (pasteInviteText.isNotBlank()) {
+                                        viewModel.onQrScanned(pasteInviteText.trim())
+                                    }
+                                },
+                                enabled = pasteInviteText.isNotBlank(),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Validate & Connect")
+                            }
                         }
                     }
 

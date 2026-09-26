@@ -1,5 +1,9 @@
 package com.torxone.app.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,12 +17,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.torxone.app.chat.ChatService
 import com.torxone.app.data.entity.ContactEntity
 import com.torxone.app.data.entity.ConversationEntity
+import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.notifications.NotificationPolicy
 import kotlinx.coroutines.launch
 
@@ -30,15 +37,26 @@ fun ContactInfoScreen(
     chatService: ChatService,
     onBackClick: () -> Unit,
     onChatDeleted: () -> Unit,
+    onToggleVerification: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
     var showMuteDialog by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showResetSessionConfirm by remember { mutableStateOf(false) }
+    var showSafetyNumberDialog by remember { mutableStateOf(false) }
 
     val isMuted = NotificationPolicy.isConversationMuted(conversation?.mutedUntil)
     val contactName = contact?.displayName ?: conversation?.title ?: "Contact"
+    val isVerified = contact?.verificationState == "VERIFIED"
+    val fingerprint = remember(contact?.signingPublicKey) {
+        val pub = contact?.signingPublicKey
+        if (pub != null && pub.isNotEmpty()) {
+            IdentityCrypto.computeFingerprint(pub)
+        } else {
+            "Not available"
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -144,13 +162,37 @@ fun ContactInfoScreen(
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
 
                     ListItem(
-                        headlineContent = { Text("Encryption") },
+                        headlineContent = { Text("Encryption & safety number") },
                         supportingContent = {
-                            Text("Messages are end-to-end encrypted with Double Ratchet.")
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text("Messages are end-to-end encrypted with Double Ratchet.")
+                                if (isVerified) {
+                                    Text(
+                                        "✓ Verified safety number",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                } else {
+                                    Text(
+                                        "Tap to view and verify safety number",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
                         },
                         leadingContent = {
-                            Icon(Icons.Default.Lock, contentDescription = null)
-                        }
+                            Icon(
+                                if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = if (isVerified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                        },
+                        trailingContent = {
+                            Icon(Icons.Default.ChevronRight, contentDescription = null)
+                        },
+                        modifier = Modifier.clickable { showSafetyNumberDialog = true }
                     )
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -292,6 +334,77 @@ fun ContactInfoScreen(
             dismissButton = {
                 TextButton(onClick = { showResetSessionConfirm = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Safety Number Verification Dialog
+    if (showSafetyNumberDialog && contact != null) {
+        val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = { showSafetyNumberDialog = false },
+            icon = {
+                Icon(
+                    if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Security,
+                    contentDescription = null,
+                    tint = if (isVerified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                )
+            },
+            title = { Text("Verify safety number") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "To verify that messages and calls with ${contact.displayName} are end-to-end encrypted, compare the safety number below with the number on their device.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = fingerprint,
+                            modifier = Modifier.padding(16.dp),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("Safety Number", fingerprint))
+                            Toast.makeText(context, "Safety number copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Copy safety number")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val newVerified = !isVerified
+                        onToggleVerification?.invoke(newVerified)
+                        showSafetyNumberDialog = false
+                    }
+                ) {
+                    Text(if (isVerified) "Clear verification" else "Mark as verified")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSafetyNumberDialog = false }) {
+                    Text("Close")
                 }
             }
         )

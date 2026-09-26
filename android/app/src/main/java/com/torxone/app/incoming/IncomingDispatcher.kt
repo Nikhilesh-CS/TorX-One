@@ -404,6 +404,9 @@ class IncomingDispatcher(
                         MessageType.CALL_BUSY -> {
                             callHandler?.handleCallSignal(connection, secureEnvelope)
                         }
+                        MessageType.PROFILE_UPDATE -> {
+                            handleProfileUpdate(connection, secureEnvelope)
+                        }
                         else -> {
                             Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")
                         }
@@ -491,5 +494,22 @@ class IncomingDispatcher(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send ACK: ${e.message}")
         }
+    }
+
+    private suspend fun handleProfileUpdate(connection: Connection, envelope: SecureEnvelope) {
+        val payloadStr = String(envelope.payload, Charsets.UTF_8)
+        val parts = payloadStr.split("\n", limit = 2)
+        val newDisplayName = parts.getOrNull(0)?.trim() ?: return
+        if (newDisplayName.isBlank()) return
+
+        val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: return
+        val updatedContact = contact.copy(displayName = newDisplayName)
+        contactDao.upsert(updatedContact)
+
+        val conv = conversationDao?.getById(contact.conversationId)
+        if (conv != null && conv.type == com.torxone.app.data.entity.ConversationType.DIRECT) {
+            conversationDao?.upsert(conv.copy(title = newDisplayName))
+        }
+        Log.i(TAG, "[PROFILE_UPDATE] Updated contact ${contact.contactId.take(8)} displayName to '$newDisplayName'")
     }
 }

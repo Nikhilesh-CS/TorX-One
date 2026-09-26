@@ -77,7 +77,11 @@ data class DeliveryItem(
     /** The opaque encrypted ciphertext */
     val ciphertext: ByteArray,
 
-    /** Queue authenticator */
+    /**
+     * Shared secret key (`sendAuth` capability) used by TorXAgent to compute the
+     * HMAC-SHA256 queue authenticator for the transport envelope.
+     * Stored as `queueAuthenticator` for schema and backward compatibility.
+     */
     val queueAuthenticator: ByteArray,
 
     /** Current delivery status */
@@ -101,6 +105,12 @@ data class DeliveryItem(
     /** Whether this item expects an end-to-end delivery ACK from peer */
     val expectsAck: Boolean = true
 ) {
+    /**
+     * Cryptographic semantic accessor: this field holds the shared secret (`sendAuth`)
+     * used to compute the HMAC, NOT the derived HMAC itself.
+     */
+    val queueAuthSecret: ByteArray get() = queueAuthenticator
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is DeliveryItem) return false

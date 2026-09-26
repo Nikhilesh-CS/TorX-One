@@ -161,8 +161,13 @@ class TorXNotificationManager(
             // 2. Build MessagingStyle
             val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
             val userPerson = Person.Builder().setName("You").build()
+            val resolvedConversationTitle = if (privacyMode == NotificationPrivacyMode.HIDDEN) {
+                "TorX One"
+            } else {
+                contactTitle
+            }
             val messagingStyle = NotificationCompat.MessagingStyle(userPerson)
-                .setConversationTitle(contactTitle)
+                .setConversationTitle(resolvedConversationTitle)
                 .setGroupConversation(isGroup)
 
             val contactsMap = if (isGroup && contactDao != null) {
@@ -172,6 +177,8 @@ class TorXNotificationManager(
                     null
                 }
             } else null
+
+            var latestFormattedContent: NotificationDisplayContent? = null
 
             for (msg in unreadIncoming) {
                 val rawText = if (msg.deletedAt != null) {
@@ -194,6 +201,7 @@ class TorXNotificationManager(
                 }
 
                 val formatted = NotificationPolicy.formatContent(privacyMode, senderName, rawText)
+                latestFormattedContent = formatted
                 val senderPerson = Person.Builder().setName(formatted.title).build()
 
                 messagingStyle.addMessage(
@@ -258,13 +266,34 @@ class TorXNotificationManager(
             val soundEnabled = appSettingsRepository?.soundEnabled?.first() ?: true
             val vibrationEnabled = appSettingsRepository?.vibrationEnabled?.first() ?: true
 
-            // 6. Build Notification
+            // 6. Build Notification with Privacy Enforcements
+            val displayTitle = latestFormattedContent?.title ?: resolvedConversationTitle
+            val displayText = latestFormattedContent?.text ?: "New message"
+
+            val publicNotification = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(if (privacyMode == NotificationPrivacyMode.HIDDEN) "TorX One" else contactTitle)
+                .setContentText("New message")
+                .setContentIntent(openPendingIntent)
+                .setAutoCancel(true)
+                .build()
+
+            val lockscreenVisibility = when (privacyMode) {
+                NotificationPrivacyMode.HIDDEN -> NotificationCompat.VISIBILITY_SECRET
+                NotificationPrivacyMode.SENDER_ONLY -> NotificationCompat.VISIBILITY_PRIVATE
+                NotificationPrivacyMode.FULL -> NotificationCompat.VISIBILITY_PRIVATE
+            }
+
             val notificationId = NotificationPolicy.getNotificationId(conversationId)
             val notification = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(displayTitle)
+                .setContentText(displayText)
                 .setStyle(messagingStyle)
                 .setContentIntent(openPendingIntent)
                 .setAutoCancel(true)
+                .setVisibility(lockscreenVisibility)
+                .setPublicVersion(publicNotification)
                 .setPriority(if (isMuted) NotificationCompat.PRIORITY_LOW else NotificationCompat.PRIORITY_HIGH)
                 .apply {
                     if (isMuted || (!soundEnabled && !vibrationEnabled)) {

@@ -35,6 +35,7 @@ import com.torxone.app.ui.screens.*
 import com.torxone.app.ui.security.AppLockManager
 import com.torxone.app.ui.security.AppLockOverlay
 import com.torxone.app.ui.theme.TorXOneTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
@@ -135,7 +136,11 @@ fun TorXOneApp() {
     }
 
     val settingsViewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
-        SettingsViewModel(settingsRepo = app.settingsRepository)
+        SettingsViewModel(
+            settingsRepo = app.settingsRepository,
+            chatService = app.chatService,
+            identityRepo = app.identityRepository
+        )
     }
 
     val callViewModel: com.torxone.app.calls.CallViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
@@ -624,7 +629,9 @@ fun TorXOneApp() {
 
         is Screen.ContactInfo -> {
             val contactState = produceState<ContactEntity?>(initialValue = null, screen.conversationId) {
-                value = app.database.contactDao().getByConversationId(screen.conversationId)
+                app.database.contactDao().observeAll().collect { contacts ->
+                    value = contacts.firstOrNull { it.conversationId == screen.conversationId }
+                }
             }
             val conversationState = produceState<ConversationEntity?>(initialValue = null, screen.conversationId) {
                 value = app.database.conversationDao().getById(screen.conversationId)
@@ -640,6 +647,14 @@ fun TorXOneApp() {
                 onChatDeleted = {
                     screenStack = emptyList()
                     currentScreen = Screen.ConversationList
+                },
+                onToggleVerification = { isVerified ->
+                    val c = contactState.value ?: return@ContactInfoScreen
+                    coroutineScope.launch(Dispatchers.IO) {
+                        app.database.contactDao().upsert(
+                            c.copy(verificationState = if (isVerified) "VERIFIED" else "UNVERIFIED")
+                        )
+                    }
                 }
             )
         }

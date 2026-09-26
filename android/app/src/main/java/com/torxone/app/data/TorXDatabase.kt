@@ -113,20 +113,83 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
-        fun getInstance(context: Context): TorXDatabase {
+        fun getInstance(
+            context: Context,
+            passphraseProvider: DatabasePassphraseProvider? = null
+        ): TorXDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
+                INSTANCE ?: buildDatabase(context, passphraseProvider).also { INSTANCE = it }
             }
         }
 
-        private fun buildDatabase(context: Context): TorXDatabase {
-            return Room.databaseBuilder(
+        private fun buildDatabase(
+            context: Context,
+            passphraseProvider: DatabasePassphraseProvider? = null
+        ): TorXDatabase {
+            val builder = Room.databaseBuilder(
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            )
-                .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
-                .build()
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+
+            val provider = passphraseProvider ?: DatabasePassphraseProvider(context.applicationContext)
+            try {
+                val passphrase = provider.getOrCreatePassphrase()
+                val factory = net.sqlcipher.database.SupportFactory(passphrase)
+                builder.openHelperFactory(factory)
+            } catch (e: Exception) {
+                if (provider.allowInsecureFallback) {
+                    android.util.Log.w("TorXDatabase", "Warning: Running database with insecure fallback openHelperFactory")
+                } else {
+                    throw SecurityException("Failed to configure encrypted database SQLite factory", e)
+                }
+            }
+
+            return builder.build()
         }
+    }
+}
+
+/**
+ * Provides the hardware Keystore-backed database encryption passphrase.
+ *
+ * Uses EncryptedSharedPreferences backed by Android Keystore MasterKey (AES-256-GCM)
+ * to persist a 256-bit cryptographic passphrase for SQLCipher.
+ */
+class DatabasePassphraseProvider(
+    private val context: Context,
+    val allowInsecureFallback: Boolean = false
+) {
+    fun getOrCreatePassphrase(): ByteArray {
+        val prefs = try {
+            val masterKey = androidx.security.crypto.MasterKey.Builder(context)
+                .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                .build()
+
+            androidx.security.crypto.EncryptedSharedPreferences.create(
+                context,
+                "torx_db_secure_prefs",
+                masterKey,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            if (allowInsecureFallback) {
+                context.getSharedPreferences("torx_db_fallback_prefs", Context.MODE_PRIVATE)
+            } else {
+                throw SecurityException("Database hardware Keystore initialization failed. Plaintext fallback rejected.", e)
+            }
+        }
+
+        val existingBase64 = prefs.getString("db_passphrase", null)
+        if (existingBase64 != null) {
+            return java.util.Base64.getDecoder().decode(existingBase64)
+        }
+
+        val newPassphrase = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        prefs.edit()
+            .putString("db_passphrase", java.util.Base64.getEncoder().encodeToString(newPassphrase))
+            .apply()
+        return newPassphrase
     }
 }

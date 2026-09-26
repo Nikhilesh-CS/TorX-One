@@ -18,7 +18,8 @@ class ChatReceiver(
     private val conversationDao: ConversationDao,
     private val activeConversationTracker: ActiveConversationTracker,
     private val notificationManager: TorXNotificationManager? = null,
-    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
+    private val groupDao: com.torxone.app.data.dao.GroupDao? = null
 ) {
     companion object {
         private const val TAG = "ChatReceiver"
@@ -36,8 +37,9 @@ class ChatReceiver(
         val conversationTitle: String
 
         if (isGroup) {
-            conversationId = envelope.groupMetadata!!.groupId
-            conversationTitle = "Group"
+            val groupId = envelope.groupMetadata!!.groupId
+            conversationId = groupId
+            conversationTitle = groupDao?.getById(groupId)?.title ?: "Group"
         } else {
             // DIRECT conversation: NEVER trust the wire envelope.conversationId.
             // Derive strictly from authenticated connection.relationshipId -> ContactEntity.conversationId

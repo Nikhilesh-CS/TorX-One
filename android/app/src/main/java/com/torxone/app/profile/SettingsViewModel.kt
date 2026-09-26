@@ -12,7 +12,9 @@ import kotlinx.coroutines.launch
  * All writes go through [AppSettingsRepository] — no direct Room mutation.
  */
 class SettingsViewModel(
-    private val settingsRepo: AppSettingsRepository
+    private val settingsRepo: AppSettingsRepository,
+    private val chatService: com.torxone.app.chat.ChatService? = null,
+    private val identityRepo: com.torxone.app.identity.IdentityRepository? = null
 ) : ViewModel() {
 
     val uiState: StateFlow<SettingsUiState> = combine(
@@ -138,6 +140,13 @@ class SettingsViewModel(
     fun updateProfile(name: String, about: String, avatarUri: String? = null) {
         viewModelScope.launch {
             settingsRepo.updateProfile(displayName = name, about = about, avatarUri = avatarUri)
+            try {
+                chatService?.let { cs ->
+                    identityRepo?.loadIdentity()?.let { id ->
+                        cs.broadcastProfileUpdate(id.identityId, name, about)
+                    }
+                }
+            } catch (_: Exception) {}
         }
     }
 }
