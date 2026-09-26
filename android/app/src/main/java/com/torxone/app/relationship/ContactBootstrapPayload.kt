@@ -12,6 +12,7 @@ import java.io.DataOutputStream
  */
 data class ContactBootstrapPayload(
     val inviteId: String,
+    val initiatorIdentityId: String,
     val initiatorDisplayName: String,
     val initiatorSigningPublicKey: ByteArray,
     val initiatorEncryptionPublicKey: ByteArray,
@@ -22,6 +23,7 @@ data class ContactBootstrapPayload(
         val bos = ByteArrayOutputStream()
         val dos = DataOutputStream(bos)
         dos.writeUTF(inviteId)
+        dos.writeUTF(initiatorIdentityId)
         dos.writeUTF(initiatorDisplayName)
         dos.writeInt(initiatorSigningPublicKey.size)
         dos.write(initiatorSigningPublicKey)
@@ -35,19 +37,45 @@ data class ContactBootstrapPayload(
     }
 
     companion object {
+        private const val EXPECTED_KEY_SIZE = 32
+        private const val EXPECTED_SIG_SIZE = 64
+
         fun fromByteArray(bytes: ByteArray): ContactBootstrapPayload {
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val inviteId = dis.readUTF()
+            val initiatorIdentityId = dis.readUTF()
             val name = dis.readUTF()
-            val signPub = ByteArray(dis.readInt()).apply { dis.readFully(this) }
-            val encPub = ByteArray(dis.readInt()).apply { dis.readFully(this) }
-            val ephPub = ByteArray(dis.readInt()).apply { dis.readFully(this) }
-            val sig = ByteArray(dis.readInt()).apply { dis.readFully(this) }
-            return ContactBootstrapPayload(inviteId, name, signPub, encPub, ephPub, sig)
+
+            val signLen = dis.readInt()
+            if (signLen != EXPECTED_KEY_SIZE) {
+                throw IllegalArgumentException("Invalid initiator signing key length: $signLen")
+            }
+            val signPub = ByteArray(signLen).apply { dis.readFully(this) }
+
+            val encLen = dis.readInt()
+            if (encLen != EXPECTED_KEY_SIZE) {
+                throw IllegalArgumentException("Invalid initiator encryption key length: $encLen")
+            }
+            val encPub = ByteArray(encLen).apply { dis.readFully(this) }
+
+            val ephLen = dis.readInt()
+            if (ephLen != EXPECTED_KEY_SIZE) {
+                throw IllegalArgumentException("Invalid initiator ephemeral key length: $ephLen")
+            }
+            val ephPub = ByteArray(ephLen).apply { dis.readFully(this) }
+
+            val sigLen = dis.readInt()
+            if (sigLen != EXPECTED_SIG_SIZE) {
+                throw IllegalArgumentException("Invalid signature length: $sigLen")
+            }
+            val sig = ByteArray(sigLen).apply { dis.readFully(this) }
+
+            return ContactBootstrapPayload(inviteId, initiatorIdentityId, name, signPub, encPub, ephPub, sig)
         }
 
         fun serializeForSigning(
             inviteId: String,
+            initiatorIdentityId: String,
             displayName: String,
             signingPub: ByteArray,
             encryptionPub: ByteArray,
@@ -56,6 +84,7 @@ data class ContactBootstrapPayload(
             val bos = ByteArrayOutputStream()
             val dos = DataOutputStream(bos)
             dos.writeUTF(inviteId)
+            dos.writeUTF(initiatorIdentityId)
             dos.writeUTF(displayName)
             dos.write(signingPub)
             dos.write(encryptionPub)

@@ -12,7 +12,8 @@ import kotlinx.coroutines.withContext
  */
 class RoomSessionStore(
     private val sessionDao: SessionDao,
-    private val skippedKeyDao: SkippedKeyDao
+    private val skippedKeyDao: SkippedKeyDao,
+    private val keyProtector: KeyProtector = NoOpKeyProtector()
 ) : SessionStore {
 
     override suspend fun loadSession(relationshipId: String): SessionState? = withContext(Dispatchers.IO) {
@@ -21,18 +22,18 @@ class RoomSessionStore(
 
         val skippedMap = mutableMapOf<SkippedKeyId, ByteArray>()
         for (skip in skippedEntities) {
-            skippedMap[SkippedKeyId(skip.ratchetPublicKeyHex, skip.counter)] = skip.messageKey
+            skippedMap[SkippedKeyId(skip.ratchetPublicKeyHex, skip.counter)] = keyProtector.unwrap(skip.messageKey)
         }
 
         SessionState(
             sessionId = entity.sessionId,
             relationshipId = entity.relationshipId,
-            rootKey = entity.rootKey,
-            localRatchetPrivateKey = entity.localDhPrivateKey,
+            rootKey = keyProtector.unwrap(entity.rootKey),
+            localRatchetPrivateKey = keyProtector.unwrap(entity.localDhPrivateKey),
             localRatchetPublicKey = entity.localDhPublicKey,
             remoteRatchetPublicKey = entity.remoteDhPublicKey,
-            sendChainKey = entity.sendChainKey,
-            recvChainKey = entity.recvChainKey,
+            sendChainKey = entity.sendChainKey?.let { keyProtector.unwrap(it) },
+            recvChainKey = entity.recvChainKey?.let { keyProtector.unwrap(it) },
             sendMessageNumber = entity.sendMessageNumber,
             receiveMessageNumber = entity.receiveMessageNumber,
             previousSendCount = entity.previousSendCount,
@@ -44,12 +45,12 @@ class RoomSessionStore(
         val entity = SessionDbEntity(
             sessionId = state.sessionId,
             relationshipId = state.relationshipId,
-            rootKey = state.rootKey,
+            rootKey = keyProtector.wrap(state.rootKey),
             localDhPublicKey = state.localRatchetPublicKey,
-            localDhPrivateKey = state.localRatchetPrivateKey,
+            localDhPrivateKey = keyProtector.wrap(state.localRatchetPrivateKey),
             remoteDhPublicKey = state.remoteRatchetPublicKey,
-            sendChainKey = state.sendChainKey,
-            recvChainKey = state.recvChainKey,
+            sendChainKey = state.sendChainKey?.let { keyProtector.wrap(it) },
+            recvChainKey = state.recvChainKey?.let { keyProtector.wrap(it) },
             sendMessageNumber = state.sendMessageNumber,
             receiveMessageNumber = state.receiveMessageNumber,
             previousSendCount = state.previousSendCount,
@@ -65,7 +66,7 @@ class RoomSessionStore(
                 sessionId = state.sessionId,
                 ratchetPublicKeyHex = keyId.ratchetPublicKeyHex,
                 counter = keyId.counter,
-                messageKey = mk
+                messageKey = keyProtector.wrap(mk)
             )
         }
         if (skippedList.isNotEmpty()) {

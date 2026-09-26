@@ -223,7 +223,6 @@ class TorXNotificationManager(
             val replyIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = ACTION_REPLY
                 putExtra(EXTRA_CONVERSATION_ID, conversationId)
-                putExtra(EXTRA_RELATIONSHIP_ID, conversationId)
             }
             val replyPendingIntent = PendingIntent.getBroadcast(
                 context,
@@ -242,7 +241,6 @@ class TorXNotificationManager(
             val markReadIntent = Intent(context, NotificationActionReceiver::class.java).apply {
                 action = ACTION_MARK_AS_READ
                 putExtra(EXTRA_CONVERSATION_ID, conversationId)
-                putExtra(EXTRA_RELATIONSHIP_ID, conversationId)
             }
             val markReadPendingIntent = PendingIntent.getBroadcast(
                 context,

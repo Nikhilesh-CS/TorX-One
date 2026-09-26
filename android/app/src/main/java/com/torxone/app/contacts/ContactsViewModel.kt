@@ -69,7 +69,13 @@ class ContactsViewModel(
 
         viewModelScope.launch {
             val localIdentity = identityRepository.loadIdentity()
-            val result = ContactInviteCodec.validate(invite, localIdentity)
+            val existingContacts = database.contactDao().getAll()
+            if (existingContacts.any { it.signingPublicKey.contentEquals(invite.identitySigningPublicKey) }) {
+                _uiState.update { it.copy(error = "Contact already exists with this peer") }
+                return@launch
+            }
+            val consumedInviteIds = existingContacts.map { it.remoteIdentityId }.filter { it.isNotBlank() }.toSet()
+            val result = ContactInviteCodec.validate(invite, localIdentity, consumedInviteIds)
 
             when (result) {
                 is InviteValidationResult.Valid -> {
@@ -121,7 +127,8 @@ class ContactsViewModel(
                     displayName = valid.invite.displayName,
                     signingPublicKey = valid.invite.identitySigningPublicKey,
                     verificationState = "VERIFIED",
-                    conversationId = conversationId
+                    conversationId = conversationId,
+                    remoteIdentityId = valid.invite.identityId
                 )
                 database.contactDao().upsert(contactEntity)
 
@@ -170,6 +177,7 @@ class ContactsViewModel(
                 // 6. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys (Phase 4 & 5)
                 val bootstrapSignedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
                     inviteId = valid.invite.inviteId,
+                    initiatorIdentityId = localIdentity.identityId,
                     displayName = localIdentity.displayName,
                     signingPub = localIdentity.signingPublicKey,
                     encryptionPub = localIdentity.encryptionPublicKey,
@@ -178,6 +186,7 @@ class ContactsViewModel(
                 val bootstrapSig = IdentityCrypto.signEd25519(localIdentity.signingPrivateKey, bootstrapSignedData)
                 val bootstrapWire = com.torxone.app.relationship.ContactBootstrapPayload(
                     inviteId = valid.invite.inviteId,
+                    initiatorIdentityId = localIdentity.identityId,
                     initiatorDisplayName = localIdentity.displayName,
                     initiatorSigningPublicKey = localIdentity.signingPublicKey,
                     initiatorEncryptionPublicKey = localIdentity.encryptionPublicKey,

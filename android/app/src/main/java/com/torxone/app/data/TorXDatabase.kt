@@ -30,7 +30,7 @@ import com.torxone.app.calls.CallHistoryDao
         GroupMessageDeliveryEntity::class,
         CallHistoryEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -57,6 +57,34 @@ abstract class TorXDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: TorXDatabase? = null
 
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `call_history` (
+                        `callId` TEXT NOT NULL,
+                        `conversationId` TEXT NOT NULL,
+                        `peerIdentityId` TEXT NOT NULL,
+                        `direction` TEXT NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `outcome` TEXT NOT NULL,
+                        `startedAt` INTEGER NOT NULL,
+                        `connectedAt` INTEGER,
+                        `endedAt` INTEGER,
+                        `durationMs` INTEGER,
+                        PRIMARY KEY(`callId`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_history_conversationId` ON `call_history` (`conversationId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_history_peerIdentityId` ON `call_history` (`peerIdentityId`)")
+            }
+        }
+
+        val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `contacts` ADD COLUMN `remote_identity_id` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): TorXDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
@@ -69,7 +97,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 TorXDatabase::class.java,
                 "torxone.db"
             )
-                .fallbackToDestructiveMigration()
+                .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
                 .build()
         }
     }

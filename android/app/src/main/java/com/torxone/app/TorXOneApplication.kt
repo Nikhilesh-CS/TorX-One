@@ -135,15 +135,15 @@ class TorXOneApplication : Application() {
         val sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao())
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 
-        // 4. Connection Manager & Active Conversation Tracker (Restore persisted connections, Section 6)
-        connectionManager = ConnectionManager()
+        // 4. Connection Manager & Active Conversation Tracker (Restore persisted connections synchronously to prevent startup races, M1)
+        connectionManager = ConnectionManager(database.connectionDao())
         activeConversationTracker = ActiveConversationTracker()
-        applicationScope.launch {
+        runBlocking {
             cachedLocalIdentityId = identityRepository.loadIdentity()?.identityId
             connectionManager.restoreFromDatabase(database.connectionDao())
         }
 
-        // 4b. Notification Authority
+        // 4b. Notification Authority (inject appSettingsRepository, M17)
         notificationManager = com.torxone.app.notifications.TorXNotificationManager(
             context = this,
             activeConversationTracker = activeConversationTracker,
@@ -151,7 +151,8 @@ class TorXOneApplication : Application() {
             conversationDao = database.conversationDao(),
             messageDao = database.messageDao(),
             localMessageStateDao = database.localMessageStateDao(),
-            contactDao = database.contactDao()
+            contactDao = database.contactDao(),
+            appSettingsRepository = settingsRepository
         )
 
         // 5. Transport Router
@@ -250,7 +251,8 @@ class TorXOneApplication : Application() {
         val localId = getLocalIdentityId() ?: ""
         callManager = com.torxone.app.calls.CallManager(
             callService = callService,
-            localIdentityId = localId
+            localIdentityId = localId,
+            localIdentityIdProvider = { getLocalIdentityId() }
         )
         webRtcClient = com.torxone.app.calls.WebRtcClient(this, callManager)
         webRtcClient.initialize()
@@ -300,7 +302,8 @@ class TorXOneApplication : Application() {
             identityRepository = identityRepository,
             connectionDao = database.connectionDao(),
             contactDao = database.contactDao(),
-            conversationDao = database.conversationDao()
+            conversationDao = database.conversationDao(),
+            sessionStore = sessionStore
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
@@ -327,12 +330,19 @@ class TorXOneApplication : Application() {
             reactionDao = database.reactionDao(),
             localMessageStateDao = database.localMessageStateDao(),
             notificationManager = notificationManager,
-            appSettingsRepository = settingsRepository
+            appSettingsRepository = settingsRepository,
+            sessionStore = sessionStore
         )
 
         // 10. Start background agent and transport
         agent.start()
-        nearbyTransport.start()
+        if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(
+                this,
+                com.torxone.app.ui.permissions.PermissionHelper.getNearbyPermissions()
+            )
+        ) {
+            nearbyTransport.start()
+        }
 
         // 11. Recover any interrupted media transfers & sweep orphan temp files
         applicationScope.launch {
@@ -354,6 +364,7 @@ class TorXOneApplication : Application() {
                         ciphertext = item.ciphertext,
                         queueAuthenticator = item.queueAuthenticator,
                         status = item.status.name,
+                        priority = item.priority,
                         attemptCount = item.attemptCount,
                         nextAttemptAt = item.nextAttemptAt,
                         createdAt = item.createdAt,
@@ -374,6 +385,7 @@ class TorXOneApplication : Application() {
                         ciphertext = entity.ciphertext,
                         queueAuthenticator = entity.queueAuthenticator,
                         status = DeliveryStatus.valueOf(entity.status),
+                        priority = entity.priority,
                         attemptCount = entity.attemptCount,
                         nextAttemptAt = entity.nextAttemptAt,
                         createdAt = entity.createdAt,

@@ -237,18 +237,100 @@ class MessageActionsTest {
     }
 
     class InMemoryOutboxStore : OutboxStore {
+        private val seqCounter = java.util.concurrent.atomic.AtomicLong(0)
+        private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, DeliveryItem>()
-        override suspend fun insert(item: DeliveryItem) { items[item.deliveryId] = item }
-        override suspend fun getPendingItems(): List<DeliveryItem> = items.values.toList()
+
+        override suspend fun insert(item: DeliveryItem) {
+            insertOrder.putIfAbsent(item.deliveryId, seqCounter.incrementAndGet())
+            items[item.deliveryId] = item
+        }
+
+        override suspend fun getPendingItems(): List<DeliveryItem> {
+            val now = System.currentTimeMillis()
+            return items.values
+                .filter {
+                    (it.status == DeliveryStatus.QUEUED ||
+                     it.status == DeliveryStatus.RETRY_WAIT ||
+                     it.status == DeliveryStatus.TRANSMITTING ||
+                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
+                    it.nextAttemptAt <= now
+                }
+                .sortedWith(
+                    compareByDescending<DeliveryItem> { it.priority }
+                        .thenBy { insertOrder[it.deliveryId] ?: 0L }
+                        .thenBy { it.createdAt }
+                )
+        }
+
         override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(status = status) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = status, updatedAt = System.currentTimeMillis()) }
         }
+
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
         }
+
         override suspend fun removeByMessageId(logicalMessageId: String) {
-            val key = items.values.find { it.logicalMessageId == logicalMessageId }?.deliveryId
-            if (key != null) items.remove(key)
+            val keys = items.values.filter { it.logicalMessageId == logicalMessageId }.map { it.deliveryId }
+            for (key in keys) {
+                items.remove(key)
+                insertOrder.remove(key)
+            }
+        }
+    }
+
+    class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
+        override suspend fun getPending(now: Long): List<OutboxEntity> {
+            return store.getPendingItems().map {
+                OutboxEntity(
+                    deliveryId = it.deliveryId,
+                    logicalMessageId = it.logicalMessageId,
+                    conversationId = it.conversationId,
+                    connectionId = it.connectionId,
+                    queueAddress = it.queueAddress,
+                    ciphertext = it.ciphertext,
+                    queueAuthenticator = it.queueAuthenticator,
+                    status = it.status.name,
+                    priority = it.priority,
+                    attemptCount = it.attemptCount,
+                    nextAttemptAt = it.nextAttemptAt,
+                    createdAt = it.createdAt,
+                    updatedAt = it.updatedAt,
+                    expectsAck = it.expectsAck
+                )
+            }
+        }
+
+        override suspend fun insert(item: OutboxEntity) {
+            store.insert(DeliveryItem(
+                deliveryId = item.deliveryId,
+                logicalMessageId = item.logicalMessageId,
+                conversationId = item.conversationId,
+                connectionId = item.connectionId,
+                queueAddress = item.queueAddress,
+                ciphertext = item.ciphertext,
+                queueAuthenticator = item.queueAuthenticator,
+                status = DeliveryStatus.valueOf(item.status),
+                priority = item.priority,
+                attemptCount = item.attemptCount,
+                nextAttemptAt = item.nextAttemptAt,
+                createdAt = item.createdAt,
+                updatedAt = item.updatedAt,
+                expectsAck = item.expectsAck
+            ))
+        }
+
+        override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
+            store.updateStatus(deliveryId, DeliveryStatus.valueOf(status))
+        }
+
+        override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {
+            store.updateRetry(deliveryId, attemptCount, nextAttemptAt)
+        }
+
+        override suspend fun removeByMessageId(logicalMessageId: String) {
+            store.removeByMessageId(logicalMessageId)
         }
     }
 
@@ -288,6 +370,7 @@ class MessageActionsTest {
         val convDao: TestConversationDao = TestConversationDao(),
         val rxDao: TestReactionDao = TestReactionDao(),
         val outboxStore: InMemoryOutboxStore = InMemoryOutboxStore(),
+        val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(outboxStore),
         val processedStore: InMemoryProcessedStore = InMemoryProcessedStore(),
         val connManager: ConnectionManager = ConnectionManager(),
         val router: TransportRouter = TransportRouter(),
@@ -378,16 +461,12 @@ class MessageActionsTest {
                 override suspend fun isProcessed(envelopeId: String) = alice.processedStore.isProcessed(envelopeId)
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) { alice.processedStore.markProcessed(ProcessedEnvelope(entity.envelopeId, entity.logicalMessageId)) }
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+                    if (alice.processedStore.isProcessed(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = ChatReceiver(alice.msgDao, alice.convDao, trackerAlice),
-            deliveryReceiptHandler = DeliveryReceiptHandler(alice.msgDao, object : OutboxDao {
-                override suspend fun getPending(now: Long) = emptyList<OutboxEntity>()
-                override suspend fun insert(item: OutboxEntity) {}
-                override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
-                override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
-                override suspend fun removeByMessageId(logicalMessageId: String) { alice.outboxStore.removeByMessageId(logicalMessageId) }
-            }, alice.agent!!),
+            deliveryReceiptHandler = DeliveryReceiptHandler(alice.msgDao, alice.outboxDao, alice.agent!!),
             agent = alice.agent!!,
             localIdentityIdProvider = { "alice" },
             presenceHandler = PresenceHandler(alice.presenceService!!),
@@ -404,16 +483,12 @@ class MessageActionsTest {
                 override suspend fun isProcessed(envelopeId: String) = bob.processedStore.isProcessed(envelopeId)
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) { bob.processedStore.markProcessed(ProcessedEnvelope(entity.envelopeId, entity.logicalMessageId)) }
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+                    if (bob.processedStore.isProcessed(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = ChatReceiver(bob.msgDao, bob.convDao, trackerBob),
-            deliveryReceiptHandler = DeliveryReceiptHandler(bob.msgDao, object : OutboxDao {
-                override suspend fun getPending(now: Long) = emptyList<OutboxEntity>()
-                override suspend fun insert(item: OutboxEntity) {}
-                override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
-                override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
-                override suspend fun removeByMessageId(logicalMessageId: String) { bob.outboxStore.removeByMessageId(logicalMessageId) }
-            }, bob.agent!!),
+            deliveryReceiptHandler = DeliveryReceiptHandler(bob.msgDao, bob.outboxDao, bob.agent!!),
             agent = bob.agent!!,
             localIdentityIdProvider = { "bob" },
             presenceHandler = PresenceHandler(bob.presenceService!!),
@@ -430,21 +505,13 @@ class MessageActionsTest {
         bob.router.registerTransport(DirectLoopbackTransport(alice.incomingHub!!))
 
         // Create ChatService on both ends
-        val dummyOutboxDao = object : OutboxDao {
-            override suspend fun getPending(now: Long) = emptyList<OutboxEntity>()
-            override suspend fun insert(item: OutboxEntity) {}
-            override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
-            override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
-            override suspend fun removeByMessageId(logicalMessageId: String) {}
-        }
-
         alice.chatService = ChatService(
             sessionCrypto = cryptoAlice,
             connectionManager = alice.connManager,
             agent = alice.agent!!,
             messageDao = alice.msgDao,
             conversationDao = alice.convDao,
-            outboxDao = dummyOutboxDao,
+            outboxDao = alice.outboxDao,
             reactionDao = alice.rxDao
         )
 
@@ -454,7 +521,7 @@ class MessageActionsTest {
             agent = bob.agent!!,
             messageDao = bob.msgDao,
             conversationDao = bob.convDao,
-            outboxDao = dummyOutboxDao,
+            outboxDao = bob.outboxDao,
             reactionDao = bob.rxDao
         )
 
@@ -883,7 +950,7 @@ class MessageActionsTest {
         bob.presenceService!!.sendTypingStart("rel-action-test", "rel-action-test")
 
         // Allow loopback transport to process all full-duplex traffic
-        kotlinx.coroutines.delay(250)
+        kotlinx.coroutines.delay(500)
 
         // Verify A3 edit on Bob's side
         assertEquals("Alice 3 edited", bob.msgDao.getById("A3")?.body)
@@ -913,7 +980,7 @@ class MessageActionsTest {
         val textAfterStress = "Post-stress test verification"
         alice.chatService!!.sendTextMessage("rel-action-test", "rel-action-test", "alice", "bob", textAfterStress)
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(250)
         val bobReceivedPostStress = bob.msgDao.messages.values.find { it.body == textAfterStress }
         assertNotNull("Ratchet must remain fully operational after duplex actions", bobReceivedPostStress)
 

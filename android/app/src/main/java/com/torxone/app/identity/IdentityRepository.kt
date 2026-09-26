@@ -23,7 +23,8 @@ interface IdentityRepository {
  */
 class KeystoreIdentityRepository(
     private val context: Context,
-    private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null
+    private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
+    private val allowInsecureFallback: Boolean = false
 ) : IdentityRepository {
 
     private var cachedIdentity: TorXIdentity? = null
@@ -41,9 +42,13 @@ class KeystoreIdentityRepository(
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        } catch (_: Exception) {
-            // Fallback for testing environments / unit tests without Android KeyStore
-            context.getSharedPreferences("torx_identity_fallback_prefs", Context.MODE_PRIVATE)
+        } catch (e: Exception) {
+            if (allowInsecureFallback) {
+                // Fallback ONLY allowed when explicitly opted in (e.g. test fakes)
+                context.getSharedPreferences("torx_identity_fallback_prefs", Context.MODE_PRIVATE)
+            } else {
+                throw SecurityException("Hardware Keystore EncryptedSharedPreferences initialization failed. Plaintext fallback is rejected in production.", e)
+            }
         }
     }
 
@@ -106,6 +111,7 @@ class KeystoreIdentityRepository(
         val signedData = ContactInviteCodec.serializeForSigning(
             protocolVersion = 1,
             inviteId = inviteId,
+            identityId = identity.identityId,
             displayName = identity.displayName,
             signingPublicKey = identity.signingPublicKey,
             encryptionPublicKey = identity.encryptionPublicKey,
@@ -130,6 +136,7 @@ class KeystoreIdentityRepository(
         ContactInviteV1(
             protocolVersion = 1,
             inviteId = inviteId,
+            identityId = identity.identityId,
             displayName = identity.displayName,
             identitySigningPublicKey = identity.signingPublicKey,
             identityEncryptionPublicKey = identity.encryptionPublicKey,
@@ -141,8 +148,9 @@ class KeystoreIdentityRepository(
     }
 
     override suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray? = withContext(Dispatchers.IO) {
-        pendingInviteDao?.getById(inviteId)?.ephemeralPrivateKey
-            ?: pendingInviteDao?.getLatest()?.ephemeralPrivateKey
+        val invite = pendingInviteDao?.getById(inviteId) ?: return@withContext null
+        if (System.currentTimeMillis() > invite.expiresAt) return@withContext null
+        invite.ephemeralPrivateKey
     }
 
     private fun saveIdentity(identity: TorXIdentity) {

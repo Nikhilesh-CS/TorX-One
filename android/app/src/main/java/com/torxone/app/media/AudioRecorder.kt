@@ -50,6 +50,8 @@ class RealVoiceNoteRecorder(
         private const val TAG = "RealVoiceNoteRecorder"
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val MAX_RECORDING_DURATION_MS = 300_000L // 5 minutes max
+        private const val MAX_PCM_SIZE_BYTES = 10 * 1024 * 1024 // 10 MB max
     }
 
     private val _amplitudeFlow = MutableStateFlow(0f)
@@ -117,6 +119,13 @@ class RealVoiceNoteRecorder(
                 val byteBuffer = ByteArray(bufferSize)
 
                 while (isActive && isRecording) {
+                    if (System.currentTimeMillis() - startTimeMs > MAX_RECORDING_DURATION_MS ||
+                        pcmOutputStream.size() >= MAX_PCM_SIZE_BYTES
+                    ) {
+                        Log.w(TAG, "[RECORD LIMIT] Maximum duration or buffer size reached; stopping recording")
+                        break
+                    }
+
                     val readShorts = record.read(buffer, 0, buffer.size)
                     if (readShorts > 0) {
                         // 1. Convert shorts to 16-bit little-endian bytes and append to output stream
@@ -130,19 +139,21 @@ class RealVoiceNoteRecorder(
                             sumSquares += sample.toDouble() * sample.toDouble()
                         }
                         synchronized(pcmOutputStream) {
-                            pcmOutputStream.write(byteBuffer, 0, readShorts * 2)
+                            if (pcmOutputStream.size() + readShorts * 2 <= MAX_PCM_SIZE_BYTES) {
+                                pcmOutputStream.write(byteBuffer, 0, readShorts * 2)
+                            }
                         }
 
                         // 2. Compute RMS amplitude
                         val rms = sqrt(sumSquares / readShorts)
-                        // Normalize 0..32767 to 0.0f..1.0f (with sensible speech floor)
                         val normalized = (rms / 32767.0).toFloat().coerceIn(0f, 1f)
                         _amplitudeFlow.value = normalized
 
-                        // Map to 5..100 byte range for stored waveform
                         val byteAmp = (normalized * 95f + 5f).toInt().coerceIn(5, 100).toByte()
                         synchronized(waveformAmplitudes) {
-                            waveformAmplitudes.add(byteAmp)
+                            if (waveformAmplitudes.size < 10000) {
+                                waveformAmplitudes.add(byteAmp)
+                            }
                         }
                     } else if (readShorts < 0) {
                         Log.e(TAG, "Error reading from AudioRecord: $readShorts")
@@ -165,7 +176,11 @@ class RealVoiceNoteRecorder(
         val duration = System.currentTimeMillis() - startTimeMs
         isRecording = false
 
-        recordingJob?.cancel()
+        runBlocking {
+            try {
+                recordingJob?.cancelAndJoin()
+            } catch (_: Exception) {}
+        }
         try {
             audioRecord?.stop()
         } catch (e: Exception) {

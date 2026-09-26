@@ -25,21 +25,30 @@ import java.util.concurrent.ConcurrentHashMap
 class EndToEndPipelineTest {
 
     class InMemoryOutboxStore : OutboxStore {
+        private val seqCounter = java.util.concurrent.atomic.AtomicLong(0)
+        private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, DeliveryItem>()
 
         override suspend fun insert(item: DeliveryItem) {
+            insertOrder.putIfAbsent(item.deliveryId, seqCounter.incrementAndGet())
             items[item.deliveryId] = item
         }
 
         override suspend fun getPendingItems(): List<DeliveryItem> {
             val now = System.currentTimeMillis()
-            return items.values.filter {
-                (it.status == DeliveryStatus.QUEUED ||
-                 it.status == DeliveryStatus.RETRY_WAIT ||
-                 it.status == DeliveryStatus.TRANSMITTING ||
-                 it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-                it.nextAttemptAt <= now
-            }
+            return items.values
+                .filter {
+                    (it.status == DeliveryStatus.QUEUED ||
+                     it.status == DeliveryStatus.RETRY_WAIT ||
+                     it.status == DeliveryStatus.TRANSMITTING ||
+                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
+                    it.nextAttemptAt <= now
+                }
+                .sortedWith(
+                    compareByDescending<DeliveryItem> { it.priority }
+                        .thenBy { insertOrder[it.deliveryId] ?: 0L }
+                        .thenBy { it.createdAt }
+                )
         }
 
         override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
@@ -51,18 +60,23 @@ class EndToEndPipelineTest {
         }
 
         override suspend fun removeByMessageId(logicalMessageId: String) {
-            val key = items.values.find { it.logicalMessageId == logicalMessageId }?.deliveryId
-            if (key != null) items.remove(key)
+            val keys = items.values.filter { it.logicalMessageId == logicalMessageId }.map { it.deliveryId }
+            for (key in keys) {
+                items.remove(key)
+                insertOrder.remove(key)
+            }
         }
     }
 
     class InMemoryProcessedStore : ProcessedEnvelopeStore, ProcessedEnvelopeDao {
-        val envelopes = ConcurrentHashMap.newKeySet<String>()
+        val records = ConcurrentHashMap<String, ProcessedEnvelopeEntity>()
+        val envelopes: MutableSet<String> get() = records.keys
 
-        override suspend fun isProcessed(envelopeId: String): Boolean = envelopes.contains(envelopeId)
-        override suspend fun isMessageProcessed(logicalMessageId: String): Boolean = false
-        override suspend fun markProcessed(record: ProcessedEnvelope) { envelopes.add(record.envelopeId) }
-        override suspend fun insert(entity: ProcessedEnvelopeEntity) { envelopes.add(entity.envelopeId) }
+        override suspend fun isProcessed(envelopeId: String): Boolean = records.containsKey(envelopeId)
+        override suspend fun isMessageProcessed(logicalMessageId: String): Boolean = records.values.any { it.logicalMessageId == logicalMessageId }
+        override suspend fun markProcessed(record: ProcessedEnvelope) { records[record.envelopeId] = ProcessedEnvelopeEntity(record.envelopeId, record.logicalMessageId, System.currentTimeMillis()) }
+        override suspend fun insert(entity: ProcessedEnvelopeEntity) { records[entity.envelopeId] = entity }
+        override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? = records[envelopeId]
         override suspend fun pruneOlderThan(before: Long) {}
     }
 
@@ -197,10 +211,12 @@ class EndToEndPipelineTest {
                     ciphertext = it.ciphertext,
                     queueAuthenticator = it.queueAuthenticator,
                     status = it.status.name,
+                    priority = it.priority,
                     attemptCount = it.attemptCount,
                     nextAttemptAt = it.nextAttemptAt,
                     createdAt = it.createdAt,
-                    updatedAt = it.updatedAt
+                    updatedAt = it.updatedAt,
+                    expectsAck = it.expectsAck
                 )
             }
         }
@@ -214,10 +230,12 @@ class EndToEndPipelineTest {
                 ciphertext = item.ciphertext,
                 queueAuthenticator = item.queueAuthenticator,
                 status = DeliveryStatus.valueOf(item.status),
+                priority = item.priority,
                 attemptCount = item.attemptCount,
                 nextAttemptAt = item.nextAttemptAt,
                 createdAt = item.createdAt,
-                updatedAt = item.updatedAt
+                updatedAt = item.updatedAt,
+                expectsAck = item.expectsAck
             ))
         }
         override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
@@ -246,6 +264,14 @@ class EndToEndPipelineTest {
         }
         override suspend fun updateState(connectionId: String, state: String) {
             connections[connectionId]?.let { connections[connectionId] = it.copy(state = state) }
+        }
+        override suspend fun updateSendSequence(relationshipId: String, sendSequence: Long) {
+            val conn = connections.values.find { it.relationshipId == relationshipId }
+            if (conn != null) connections[conn.connectionId] = conn.copy(sendSequence = sendSequence)
+        }
+        override suspend fun updateRecvSequence(relationshipId: String, recvSequence: Long) {
+            val conn = connections.values.find { it.relationshipId == relationshipId }
+            if (conn != null) connections[conn.connectionId] = conn.copy(recvSequence = recvSequence)
         }
     }
 
@@ -294,6 +320,7 @@ class EndToEndPipelineTest {
             val signedData = ContactInviteCodec.serializeForSigning(
                 protocolVersion = 1,
                 inviteId = inviteId,
+                identityId = identity.identityId,
                 displayName = identity.displayName,
                 signingPublicKey = identity.signingPublicKey,
                 encryptionPublicKey = identity.encryptionPublicKey,
@@ -314,6 +341,7 @@ class EndToEndPipelineTest {
             return ContactInviteV1(
                 protocolVersion = 1,
                 inviteId = inviteId,
+                identityId = identity.identityId,
                 displayName = identity.displayName,
                 identitySigningPublicKey = identity.signingPublicKey,
                 identityEncryptionPublicKey = identity.encryptionPublicKey,
@@ -865,6 +893,7 @@ class EndToEndPipelineTest {
         // 4. Alice sends wire ContactBootstrapPayload to Bob over invite queue
         val bootstrapSignedData = ContactBootstrapPayload.serializeForSigning(
             inviteId = scannedInvite.inviteId,
+            initiatorIdentityId = alice.identity.identityId,
             displayName = alice.identity.displayName,
             signingPub = alice.identity.signingPublicKey,
             encryptionPub = alice.identity.encryptionPublicKey,
@@ -873,6 +902,7 @@ class EndToEndPipelineTest {
         val bootstrapSig = IdentityCrypto.signEd25519(alice.identity.signingPrivateKey, bootstrapSignedData)
         val bootstrapWire = ContactBootstrapPayload(
             inviteId = scannedInvite.inviteId,
+            initiatorIdentityId = alice.identity.identityId,
             initiatorDisplayName = alice.identity.displayName,
             initiatorSigningPublicKey = alice.identity.signingPublicKey,
             initiatorEncryptionPublicKey = alice.identity.encryptionPublicKey,

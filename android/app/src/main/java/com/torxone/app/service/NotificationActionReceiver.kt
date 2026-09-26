@@ -47,8 +47,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
-                            val conv = app.database.conversationDao().getById(conversationId)
-                            val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
+                            val conv = app.database.conversationDao().getById(conversationId) ?: run {
+                                Log.e(TAG, "[INLINE REPLY] Conversation not found: $conversationId")
+                                return@launch
+                            }
+                            val isGroup = conv.type == com.torxone.app.data.entity.ConversationType.GROUP
 
                             if (isGroup) {
                                 app.groupService.sendGroupText(
@@ -58,16 +61,22 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                 app.groupService.markGroupRead(conversationId)
                                 notificationManager.cancelForConversation(conversationId)
                             } else {
-                                val localIdentity = identityRepo.loadIdentity()
-                                val localId = localIdentity?.identityId ?: "local"
-                                val contact = contactDao.getByConversationId(conversationId)
-                                val recipientId = contact?.contactId ?: "peer"
+                                val localIdentity = identityRepo.loadIdentity() ?: run {
+                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Local identity missing")
+                                    return@launch
+                                }
+                                val contact = contactDao.getByConversationId(conversationId) ?: run {
+                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Contact missing for conv=$conversationId")
+                                    return@launch
+                                }
+                                val relationshipId = contact.relationshipId
+                                val recipientId = contact.remoteIdentityId.ifBlank { contact.contactId }
 
                                 // Route through golden path
                                 chatService.sendTextMessage(
                                     conversationId = conversationId,
                                     relationshipId = relationshipId,
-                                    localIdentityId = localId,
+                                    localIdentityId = localIdentity.identityId,
                                     recipientId = recipientId,
                                     text = replyText
                                 )
@@ -76,7 +85,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                 chatService.markConversationRead(
                                     conversationId = conversationId,
                                     relationshipId = relationshipId,
-                                    localIdentityId = localId,
+                                    localIdentityId = localIdentity.identityId,
                                     recipientId = recipientId
                                 )
                                 notificationManager.cancelForConversation(conversationId)
@@ -95,22 +104,31 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
-                        val conv = app.database.conversationDao().getById(conversationId)
-                        val isGroup = conv?.type == com.torxone.app.data.entity.ConversationType.GROUP
+                        val conv = app.database.conversationDao().getById(conversationId) ?: run {
+                            Log.e(TAG, "[MARK READ] Conversation not found: $conversationId")
+                            return@launch
+                        }
+                        val isGroup = conv.type == com.torxone.app.data.entity.ConversationType.GROUP
 
                         if (isGroup) {
                             app.groupService.markGroupRead(conversationId)
                             notificationManager.cancelForConversation(conversationId)
                         } else {
-                            val localIdentity = identityRepo.loadIdentity()
-                            val localId = localIdentity?.identityId ?: "local"
-                            val contact = contactDao.getByConversationId(conversationId)
-                            val recipientId = contact?.contactId ?: "peer"
+                            val localIdentity = identityRepo.loadIdentity() ?: run {
+                                Log.e(TAG, "[MARK READ] Fail closed: Local identity missing")
+                                return@launch
+                            }
+                            val contact = contactDao.getByConversationId(conversationId) ?: run {
+                                Log.e(TAG, "[MARK READ] Fail closed: Contact missing for conv=$conversationId")
+                                return@launch
+                            }
+                            val relationshipId = contact.relationshipId
+                            val recipientId = contact.remoteIdentityId.ifBlank { contact.contactId }
 
                             chatService.markConversationRead(
                                 conversationId = conversationId,
                                 relationshipId = relationshipId,
-                                localIdentityId = localId,
+                                localIdentityId = localIdentity.identityId,
                                 recipientId = recipientId
                             )
                             notificationManager.cancelForConversation(conversationId)

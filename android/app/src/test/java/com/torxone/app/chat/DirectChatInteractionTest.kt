@@ -673,6 +673,8 @@ class DirectChatInteractionTest {
                 override suspend fun isProcessed(envelopeId: String) = processedAlice.isProcessed(envelopeId)
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) { processedAlice.markProcessed(ProcessedEnvelope(entity.envelopeId, entity.logicalMessageId)) }
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+                    if (processedAlice.isProcessed(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = ChatReceiver(msgDaoAlice, convDaoAlice, trackerAlice),
@@ -696,6 +698,8 @@ class DirectChatInteractionTest {
                 override suspend fun isProcessed(envelopeId: String) = processedBob.isProcessed(envelopeId)
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) { processedBob.markProcessed(ProcessedEnvelope(entity.envelopeId, entity.logicalMessageId)) }
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+                    if (processedBob.isProcessed(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = ChatReceiver(msgDaoBob, convDaoBob, trackerBob),

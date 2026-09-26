@@ -336,5 +336,7 @@ class TestProcessedStore : ProcessedEnvelopeStore, ProcessedEnvelopeDao {
     override suspend fun isMessageProcessed(logicalMessageId: String): Boolean = processed.contains(logicalMessageId)
     override suspend fun markProcessed(record: ProcessedEnvelope) { processed.add(record.envelopeId) }
     override suspend fun insert(entity: ProcessedEnvelopeEntity) { processed.add(entity.envelopeId) }
+    override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+        if (processed.contains(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
     override suspend fun pruneOlderThan(before: Long) {}
 }

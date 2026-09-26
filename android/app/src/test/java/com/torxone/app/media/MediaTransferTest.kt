@@ -23,6 +23,7 @@ import java.nio.file.Files
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Comprehensive integration test suite for Media, Files & Voice Notes.
@@ -224,18 +225,46 @@ class MediaTransferTest {
     }
 
     class TestOutboxDao : OutboxDao {
+        private val seqCounter = AtomicLong(0)
+        private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, OutboxEntity>()
 
-        override suspend fun getPending(now: Long): List<OutboxEntity> =
-            items.values.filter { it.status in listOf("QUEUED", "TRANSMITTING") }.sortedByDescending { it.priority }
+        override suspend fun getPending(now: Long): List<OutboxEntity> {
+            val nowTime = if (now != 0L) now else System.currentTimeMillis()
+            return items.values
+                .filter {
+                    ((it.status == "QUEUED" || it.status == "RETRY_WAIT") ||
+                     (it.status == "TRANSPORT_ACCEPTED" && nowTime - it.updatedAt > 3000L)) &&
+                    it.nextAttemptAt <= nowTime
+                }
+                .sortedWith(
+                    compareByDescending<OutboxEntity> { it.priority }
+                        .thenBy { insertOrder[it.deliveryId] ?: 0L }
+                        .thenBy { it.createdAt }
+                )
+        }
 
-        override suspend fun insert(item: OutboxEntity) { items[item.deliveryId] = item }
+        override suspend fun insert(item: OutboxEntity) {
+            insertOrder.putIfAbsent(item.deliveryId, seqCounter.incrementAndGet())
+            items[item.deliveryId] = item
+        }
+
         override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
             items[deliveryId]?.let { items[deliveryId] = it.copy(status = status, updatedAt = now) }
         }
-        override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
+
+        override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {
+            items[deliveryId]?.let {
+                items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, status = "RETRY_WAIT", updatedAt = now)
+            }
+        }
+
         override suspend fun removeByMessageId(logicalMessageId: String) {
-            items.entries.removeIf { it.value.logicalMessageId == logicalMessageId }
+            val keys = items.values.filter { it.logicalMessageId == logicalMessageId }.map { it.deliveryId }
+            for (key in keys) {
+                items.remove(key)
+                insertOrder.remove(key)
+            }
         }
     }
 
@@ -263,6 +292,8 @@ class MediaTransferTest {
         override suspend fun isProcessed(envelopeId: String): Boolean = set.contains(envelopeId)
         override suspend fun isMessageProcessed(logicalMessageId: String): Boolean = set.contains(logicalMessageId)
         override suspend fun insert(entity: ProcessedEnvelopeEntity) { set.add(entity.envelopeId) }
+        override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? =
+            if (set.contains(envelopeId)) ProcessedEnvelopeEntity(envelopeId, "test", System.currentTimeMillis()) else null
         override suspend fun pruneOlderThan(before: Long) {}
     }
 
@@ -311,7 +342,12 @@ class MediaTransferTest {
                             ciphertext = item.ciphertext,
                             queueAuthenticator = item.queueAuthenticator,
                             status = item.status.name,
-                            priority = item.priority
+                            priority = item.priority,
+                            attemptCount = item.attemptCount,
+                            nextAttemptAt = item.nextAttemptAt,
+                            createdAt = item.createdAt,
+                            updatedAt = item.updatedAt,
+                            expectsAck = item.expectsAck
                         )
                     )
                 }
@@ -326,14 +362,21 @@ class MediaTransferTest {
                             ciphertext = it.ciphertext,
                             queueAuthenticator = it.queueAuthenticator,
                             status = DeliveryStatus.valueOf(it.status),
-                            priority = it.priority
+                            priority = it.priority,
+                            attemptCount = it.attemptCount,
+                            nextAttemptAt = it.nextAttemptAt,
+                            createdAt = it.createdAt,
+                            updatedAt = it.updatedAt,
+                            expectsAck = it.expectsAck
                         )
                     }
                 }
                 override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
                     outboxDao.updateStatus(deliveryId, status.name)
                 }
-                override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {}
+                override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
+                    outboxDao.updateRetry(deliveryId, attemptCount, nextAttemptAt)
+                }
                 override suspend fun removeByMessageId(logicalMessageId: String) {
                     outboxDao.removeByMessageId(logicalMessageId)
                 }
@@ -1042,6 +1085,7 @@ class MediaTransferTest {
         // Under full-suite GC pressure this needs a generous timeout + GC hints.
         withTimeout(60000) {
             while (aliceEncFile.exists()) {
+                alice.mediaStorage.cleanupTempTransfer(aliceMedia.mediaId)
                 System.gc()
                 delay(200)
             }

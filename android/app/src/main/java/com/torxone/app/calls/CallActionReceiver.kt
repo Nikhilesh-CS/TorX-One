@@ -23,8 +23,6 @@ class CallActionReceiver : BroadcastReceiver() {
         private const val TAG = "CallActionReceiver"
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as TorXOneApplication
         val callManager = app.callManager
@@ -33,23 +31,55 @@ class CallActionReceiver : BroadcastReceiver() {
         when (intent.action) {
             CallNotificationManager.ACTION_ANSWER -> {
                 Log.d(TAG, "Answer action for call=$callId")
-                scope.launch {
-                    callManager.acceptCall(callId)
-                    app.callNotificationManager.cancelIncomingNotification()
+                if (!com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
+                    Log.w(TAG, "RECORD_AUDIO not granted; opening activity to handle permission flow")
+                    val callIntent = Intent(context, com.torxone.app.MainActivity::class.java).apply {
+                        action = "ACTION_ANSWER_CALL"
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        putExtra("callId", callId)
+                    }
+                    context.startActivity(callIntent)
+                    return
+                }
+
+                val pendingResult = goAsync()
+                CoroutineScope(Dispatchers.Main.immediate).launch {
+                    try {
+                        callManager.acceptCall(callId)
+                        app.callNotificationManager.cancelIncomingNotification()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to accept call: ${e.message}", e)
+                    } finally {
+                        pendingResult.finish()
+                    }
                 }
             }
             CallNotificationManager.ACTION_DECLINE -> {
                 Log.d(TAG, "Decline action for call=$callId")
-                scope.launch {
-                    callManager.declineCall(callId)
-                    app.callNotificationManager.cancelAll()
+                val pendingResult = goAsync()
+                CoroutineScope(Dispatchers.Main.immediate).launch {
+                    try {
+                        callManager.declineCall(callId)
+                        app.callNotificationManager.cancelAll()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to decline call: ${e.message}", e)
+                    } finally {
+                        pendingResult.finish()
+                    }
                 }
             }
             CallNotificationManager.ACTION_HANGUP -> {
                 Log.d(TAG, "Hangup action for call=$callId")
-                scope.launch {
-                    callManager.hangUp()
-                    app.callNotificationManager.cancelAll()
+                val pendingResult = goAsync()
+                CoroutineScope(Dispatchers.Main.immediate).launch {
+                    try {
+                        callManager.hangUp(callId)
+                        app.callNotificationManager.cancelAll()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to hang up call: ${e.message}", e)
+                    } finally {
+                        pendingResult.finish()
+                    }
                 }
             }
         }

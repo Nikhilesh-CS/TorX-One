@@ -11,6 +11,7 @@ import java.util.UUID
 data class ContactInviteV1(
     val protocolVersion: Int = 1,
     val inviteId: String = UUID.randomUUID().toString(),
+    val identityId: String = "",
     val displayName: String,
     val identitySigningPublicKey: ByteArray,
     val identityEncryptionPublicKey: ByteArray,

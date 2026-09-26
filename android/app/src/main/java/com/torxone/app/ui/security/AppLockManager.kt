@@ -46,6 +46,10 @@ object AppLockManager {
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
+        if (!canAuthenticate(activity)) {
+            onError("Biometric authentication is not configured or unavailable on this device")
+            return
+        }
         val executor = ContextCompat.getMainExecutor(activity)
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {

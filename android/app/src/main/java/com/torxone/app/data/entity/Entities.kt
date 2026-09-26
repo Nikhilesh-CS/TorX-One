@@ -160,7 +160,10 @@ data class ContactEntity(
     val conversationId: String,
 
     @ColumnInfo(name = "created_at")
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "remote_identity_id", defaultValue = "''")
+    val remoteIdentityId: String = ""
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

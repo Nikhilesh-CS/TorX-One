@@ -30,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
 class TorXAgent(
     private val transportRouter: TransportRouter,
     private val outboxStore: OutboxStore,
-    private val processedStore: ProcessedEnvelopeStore,
+    private val processedStore: ProcessedEnvelopeStore? = null,
     private val coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val baseRetryDelayMs: Long = 3_000L,
     private val outboxPollIntervalMs: Long = 1_000L
@@ -77,6 +77,18 @@ class TorXAgent(
         Log.d(TAG, "[QUEUE] Enqueuing env=${item.deliveryId.take(8)} for msg=${item.logicalMessageId.take(8)}")
         outboxStore.insert(item)
         emitUpdate(item.logicalMessageId, DeliveryStatus.QUEUED)
+        sendSignal.trySend(Unit)
+    }
+
+    /**
+     * Wake the agent when an item was already persisted inside an outer database transaction.
+     */
+    fun wake(logicalMessageId: String? = null) {
+        if (logicalMessageId != null) {
+            scope.launch {
+                emitUpdate(logicalMessageId, DeliveryStatus.QUEUED)
+            }
+        }
         sendSignal.trySend(Unit)
     }
 

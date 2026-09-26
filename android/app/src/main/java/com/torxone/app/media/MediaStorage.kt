@@ -105,18 +105,18 @@ class MediaStorage(
         try {
             val file = getTempEncryptedFile(mediaId)
             if (!file.exists()) return
-            if (!file.delete()) {
+            var deleted = file.delete()
+            var retries = 0
+            while (!deleted && retries < 10) {
                 // On Windows, file handles or antivirus scanners may linger briefly.
                 // Retry with System.gc() hints to clear any lingering handles.
                 System.gc()
                 Thread.sleep(50)
-                if (!file.delete()) {
-                    System.gc()
-                    Thread.sleep(100)
-                    if (!file.delete()) {
-                        file.deleteOnExit()
-                    }
-                }
+                deleted = file.delete()
+                retries++
+            }
+            if (!deleted) {
+                file.deleteOnExit()
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to cleanup temp transfer for mediaId=$mediaId: ${e.message}", e)

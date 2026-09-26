@@ -241,6 +241,23 @@ class WebRtcClient(
         return null
     }
 
+    private val pendingIceCandidates = mutableListOf<IceCandidate>()
+    @Volatile
+    private var isRemoteDescriptionSet = false
+
+    private fun drainPendingIceCandidates() {
+        synchronized(pendingIceCandidates) {
+            val pc = peerConnection
+            if (pc != null && isRemoteDescriptionSet) {
+                Log.d(TAG, "[ICE DRAIN] Flushing ${pendingIceCandidates.size} buffered ICE candidates")
+                for (cand in pendingIceCandidates) {
+                    pc.addIceCandidate(cand)
+                }
+                pendingIceCandidates.clear()
+            }
+        }
+    }
+
     // ─── SDP Negotiation ─────────────────────────────────────────────────
 
     fun createOffer(callback: (String) -> Unit) {
@@ -255,6 +272,9 @@ class WebRtcClient(
             }
             override fun onCreateFailure(error: String) {
                 Log.e(TAG, "Create offer failed: $error")
+                scope.launch {
+                    activeCallId?.let { callManager.onCallFailed(it, "Create offer failed: $error") }
+                }
             }
             override fun onSetSuccess() {}
             override fun onSetFailure(error: String) {}
@@ -265,6 +285,8 @@ class WebRtcClient(
         val offerSdp = SessionDescription(SessionDescription.Type.OFFER, sdpOffer)
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
+                isRemoteDescriptionSet = true
+                drainPendingIceCandidates()
                 val constraints = MediaConstraints().apply {
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
                     mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
@@ -276,6 +298,9 @@ class WebRtcClient(
                     }
                     override fun onCreateFailure(error: String) {
                         Log.e(TAG, "Create answer failed: $error")
+                        scope.launch {
+                            activeCallId?.let { callManager.onCallFailed(it, "Create answer failed: $error") }
+                        }
                     }
                     override fun onSetSuccess() {}
                     override fun onSetFailure(error: String) {}
@@ -283,6 +308,9 @@ class WebRtcClient(
             }
             override fun onSetFailure(error: String) {
                 Log.e(TAG, "Set remote offer failed: $error")
+                scope.launch {
+                    activeCallId?.let { callManager.onCallFailed(it, "Set remote offer failed: $error") }
+                }
             }
             override fun onCreateSuccess(sdp: SessionDescription) {}
             override fun onCreateFailure(error: String) {}
@@ -291,12 +319,33 @@ class WebRtcClient(
 
     fun setRemoteAnswer(sdpAnswer: String) {
         val answerSdp = SessionDescription(SessionDescription.Type.ANSWER, sdpAnswer)
-        peerConnection?.setRemoteDescription(noOpSdpObserver, answerSdp)
+        peerConnection?.setRemoteDescription(object : SdpObserver {
+            override fun onSetSuccess() {
+                isRemoteDescriptionSet = true
+                drainPendingIceCandidates()
+            }
+            override fun onSetFailure(error: String) {
+                Log.e(TAG, "Set remote answer failed: $error")
+                scope.launch {
+                    activeCallId?.let { callManager.onCallFailed(it, "Set remote answer failed: $error") }
+                }
+            }
+            override fun onCreateSuccess(sdp: SessionDescription) {}
+            override fun onCreateFailure(error: String) {}
+        }, answerSdp)
     }
 
     fun addRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
         val iceCandidate = IceCandidate(sdpMid ?: "", sdpMLineIndex, candidate)
-        peerConnection?.addIceCandidate(iceCandidate)
+        synchronized(pendingIceCandidates) {
+            val pc = peerConnection
+            if (pc != null && isRemoteDescriptionSet) {
+                pc.addIceCandidate(iceCandidate)
+            } else {
+                Log.d(TAG, "[ICE BUFFER] Buffering remote candidate until remote description is set")
+                pendingIceCandidates.add(iceCandidate)
+            }
+        }
     }
 
     // ─── Media Controls ──────────────────────────────────────────────────
@@ -335,6 +384,10 @@ class WebRtcClient(
      */
     fun release() {
         activeCallId = null
+        synchronized(pendingIceCandidates) {
+            pendingIceCandidates.clear()
+            isRemoteDescriptionSet = false
+        }
 
         try { videoCapturer?.stopCapture() } catch (_: Exception) {}
         videoCapturer?.dispose()

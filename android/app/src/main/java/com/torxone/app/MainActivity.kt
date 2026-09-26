@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -18,9 +19,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.torxone.app.contacts.ContactsViewModel
+import com.torxone.app.data.entity.ContactEntity
 import com.torxone.app.data.entity.ConversationEntity
-import com.torxone.app.data.entity.MessageEntity
+import com.torxone.app.data.entity.ConversationType
+import com.torxone.app.identity.TorXIdentity
 import com.torxone.app.media.RealVoiceNoteRecorder
 import com.torxone.app.profile.SettingsViewModel
 import com.torxone.app.ui.components.ContactInviteDialog
@@ -37,7 +43,19 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            TorXOneTheme {
+            val app = applicationContext as TorXOneApplication
+            val themeMode by app.settingsRepository.themeMode.collectAsState(initial = "SYSTEM")
+            val dynamicColorsEnabled by app.settingsRepository.dynamicColorsEnabled.collectAsState(initial = true)
+            val isDark = when (themeMode) {
+                "DARK" -> true
+                "LIGHT" -> false
+                else -> isSystemInDarkTheme()
+            }
+
+            TorXOneTheme(
+                darkTheme = isDark,
+                dynamicColor = dynamicColorsEnabled
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -127,8 +145,36 @@ fun TorXOneApp() {
         }
     }
 
-    // App Lock: trigger biometric prompt on resume / launch when enabled
-    LaunchedEffect(settingsState.appLockEnabled) {
+    // App Lock: track background timeout and reset unlocked state (M31)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var backgroundTimestamp by remember { mutableLongStateOf(0L) }
+
+    DisposableEffect(lifecycleOwner, settingsState.appLockEnabled, settingsState.appLockTimeoutMs) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    backgroundTimestamp = System.currentTimeMillis()
+                }
+                Lifecycle.Event.ON_START -> {
+                    if (settingsState.appLockEnabled && backgroundTimestamp > 0L) {
+                        val elapsed = System.currentTimeMillis() - backgroundTimestamp
+                        if (elapsed >= settingsState.appLockTimeoutMs) {
+                            isAppUnlocked = false
+                        }
+                    }
+                    backgroundTimestamp = 0L
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // App Lock: trigger biometric prompt on resume / launch when locked
+    LaunchedEffect(settingsState.appLockEnabled, isAppUnlocked) {
         if (settingsState.appLockEnabled && !isAppUnlocked && fragmentActivity != null) {
             AppLockManager.promptUnlock(
                 activity = fragmentActivity,
@@ -161,7 +207,7 @@ fun TorXOneApp() {
         }
     }
 
-    // Navigation BackStack handling
+    // Navigation BackStack handling (M29)
     var screenStack by remember { mutableStateOf<List<Screen>>(emptyList()) }
 
     fun navigateTo(newScreen: Screen) {
@@ -176,10 +222,12 @@ fun TorXOneApp() {
             val prev = screenStack.last()
             screenStack = screenStack.dropLast(1)
             currentScreen = prev
+        } else {
+            currentScreen = Screen.ConversationList
         }
     }
 
-    BackHandler(enabled = screenStack.isNotEmpty()) {
+    BackHandler(enabled = screenStack.isNotEmpty() || (currentScreen != Screen.ConversationList && currentScreen != Screen.Landing)) {
         navigateBack()
     }
 
@@ -219,6 +267,7 @@ fun TorXOneApp() {
                             app.identityRepository.createIdentity(displayName)
                         }
 
+                        screenStack = emptyList()
                         currentScreen = Screen.ConversationList
                     }
                 }
@@ -232,22 +281,24 @@ fun TorXOneApp() {
                 viewModel = conversationListViewModel,
                 onConversationClick = { id ->
                     val clicked = uiState.conversations.find { it.conversationId == id }
-                    currentScreen = Screen.Chat(
-                        conversationId = id,
-                        contactName = clicked?.title ?: "Chat"
+                    navigateTo(
+                        Screen.Chat(
+                            conversationId = id,
+                            contactName = clicked?.title ?: "Chat"
+                        )
                     )
                 },
                 onArchivedClick = {
-                    currentScreen = Screen.ArchivedList
+                    navigateTo(Screen.ArchivedList)
                 },
                 onScanQrClick = {
                     showInviteDialog = true
                 },
                 onNewGroupClick = {
-                    currentScreen = Screen.NewGroup
+                    navigateTo(Screen.NewGroup)
                 },
                 onSettingsClick = {
-                    currentScreen = Screen.Settings
+                    navigateTo(Screen.Settings)
                 }
             )
         }
@@ -259,25 +310,27 @@ fun TorXOneApp() {
                 viewModel = conversationListViewModel,
                 onConversationClick = { id ->
                     val clicked = uiState.archivedConversations.find { it.conversationId == id }
-                    currentScreen = Screen.Chat(
-                        conversationId = id,
-                        contactName = clicked?.title ?: "Chat"
+                    navigateTo(
+                        Screen.Chat(
+                            conversationId = id,
+                            contactName = clicked?.title ?: "Chat"
+                        )
                     )
                 },
                 onBackClick = {
-                    currentScreen = Screen.ConversationList
+                    navigateBack()
                 }
             )
         }
 
         is Screen.Chat -> {
-            // Track active conversation for notification suppression and unread counts (Section 42)
+            // Track active conversation for notification suppression and unread counts
             DisposableEffect(screen.conversationId) {
                 app.activeConversationTracker.setActiveConversation(screen.conversationId)
                 app.notificationManager.cancelForConversation(screen.conversationId)
                 coroutineScope.launch {
                     val conv = app.database.conversationDao().getById(screen.conversationId)
-                    if (conv?.type == com.torxone.app.data.entity.ConversationType.GROUP) {
+                    if (conv?.type == ConversationType.GROUP) {
                         app.groupService.markGroupRead(screen.conversationId)
                     } else {
                         app.chatService.markConversationRead(screen.conversationId)
@@ -288,22 +341,53 @@ fun TorXOneApp() {
                 }
             }
 
-            val conversationState = produceState<com.torxone.app.data.entity.ConversationEntity?>(initialValue = null, screen.conversationId) {
-                value = app.database.conversationDao().getById(screen.conversationId)
-            }
-            val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
-                value = app.identityRepository.loadIdentity()
-            }
-            val conversation = conversationState.value
-            val localIdentity = localIdentityState.value
+            var isLoadingConversation by remember(screen.conversationId) { mutableStateOf(true) }
+            var conversation by remember(screen.conversationId) { mutableStateOf<ConversationEntity?>(null) }
+            var isLoadingIdentity by remember { mutableStateOf(true) }
+            var localIdentity by remember { mutableStateOf<TorXIdentity?>(null) }
 
-            if (conversation != null && localIdentity != null) {
-                if (conversation.type == com.torxone.app.data.entity.ConversationType.GROUP) {
+            LaunchedEffect(screen.conversationId) {
+                isLoadingConversation = true
+                conversation = app.database.conversationDao().getById(screen.conversationId)
+                isLoadingConversation = false
+            }
+
+            LaunchedEffect(Unit) {
+                isLoadingIdentity = true
+                localIdentity = app.identityRepository.loadIdentity()
+                isLoadingIdentity = false
+            }
+
+            if (isLoadingConversation || isLoadingIdentity) {
+                // Loading spinner while conversation entity and identity are loading (M40)
+                Scaffold(
+                    topBar = {
+                        TopAppBar(
+                            title = { Text(screen.contactName.ifBlank { "Chat" }) },
+                            navigationIcon = {
+                                IconButton(onClick = { navigateBack() }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                }
+                            }
+                        )
+                    }
+                ) { padding ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (conversation != null && localIdentity != null) {
+                if (conversation!!.type == ConversationType.GROUP) {
                     val groupViewModel = remember(screen.conversationId) {
                         com.torxone.app.groups.GroupChatViewModel(
                             groupId = screen.conversationId,
                             conversationId = screen.conversationId,
-                            localIdentityId = localIdentity.identityId,
+                            localIdentityId = localIdentity!!.identityId,
                             groupService = app.groupService,
                             groupDao = app.database.groupDao(),
                             groupMemberDao = app.database.groupMemberDao(),
@@ -319,27 +403,56 @@ fun TorXOneApp() {
                     ChatScreen(
                         viewModel = groupViewModel,
                         onBackClick = {
-                            currentScreen = Screen.ConversationList
+                            navigateBack()
                         },
                         onHeaderClick = {
-                            currentScreen = Screen.GroupInfo(screen.conversationId)
+                            navigateTo(Screen.GroupInfo(screen.conversationId))
                         }
                     )
                 } else {
                     // DIRECT conversation: Load contact strictly by conversationId
-                    val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
-                        value = app.database.contactDao().getByConversationId(screen.conversationId)
-                    }
-                    val contact = contactState.value
+                    var isLoadingContact by remember(screen.conversationId) { mutableStateOf(true) }
+                    var contact by remember(screen.conversationId) { mutableStateOf<ContactEntity?>(null) }
 
-                    if (contact != null) {
+                    LaunchedEffect(screen.conversationId) {
+                        isLoadingContact = true
+                        contact = app.database.contactDao().getByConversationId(screen.conversationId)
+                        isLoadingContact = false
+                    }
+
+                    if (isLoadingContact) {
+                        // Loading spinner while contact is loading (M40)
+                        Scaffold(
+                            topBar = {
+                                TopAppBar(
+                                    title = { Text(screen.contactName.ifBlank { "Chat" }) },
+                                    navigationIcon = {
+                                        IconButton(onClick = { navigateBack() }) {
+                                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                        }
+                                    }
+                                )
+                            }
+                        ) { padding ->
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(padding),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator()
+                            }
+                        }
+                    } else if (contact != null) {
                         val voiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
-                        val viewModel = remember(screen.conversationId, contact.relationshipId) {
+                        // Cryptographic remoteIdentityId strictly bound (C1)
+                        val peerNetworkIdentity = contact!!.remoteIdentityId.ifBlank { contact!!.contactId }
+                        val viewModel = remember(screen.conversationId, contact!!.relationshipId) {
                             com.torxone.app.chat.ChatViewModel(
                                 conversationId = screen.conversationId,
-                                relationshipId = contact.relationshipId,
-                                localIdentityId = localIdentity.identityId,
-                                recipientId = contact.contactId,
+                                relationshipId = contact!!.relationshipId,
+                                localIdentityId = localIdentity!!.identityId,
+                                recipientId = peerNetworkIdentity,
                                 contactName = screen.contactName,
                                 chatService = app.chatService,
                                 presenceService = app.presenceService,
@@ -351,31 +464,31 @@ fun TorXOneApp() {
                         ChatScreen(
                             viewModel = viewModel,
                             onBackClick = {
-                                currentScreen = Screen.ConversationList
+                                navigateBack()
                             },
                             onHeaderClick = {
-                                currentScreen = Screen.ContactInfo(screen.conversationId, screen.contactName)
+                                navigateTo(Screen.ContactInfo(screen.conversationId, screen.contactName))
                             },
                             onStartVoiceCall = {
                                 coroutineScope.launch {
                                     app.callManager.startOutgoingCall(
                                         conversationId = screen.conversationId,
-                                        relationshipId = contact.relationshipId,
-                                        peerIdentityId = contact.contactId,
+                                        relationshipId = contact!!.relationshipId,
+                                        peerIdentityId = peerNetworkIdentity,
                                         type = com.torxone.app.calls.CallType.VOICE
                                     )
-                                    currentScreen = Screen.ActiveCall
+                                    navigateTo(Screen.ActiveCall)
                                 }
                             },
                             onStartVideoCall = {
                                 coroutineScope.launch {
                                     app.callManager.startOutgoingCall(
                                         conversationId = screen.conversationId,
-                                        relationshipId = contact.relationshipId,
-                                        peerIdentityId = contact.contactId,
+                                        relationshipId = contact!!.relationshipId,
+                                        peerIdentityId = peerNetworkIdentity,
                                         type = com.torxone.app.calls.CallType.VIDEO
                                     )
-                                    currentScreen = Screen.ActiveCall
+                                    navigateTo(Screen.ActiveCall)
                                 }
                             }
                         )
@@ -385,7 +498,7 @@ fun TorXOneApp() {
                                 TopAppBar(
                                     title = { Text(screen.contactName.ifBlank { "Conversation" }) },
                                     navigationIcon = {
-                                        IconButton(onClick = { currentScreen = Screen.ConversationList }) {
+                                        IconButton(onClick = { navigateBack() }) {
                                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                                         }
                                     }
@@ -406,7 +519,7 @@ fun TorXOneApp() {
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Text("This conversation or contact cannot be found.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Spacer(modifier = Modifier.height(16.dp))
-                                    Button(onClick = { currentScreen = Screen.ConversationList }) {
+                                    Button(onClick = { navigateBack() }) {
                                         Text("Back to Chats")
                                     }
                                 }
@@ -420,7 +533,7 @@ fun TorXOneApp() {
                         TopAppBar(
                             title = { Text(screen.contactName.ifBlank { "Chat" }) },
                             navigationIcon = {
-                                IconButton(onClick = { currentScreen = Screen.ConversationList }) {
+                                IconButton(onClick = { navigateBack() }) {
                                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                                 }
                             }
@@ -439,9 +552,9 @@ fun TorXOneApp() {
                         ) {
                             Text("Conversation Not Found", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text("This conversation cannot be found or is loading.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("This conversation cannot be found.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { currentScreen = Screen.ConversationList }) {
+                            Button(onClick = { navigateBack() }) {
                                 Text("Back to Chats")
                             }
                         }
@@ -451,10 +564,10 @@ fun TorXOneApp() {
         }
 
         is Screen.ContactInfo -> {
-            val contactState = produceState<com.torxone.app.data.entity.ContactEntity?>(initialValue = null, screen.conversationId) {
+            val contactState = produceState<ContactEntity?>(initialValue = null, screen.conversationId) {
                 value = app.database.contactDao().getByConversationId(screen.conversationId)
             }
-            val conversationState = produceState<com.torxone.app.data.entity.ConversationEntity?>(initialValue = null, screen.conversationId) {
+            val conversationState = produceState<ConversationEntity?>(initialValue = null, screen.conversationId) {
                 value = app.database.conversationDao().getById(screen.conversationId)
             }
 
@@ -463,16 +576,17 @@ fun TorXOneApp() {
                 conversation = conversationState.value,
                 chatService = app.chatService,
                 onBackClick = {
-                    currentScreen = Screen.Chat(screen.conversationId, screen.contactName)
+                    navigateBack()
                 },
                 onChatDeleted = {
+                    screenStack = emptyList()
                     currentScreen = Screen.ConversationList
                 }
             )
         }
 
         is Screen.NewGroup -> {
-            val contactsState = produceState<List<com.torxone.app.data.entity.ContactEntity>>(initialValue = emptyList()) {
+            val contactsState = produceState<List<ContactEntity>>(initialValue = emptyList()) {
                 value = app.database.contactDao().getAll()
             }
 
@@ -485,20 +599,20 @@ fun TorXOneApp() {
                                 title = title,
                                 initialMembers = selectedMembers
                             )
-                            currentScreen = Screen.Chat(group.groupId, group.title)
+                            navigateTo(Screen.Chat(group.groupId, group.title))
                         } catch (e: Exception) {
                             android.util.Log.e("MainActivity", "Failed to create group: ${e.message}", e)
                         }
                     }
                 },
                 onBackClick = {
-                    currentScreen = Screen.ConversationList
+                    navigateBack()
                 }
             )
         }
 
         is Screen.GroupInfo -> {
-            val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
+            val localIdentityState = produceState<TorXIdentity?>(initialValue = null) {
                 value = app.identityRepository.loadIdentity()
             }
 
@@ -509,36 +623,37 @@ fun TorXOneApp() {
                 chatService = app.chatService,
                 localIdentityId = localIdentityState.value?.identityId,
                 onBackClick = {
-                    currentScreen = Screen.Chat(screen.groupId, "Group")
+                    navigateBack()
                 },
                 onGroupLeft = {
+                    screenStack = emptyList()
                     currentScreen = Screen.ConversationList
                 }
             )
         }
 
         is Screen.Settings -> {
-            val settingsState by settingsViewModel.uiState.collectAsState()
+            val currentSettingsState by settingsViewModel.uiState.collectAsState()
 
             SettingsScreen(
-                displayName = settingsState.displayName,
-                about = settingsState.about,
-                lastSeenVisible = settingsState.lastSeenVisible,
-                onlineVisible = settingsState.onlineVisible,
-                readReceiptsEnabled = settingsState.readReceiptsEnabled,
-                notificationsEnabled = settingsState.notificationsEnabled,
-                soundEnabled = settingsState.soundEnabled,
-                vibrationEnabled = settingsState.vibrationEnabled,
-                notificationPreviewMode = settingsState.notificationPreviewMode,
-                appLockEnabled = settingsState.appLockEnabled,
-                screenSecurityEnabled = settingsState.screenSecurityEnabled,
-                autoConnectNearby = settingsState.autoConnectNearby,
-                lowBandwidthMode = settingsState.lowBandwidthMode,
-                themeMode = settingsState.themeMode,
-                dynamicColorsEnabled = settingsState.dynamicColorsEnabled,
-                autoDownloadMedia = settingsState.autoDownloadMedia,
-                onBackClick = { currentScreen = Screen.ConversationList },
-                onProfileClick = { currentScreen = Screen.Profile },
+                displayName = currentSettingsState.displayName,
+                about = currentSettingsState.about,
+                lastSeenVisible = currentSettingsState.lastSeenVisible,
+                onlineVisible = currentSettingsState.onlineVisible,
+                readReceiptsEnabled = currentSettingsState.readReceiptsEnabled,
+                notificationsEnabled = currentSettingsState.notificationsEnabled,
+                soundEnabled = currentSettingsState.soundEnabled,
+                vibrationEnabled = currentSettingsState.vibrationEnabled,
+                notificationPreviewMode = currentSettingsState.notificationPreviewMode,
+                appLockEnabled = currentSettingsState.appLockEnabled,
+                screenSecurityEnabled = currentSettingsState.screenSecurityEnabled,
+                autoConnectNearby = currentSettingsState.autoConnectNearby,
+                lowBandwidthMode = currentSettingsState.lowBandwidthMode,
+                themeMode = currentSettingsState.themeMode,
+                dynamicColorsEnabled = currentSettingsState.dynamicColorsEnabled,
+                autoDownloadMedia = currentSettingsState.autoDownloadMedia,
+                onBackClick = { navigateBack() },
+                onProfileClick = { navigateTo(Screen.Profile) },
                 onPrivacyChange = { field, value -> settingsViewModel.setPrivacy(field, value) },
                 onNotificationChange = { field, value -> settingsViewModel.setNotification(field, value) },
                 onSecurityChange = { field, value -> settingsViewModel.setSecurity(field, value) },
@@ -549,22 +664,22 @@ fun TorXOneApp() {
         }
 
         is Screen.Profile -> {
-            val settingsState by settingsViewModel.uiState.collectAsState()
-            val localIdentityState = produceState<com.torxone.app.identity.TorXIdentity?>(initialValue = null) {
+            val currentSettingsState by settingsViewModel.uiState.collectAsState()
+            val localIdentityState = produceState<TorXIdentity?>(initialValue = null) {
                 value = app.identityRepository.loadIdentity()
             }
             val identity = localIdentityState.value
 
             ProfileScreen(
-                displayName = settingsState.displayName,
-                about = settingsState.about,
-                avatarUri = null,
+                displayName = currentSettingsState.displayName,
+                about = currentSettingsState.about,
+                avatarUri = currentSettingsState.avatarUri,
                 identityId = identity?.identityId ?: "",
                 signingPublicKey = identity?.signingPublicKey,
                 onUpdateProfile = { name, about ->
                     settingsViewModel.updateProfile(name, about)
                 },
-                onBackClick = { currentScreen = Screen.Settings },
+                onBackClick = { navigateBack() },
                 onShowQr = { showInviteDialog = true }
             )
         }
@@ -573,7 +688,7 @@ fun TorXOneApp() {
             CallScreen(
                 viewModel = callViewModel,
                 onBackClick = {
-                    currentScreen = Screen.ConversationList
+                    navigateBack()
                 }
             )
         }
@@ -584,9 +699,11 @@ fun TorXOneApp() {
             viewModel = contactsViewModel,
             onContactAdded = { conversationId, contactName ->
                 showInviteDialog = false
-                currentScreen = Screen.Chat(
-                    conversationId = conversationId,
-                    contactName = contactName.ifBlank { "Contact" }
+                navigateTo(
+                    Screen.Chat(
+                        conversationId = conversationId,
+                        contactName = contactName.ifBlank { "Contact" }
+                    )
                 )
             },
             onDismiss = {

@@ -30,8 +30,8 @@ class CallNotificationManager(private val context: Context) {
         private const val TAG = "CallNotifManager"
         const val CHANNEL_INCOMING = "torx_calls"
         const val CHANNEL_ACTIVE = "torx_active_call"
-        const val INCOMING_NOTIFICATION_ID = 9001
-        const val ACTIVE_NOTIFICATION_ID = 9002
+        const val INCOMING_NOTIFICATION_ID = 9101
+        const val ACTIVE_NOTIFICATION_ID = 9102
         const val ACTION_ANSWER = "com.torxone.app.calls.ACTION_ANSWER"
         const val ACTION_DECLINE = "com.torxone.app.calls.ACTION_DECLINE"
         const val ACTION_HANGUP = "com.torxone.app.calls.ACTION_HANGUP"
@@ -61,7 +61,7 @@ class CallNotificationManager(private val context: Context) {
             )
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 1000, 500, 1000)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            lockscreenVisibility = Notification.VISIBILITY_PRIVATE
         }
         nm.createNotificationChannel(incomingChannel)
 
@@ -119,6 +119,13 @@ class CallNotificationManager(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_INCOMING)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle("Incoming TorX call")
+            .setContentText("Secure $typeLabel call")
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+
         val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
             .setSmallIcon(android.R.drawable.ic_menu_call)
             .setContentTitle("Incoming TorX $typeLabel call")
@@ -131,7 +138,8 @@ class CallNotificationManager(private val context: Context) {
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .addAction(android.R.drawable.ic_delete, "Decline", declinePending)
             .addAction(android.R.drawable.ic_menu_call, "Answer", answerPending)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .build()
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

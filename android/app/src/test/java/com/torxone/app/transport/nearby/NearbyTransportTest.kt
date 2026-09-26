@@ -597,6 +597,19 @@ class NearbyTransportTest {
             ConnectionResolution(com.google.android.gms.common.api.Status.RESULT_SUCCESS)
         )
 
+        // Simulate Hello from Bob requesting relationship reconnection
+        val bobHello = NearbyWireFrame.Control.Hello(
+            protocolVersion = 1,
+            peerTieBreaker = 999L,
+            supportedFeatures = listOf("rel-hint:$relationshipId"),
+            maxFrameSize = 65536,
+            challenge = ByteArray(16)
+        )
+        transportAlice.payloadCallback.onPayloadReceived(
+            "ep-bob",
+            Payload.fromBytes(bobHello.encode())
+        )
+
         // Simulate AuthOk received for reconnected peer
         transportAlice.payloadCallback.onPayloadReceived(
             "ep-bob",

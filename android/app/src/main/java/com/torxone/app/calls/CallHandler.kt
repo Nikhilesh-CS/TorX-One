@@ -41,7 +41,8 @@ class CallHandler(
                 else -> Log.w(TAG, "Unexpected message type for CallHandler: ${envelope.messageType}")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle call signal ${envelope.messageType}: ${e.message}")
+            Log.e(TAG, "Failed to handle call signal ${envelope.messageType}: ${e.message}", e)
+            throw e
         }
     }
 

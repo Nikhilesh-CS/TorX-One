@@ -168,6 +168,9 @@ interface ProcessedEnvelopeDao {
     @Query("SELECT COUNT(*) FROM processed_envelopes WHERE envelope_id = :envelopeId")
     suspend fun isProcessed(envelopeId: String): Boolean
 
+    @Query("SELECT * FROM processed_envelopes WHERE envelope_id = :envelopeId LIMIT 1")
+    suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity?
+
     @Query("SELECT COUNT(*) FROM processed_envelopes WHERE logical_message_id = :logicalMessageId")
     suspend fun isMessageProcessed(logicalMessageId: String): Boolean
 
@@ -212,6 +215,12 @@ interface ConnectionDao {
 
     @Query("UPDATE connections SET state = :state WHERE connection_id = :connectionId")
     suspend fun updateState(connectionId: String, state: String)
+
+    @Query("UPDATE connections SET send_sequence = :sendSequence WHERE relationship_id = :relationshipId")
+    suspend fun updateSendSequence(relationshipId: String, sendSequence: Long)
+
+    @Query("UPDATE connections SET recv_sequence = :recvSequence WHERE relationship_id = :relationshipId")
+    suspend fun updateRecvSequence(relationshipId: String, recvSequence: Long)
 }
 
 @Dao

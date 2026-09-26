@@ -162,8 +162,23 @@ class NearbyTransport(
         }
     }
 
+    enum class EndpointHandshakeState {
+        CONNECTED,
+        HELLO_EXCHANGED,
+        AUTH_OK_EXPECTED,
+        READY
+    }
+
+    private val endpointHandshakeStates = ConcurrentHashMap<String, EndpointHandshakeState>()
+    private val endpointExpectedAuthOk = ConcurrentHashMap<String, String>()
+
     val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
+            if (!autoConnectEnabled) {
+                Log.w(TAG, "autoConnectNearby disabled; rejecting incoming connection from $endpointId")
+                connectionsAdapter.rejectConnection(endpointId)
+                return
+            }
             Log.d(TAG, "Connection initiated from $endpointId (${connectionInfo.endpointName}), accepting")
             _healthState.value = TransportHealthState.CONNECTING
             connectionsAdapter.acceptConnection(endpointId, payloadCallback)
@@ -173,6 +188,7 @@ class NearbyTransport(
             if (resolution.status.isSuccess) {
                 Log.i(TAG, "Connected to Nearby endpoint: $endpointId, beginning auth handshake")
                 directRouteTable.registerEndpoint(endpointId)
+                endpointHandshakeStates[endpointId] = EndpointHandshakeState.CONNECTED
                 _healthState.value = TransportHealthState.AUTHENTICATING
 
                 // Begin TorX connection handshake: Send HELLO with fresh challenge
@@ -234,6 +250,7 @@ class NearbyTransport(
     private fun handleHelloReceived(endpointId: String, hello: NearbyWireFrame.Control.Hello) {
         Log.d(TAG, "[HANDSHAKE] Received HELLO from $endpointId (v=${hello.protocolVersion}, maxFrame=${hello.maxFrameSize})")
         remoteChallenges[endpointId] = hello.challenge
+        endpointHandshakeStates[endpointId] = EndpointHandshakeState.HELLO_EXCHANGED
 
         // If this node hasn't sent its challenge yet, send HELLO
         if (!localChallenges.containsKey(endpointId)) {
@@ -249,9 +266,24 @@ class NearbyTransport(
             sendControlMessage(endpointId, myHello)
         }
 
-        // Prove active relationship capability for known connections
+        // Prove active relationship capability:
+        // Do not broadcast entire address book to unauthenticated peers (C12)
         val activeConnections = connectionManager?.getAllActiveConnections() ?: emptyList()
-        for (conn in activeConnections) {
+        val requestedRelHint = hello.supportedFeatures.firstOrNull { it.startsWith("rel-hint:") }?.removePrefix("rel-hint:")
+        val matchingConnections = if (requestedRelHint != null) {
+            activeConnections.filter { it.relationshipId.startsWith(requestedRelHint) }
+        } else {
+            val boundRel = directRouteTable.getRelationshipForEndpoint(endpointId)
+            if (boundRel != null) {
+                activeConnections.filter { it.relationshipId == boundRel }
+            } else if (activeConnections.size == 1) {
+                activeConnections
+            } else {
+                emptyList()
+            }
+        }
+
+        for (conn in matchingConnections) {
             val proofData = hello.challenge + "torx-nearby-auth-v1".toByteArray(Charsets.UTF_8)
             val proof = IdentityCrypto.hmacSha256(conn.sendAuth, proofData)
             val authProofMsg = NearbyWireFrame.Control.AuthProof(
@@ -260,6 +292,8 @@ class NearbyTransport(
                 sendQueueId = conn.sendQueueId,
                 recvQueueId = conn.recvQueueId
             )
+            endpointHandshakeStates[endpointId] = EndpointHandshakeState.AUTH_OK_EXPECTED
+            endpointExpectedAuthOk[endpointId] = conn.relationshipId
             sendControlMessage(endpointId, authProofMsg)
         }
     }
@@ -289,6 +323,7 @@ class NearbyTransport(
                 sendQueueId = conn.sendQueueId,
                 recvQueueId = conn.recvQueueId
             )
+            endpointHandshakeStates[endpointId] = EndpointHandshakeState.READY
             sendControlMessage(endpointId, NearbyWireFrame.Control.AuthOk(conn.relationshipId))
             _healthState.value = TransportHealthState.READY
             updateAvailability()
@@ -296,11 +331,21 @@ class NearbyTransport(
             // Reconnect recovery: trigger immediate retry so all queued messages flush
             agent?.triggerImmediateRetry()
         } else {
-            Log.e(TAG, "[AUTH REJECT] Invalid capability proof for relationship ${conn.relationshipId.take(8)}")
+            Log.e(TAG, "[AUTH REJECT] Invalid capability proof for relationship ${conn.relationshipId.take(8)} from $endpointId")
+            // Disconnect peer upon cryptographic authentication failure (M25)
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
         }
     }
 
     private fun handleAuthOkReceived(endpointId: String, authOk: NearbyWireFrame.Control.AuthOk) {
+        val expectedState = endpointHandshakeStates[endpointId]
+        val expectedRel = endpointExpectedAuthOk[endpointId]
+        if (expectedState != EndpointHandshakeState.AUTH_OK_EXPECTED || expectedRel != authOk.relationshipId) {
+            Log.w(TAG, "[AUTH OK REJECT] Unexpected AUTH_OK from $endpointId for relationship ${authOk.relationshipId.take(8)} (state=$expectedState, expectedRel=$expectedRel)")
+            return
+        }
+
         Log.i(TAG, "[AUTH OK] Peer confirmed route for relationship ${authOk.relationshipId.take(8)}")
         val conn = connectionManager?.getConnectionByRelationship(authOk.relationshipId)
         directRouteTable.bindRoute(
@@ -310,6 +355,7 @@ class NearbyTransport(
             sendQueueId = conn?.sendQueueId,
             recvQueueId = conn?.recvQueueId
         )
+        endpointHandshakeStates[endpointId] = EndpointHandshakeState.READY
         _healthState.value = TransportHealthState.READY
         updateAvailability()
 
@@ -330,6 +376,8 @@ class NearbyTransport(
         localChallenges.remove(endpointId)
         remoteChallenges.remove(endpointId)
         endpointSemaphores.remove(endpointId)
+        endpointHandshakeStates.remove(endpointId)
+        endpointExpectedAuthOk.remove(endpointId)
 
         // Cancel all pending transfers to this endpoint
         val iterator = payloadIdToEndpoint.entries.iterator()
@@ -408,25 +456,23 @@ class NearbyTransport(
         }
 
         // 2. Exact peer routing via DirectRouteTable
-        val targetEndpoint = directRouteTable.getEndpointForQueue(destination.address)
-            ?: if (destination.address.startsWith("invite-")) {
-                // QR bootstrap payloads allowed through single connected endpoint
-                directRouteTable.getAllEndpoints().firstOrNull()
-            } else if (directRouteTable.getAllEndpoints().size == 1) {
-                val single = directRouteTable.getAllEndpoints().first()
-                directRouteTable.bindQueue(destination.address, single)
-                single
-            } else if (directRouteTable.getAllEndpoints().isEmpty()) {
-                return TransportResult.Failed(type, "No Nearby endpoints currently connected")
+        val targetEndpoint = if (destination.address.startsWith("invite-")) {
+            // QR bootstrap payloads allowed through single connected endpoint
+            directRouteTable.getAllEndpoints().firstOrNull()
+        } else {
+            val ep = directRouteTable.getEndpointForQueue(destination.address)
+            if (ep != null && directRouteTable.isEndpointReady(ep)) {
+                ep
             } else {
-                return TransportResult.Failed(
-                    type,
-                    "Destination queue ${destination.address.take(8)} is not mapped to any connected peer"
-                )
+                null
             }
+        }
 
         if (targetEndpoint == null) {
-            return TransportResult.Failed(type, "No reachable endpoint for destination ${destination.address.take(8)}")
+            return TransportResult.Failed(
+                type,
+                "No authenticated READY route for destination ${destination.address.take(8)}"
+            )
         }
 
         // 3. Bounded concurrency / Flow control backpressure
@@ -475,10 +521,10 @@ class NearbyTransport(
 
     private fun updateAvailability() {
         val readyRoutes = directRouteTable.getAllReadyRoutes()
-        _availability.value = if (readyRoutes.isNotEmpty() || directRouteTable.getAllEndpoints().isNotEmpty()) {
+        _availability.value = if (readyRoutes.isNotEmpty()) {
             TransportAvailability.Available
         } else {
-            TransportAvailability.Unavailable("No connected Nearby peers")
+            TransportAvailability.Unavailable("No authenticated Nearby routes")
         }
     }
 }

@@ -23,8 +23,9 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class CallManager(
     private val callService: CallSignaling,
-    private val localIdentityId: String,
-    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val localIdentityId: String = "",
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val localIdentityIdProvider: () -> String? = { localIdentityId }
 ) {
     companion object {
         private const val TAG = "CallManager"
@@ -291,16 +292,30 @@ class CallManager(
     // ─── User Actions ────────────────────────────────────────────────────
 
     /**
-     * User hangs up the active call.
+     * User hangs up the active call. Verifies callId if provided to prevent stale intents from terminating new calls (M10).
      */
-    suspend fun hangUp() {
+    suspend fun hangUp(callId: String? = null) {
         val session = _activeCall.value ?: return
-        val reason = when (session.direction) {
-            CallDirection.OUTGOING -> CallEndReason.LOCAL_HANGUP
-            CallDirection.INCOMING -> CallEndReason.LOCAL_HANGUP
+        if (callId != null && session.callId != callId) {
+            Log.w(TAG, "[HANGUP IGNORED] Stale hangup for call=$callId, active call=${session.callId}")
+            return
         }
+        val reason = CallEndReason.LOCAL_HANGUP
         callService.sendEnd(session, reason)
         endCall(session.callId, reason)
+    }
+
+    /**
+     * Called when media/SDP operations fail (M7).
+     */
+    suspend fun onCallFailed(callId: String, error: String) {
+        val session = _activeCall.value ?: return
+        if (session.callId != callId) return
+        Log.e(TAG, "[CALL FAILED] Call $callId failed: $error")
+        cancelRingingTimeout()
+        cancelReconnectTimeout()
+        transition(callId, CallState.FAILED)
+        endCall(callId, CallEndReason.CONNECTION_FAILED)
     }
 
     fun toggleMute() {
@@ -339,9 +354,28 @@ class CallManager(
 
     // ─── State Machine ───────────────────────────────────────────────────
 
+    private fun isValidTransition(from: CallState, to: CallState): Boolean {
+        if (from == to) return true
+        return when (from) {
+            CallState.IDLE -> to in setOf(CallState.OUTGOING_PREPARING, CallState.INCOMING_RINGING)
+            CallState.OUTGOING_PREPARING -> to in setOf(CallState.OUTGOING_RINGING, CallState.ENDING, CallState.FAILED, CallState.ENDED)
+            CallState.OUTGOING_RINGING -> to in setOf(CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.MISSED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
+            CallState.INCOMING_RINGING -> to in setOf(CallState.CONNECTING, CallState.DECLINED, CallState.MISSED, CallState.BUSY, CallState.ENDING, CallState.ENDED, CallState.FAILED)
+            CallState.CONNECTING -> to in setOf(CallState.CONNECTED, CallState.RECONNECTING, CallState.ENDING, CallState.ENDED, CallState.FAILED)
+            CallState.CONNECTED -> to in setOf(CallState.RECONNECTING, CallState.ENDING, CallState.ENDED, CallState.FAILED)
+            CallState.RECONNECTING -> to in setOf(CallState.CONNECTED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
+            CallState.ENDING -> to in setOf(CallState.ENDED, CallState.FAILED)
+            CallState.ENDED, CallState.DECLINED, CallState.BUSY, CallState.MISSED, CallState.FAILED -> false
+        }
+    }
+
     private fun transition(callId: String, newState: CallState) {
         val session = _activeCall.value ?: return
         if (session.callId != callId) return
+        if (!isValidTransition(session.state, newState)) {
+            Log.w(TAG, "[ILLEGAL TRANSITION REJECTED] Cannot transition from ${session.state} to $newState for call=$callId")
+            return
+        }
         Log.d(TAG, "[STATE] ${session.state} → $newState for call=$callId")
         _activeCall.value = session.copy(state = newState)
     }
@@ -409,7 +443,8 @@ class CallManager(
         type: CallType,
         sdpOffer: String
     ): Boolean {
-        val weWin = localIdentityId < peerIdentityId
+        val myId = localIdentityIdProvider()?.ifEmpty { null } ?: localIdentityId
+        val weWin = myId < peerIdentityId
         return if (weWin) {
             // Our offer wins — ignore theirs, send BUSY back
             Log.i(TAG, "[COLLISION] We win (our identity < peer). Ignoring incoming offer $theirCallId")

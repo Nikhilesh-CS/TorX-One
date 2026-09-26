@@ -44,6 +44,7 @@ class ChatService(
     private val localMessageStateDao: LocalMessageStateDao? = null,
     private val notificationManager: TorXNotificationManager? = null,
     private val appSettingsRepository: AppSettingsRepository? = null,
+    private val sessionStore: com.torxone.app.crypto.SessionStore? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
     }
@@ -129,6 +130,7 @@ class ChatService(
             )
 
             transactionRunner {
+                sessionStore?.saveSession(updatedState)
                 messageDao.insertIfAbsent(messageEntity)
                 outboxDao.insert(outboxEntity)
                 conversationDao.updateLastMessage(
@@ -142,22 +144,8 @@ class ChatService(
             }
         }
 
-        // 4. Notify TorXAgent to drive transport
-        val deliveryItem = DeliveryItem(
-            deliveryId = deliveryId,
-            logicalMessageId = messageId,
-            conversationId = conversationId,
-            connectionId = connection.connectionId,
-            queueAddress = connection.sendQueueId,
-            ciphertext = opaqueCiphertext ?: throw IllegalStateException("Ciphertext not generated"),
-            queueAuthenticator = connection.sendAuth,
-            status = DeliveryStatus.QUEUED,
-            attemptCount = 0,
-            nextAttemptAt = now,
-            createdAt = now,
-            updatedAt = now
-        )
-        agent.enqueue(deliveryItem)
+        // 4. Notify TorXAgent to drive transport (wakes agent; outbox already persisted atomically)
+        agent.wake(messageId)
 
         Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery")
         return messageId
@@ -174,15 +162,18 @@ class ChatService(
     ) {
         val now = System.currentTimeMillis()
 
-        // 1. Mark incoming messages in local Room database as READ
+        // 1. Query latest unread FIRST before marking as read locally
+        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId)
+
+        // 2. Mark incoming messages in local Room database as READ
         messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
         conversationDao.updateUnreadCount(conversationId, 0)
         conversationDao.updateManuallyUnread(conversationId, false)
         notificationManager?.cancelForConversation(conversationId)
 
-        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId) ?: return
+        if (latestUnread == null) return
 
-        // 2. Dispatch batch READ_RECEIPT up to latest incoming message
+        // 3. Dispatch batch READ_RECEIPT up to latest incoming message
         sendReadReceipt(
             conversationId = conversationId,
             relationshipId = relationshipId,
@@ -617,7 +608,7 @@ class ChatService(
                 ciphertext = ciphertext,
                 queueAuthenticator = connection.sendAuth,
                 status = DeliveryStatus.QUEUED,
-                priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
                 expectsAck = false
             )
 

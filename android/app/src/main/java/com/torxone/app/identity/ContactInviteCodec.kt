@@ -25,6 +25,7 @@ object ContactInviteCodec {
     fun serializeForSigning(
         protocolVersion: Int,
         inviteId: String,
+        identityId: String,
         displayName: String,
         signingPublicKey: ByteArray,
         encryptionPublicKey: ByteArray,
@@ -38,6 +39,7 @@ object ContactInviteCodec {
         dos.writeInt(MAGIC_HEADER)
         dos.writeShort(protocolVersion)
         dos.writeUTF(inviteId)
+        dos.writeUTF(identityId)
         dos.writeUTF(displayName.take(MAX_DISPLAY_NAME_LENGTH))
         
         dos.writeShort(signingPublicKey.size)
@@ -63,6 +65,7 @@ object ContactInviteCodec {
         val signedData = serializeForSigning(
             protocolVersion = invite.protocolVersion,
             inviteId = invite.inviteId,
+            identityId = invite.identityId,
             displayName = invite.displayName,
             signingPublicKey = invite.identitySigningPublicKey,
             encryptionPublicKey = invite.identityEncryptionPublicKey,
@@ -97,6 +100,7 @@ object ContactInviteCodec {
 
         val protocolVersion = dis.readShort().toInt()
         val inviteId = dis.readUTF()
+        val identityId = dis.readUTF()
         val displayName = dis.readUTF()
 
         val signKeyLen = dis.readShort().toInt()
@@ -121,6 +125,7 @@ object ContactInviteCodec {
         return ContactInviteV1(
             protocolVersion = protocolVersion,
             inviteId = inviteId,
+            identityId = identityId,
             displayName = displayName,
             identitySigningPublicKey = signingKey,
             identityEncryptionPublicKey = encryptionKey,
@@ -196,6 +201,7 @@ object ContactInviteCodec {
         val signedData = serializeForSigning(
             protocolVersion = invite.protocolVersion,
             inviteId = invite.inviteId,
+            identityId = invite.identityId,
             displayName = invite.displayName,
             signingPublicKey = invite.identitySigningPublicKey,
             encryptionPublicKey = invite.identityEncryptionPublicKey,

@@ -419,8 +419,8 @@ class ChatViewModel(
     fun sendVoiceNote(bytes: ByteArray, durationMs: Long, waveform: ByteArray? = null) {
         sendMediaInternal(
             type = MediaType.VOICE_NOTE,
-            fileName = "voice_note.m4a",
-            mimeType = "audio/mp4",
+            fileName = "voice_note.wav",
+            mimeType = "audio/wav",
             bytes = bytes,
             durationMs = durationMs,
             waveformData = waveform
@@ -513,23 +513,18 @@ class ChatViewModel(
         recordingTimerJob?.cancel()
         _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = false)) }
 
+        if (elapsed < 500) {
+            // Tap too short — cancel and treat as accidental tap
+            voiceNoteRecorder?.cancelRecording()
+            return
+        }
+
         val realResult = voiceNoteRecorder?.stopRecording()
         if (realResult != null) {
             sendVoiceNote(realResult.audioData, realResult.durationMs, realResult.waveform)
-            return
+        } else {
+            _uiState.update { it.copy(error = "Audio recording failed or microphone was unavailable") }
         }
-
-        if (elapsed < 500) {
-            // Tap too short — treat as accidental tap
-            return
-        }
-
-        // Fallback for automated test environments without native mic hardware
-        val syntheticAudio = VoiceNoteHelper.generateSyntheticAudio(
-            durationSeconds = (elapsed / 1000).toInt().coerceAtLeast(1)
-        )
-        val waveform = VoiceNoteHelper.generateWaveform()
-        sendVoiceNote(syntheticAudio, elapsed, waveform)
     }
 
     fun cancelMediaTransfer(mediaId: String) {
@@ -561,6 +556,7 @@ class ChatViewModel(
         super.onCleared()
         typingDebounceJob?.cancel()
         recordingTimerJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
         if (isTypingLocally) {
             isTypingLocally = false
             viewModelScope.launch {

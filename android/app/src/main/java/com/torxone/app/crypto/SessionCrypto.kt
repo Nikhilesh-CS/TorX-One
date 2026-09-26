@@ -158,8 +158,12 @@ class SessionActor(
                     ?: throw IllegalStateException("No active Double Ratchet session for relationship $relationshipId")
                 val workingState = currentState.copyState()
                 val encrypted = SessionRatchet.ratchetEncrypt(workingState, cmd.plaintext, cmd.associatedData)
-                cmd.commitBlock?.invoke(encrypted, workingState)
-                sessionStore.saveSession(workingState)
+                if (cmd.commitBlock != null) {
+                    cmd.commitBlock.invoke(encrypted, workingState)
+                    sessionStore.saveSession(workingState)
+                } else {
+                    sessionStore.saveSession(workingState)
+                }
                 cmd.response.complete(encrypted)
             }
             is SessionCommand.Decrypt -> {
@@ -167,8 +171,12 @@ class SessionActor(
                     ?: throw IllegalStateException("No active Double Ratchet session for relationship $relationshipId")
                 val workingState = currentState.copyState()
                 val decrypted = SessionRatchet.ratchetDecrypt(workingState, cmd.message, cmd.associatedData)
-                cmd.commitBlock?.invoke(decrypted, workingState)
-                sessionStore.saveSession(workingState)
+                if (cmd.commitBlock != null) {
+                    cmd.commitBlock.invoke(decrypted, workingState)
+                    sessionStore.saveSession(workingState)
+                } else {
+                    sessionStore.saveSession(workingState)
+                }
                 cmd.response.complete(decrypted)
             }
             is SessionCommand.Initialize -> {

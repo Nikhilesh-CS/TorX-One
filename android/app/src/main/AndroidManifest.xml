@@ -41,6 +41,7 @@
 
     <!-- Vibration for notifications -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:name=".TorXOneApplication"

@@ -53,6 +53,7 @@ class IncomingDispatcher(
     private val groupDao: com.torxone.app.data.dao.GroupDao? = null,
     private val groupMemberDao: com.torxone.app.data.dao.GroupMemberDao? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
+    private val sessionStore: com.torxone.app.crypto.SessionStore? = null,
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
     private val connectionDao: com.torxone.app.data.dao.ConnectionDao? = null,
@@ -86,98 +87,111 @@ class IncomingDispatcher(
         if (connection == null) {
             if (opaqueEnvelope.queueAddress.startsWith("invite-") && pendingInviteDao != null && identityRepository != null) {
                 val inviteId = opaqueEnvelope.queueAddress.removePrefix("invite-")
-                val pendingInvite = pendingInviteDao.getById(inviteId) ?: pendingInviteDao.getLatest()
-                if (pendingInvite != null) {
-                    val localIdentity = identityRepository.loadIdentity()
-                    if (localIdentity != null) {
-                        val bootstrapPayload = try {
-                            com.torxone.app.relationship.ContactBootstrapPayload.fromByteArray(opaqueEnvelope.opaqueCiphertext)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to parse bootstrap payload: ${e.message}")
-                            return false
-                        }
-                        val signedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
-                            inviteId = bootstrapPayload.inviteId,
+                val pendingInvite = pendingInviteDao.getById(inviteId)
+                if (pendingInvite == null) {
+                    Log.e(TAG, "[BOOTSTRAP REJECT] No matching pending invite found for $inviteId")
+                    return false
+                }
+                if (System.currentTimeMillis() > pendingInvite.expiresAt) {
+                    Log.e(TAG, "[BOOTSTRAP REJECT] Pending invite $inviteId has expired")
+                    pendingInviteDao.delete(pendingInvite.inviteId)
+                    return false
+                }
+                val localIdentity = identityRepository.loadIdentity()
+                if (localIdentity != null) {
+                    val bootstrapPayload = try {
+                        com.torxone.app.relationship.ContactBootstrapPayload.fromByteArray(opaqueEnvelope.opaqueCiphertext)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse bootstrap payload: ${e.message}")
+                        return false
+                    }
+                    if (bootstrapPayload.inviteId != inviteId) {
+                        Log.e(TAG, "[BOOTSTRAP REJECT] Invite ID mismatch: queue=$inviteId, payload=${bootstrapPayload.inviteId}")
+                        return false
+                    }
+                    val signedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
+                        inviteId = bootstrapPayload.inviteId,
+                        initiatorIdentityId = bootstrapPayload.initiatorIdentityId,
+                        displayName = bootstrapPayload.initiatorDisplayName,
+                        signingPub = bootstrapPayload.initiatorSigningPublicKey,
+                        encryptionPub = bootstrapPayload.initiatorEncryptionPublicKey,
+                        ephemeralPub = bootstrapPayload.initiatorEphemeralPublicKey
+                    )
+                    if (!IdentityCrypto.verifyEd25519(bootstrapPayload.initiatorSigningPublicKey, signedData, bootstrapPayload.signature)) {
+                        Log.e(TAG, "Bootstrap payload signature verification failed!")
+                        return false
+                    }
+
+                    // Establish responder 3DH
+                    val responderResult = com.torxone.app.relationship.RelationshipService.establishResponder(
+                        localIdentity = localIdentity,
+                        ephemeralBootstrapPrivateKey = pendingInvite.ephemeralPrivateKey,
+                        remoteEphemeralPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
+                        remoteSigningPublicKey = bootstrapPayload.initiatorSigningPublicKey,
+                        remoteEncryptionPublicKey = bootstrapPayload.initiatorEncryptionPublicKey,
+                        remoteDisplayName = bootstrapPayload.initiatorDisplayName
+                    )
+
+                    val conn = Connection(
+                        connectionId = UUID.randomUUID().toString(),
+                        relationshipId = responderResult.relationship.relationshipId,
+                        generation = 1,
+                        sendQueueId = responderResult.bobToAliceQueueId,
+                        recvQueueId = responderResult.aliceToBobQueueId,
+                        sendAuth = responderResult.bobSendAuth,
+                        recvAuth = responderResult.aliceSendAuth
+                    )
+                    connectionManager.registerConnection(conn)
+
+                    connectionDao?.upsert(
+                        com.torxone.app.data.entity.ConnectionDbEntity(
+                            connectionId = conn.connectionId,
+                            relationshipId = conn.relationshipId,
+                            generation = conn.generation,
+                            sendQueueId = conn.sendQueueId,
+                            recvQueueId = conn.recvQueueId,
+                            sendAuth = conn.sendAuth,
+                            recvAuth = conn.recvAuth,
+                            state = "ACTIVE"
+                        )
+                    )
+
+                    sessionCrypto.initializeSession(
+                        relationshipId = responderResult.relationship.relationshipId,
+                        sessionInitializationSecret = responderResult.secrets.sessionInitializationSecret,
+                        isInitiator = false,
+                        remoteRatchetPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
+                        localRatchetPrivateKey = pendingInvite.ephemeralPrivateKey,
+                        localRatchetPublicKey = pendingInvite.ephemeralPublicKey
+                    )
+
+                    val contactId = responderResult.relationship.contactId
+                    contactDao?.upsert(
+                        com.torxone.app.data.entity.ContactEntity(
+                            contactId = contactId,
+                            relationshipId = responderResult.relationship.relationshipId,
                             displayName = bootstrapPayload.initiatorDisplayName,
-                            signingPub = bootstrapPayload.initiatorSigningPublicKey,
-                            encryptionPub = bootstrapPayload.initiatorEncryptionPublicKey,
-                            ephemeralPub = bootstrapPayload.initiatorEphemeralPublicKey
+                            signingPublicKey = bootstrapPayload.initiatorSigningPublicKey,
+                            verificationState = "VERIFIED",
+                            conversationId = responderResult.relationship.relationshipId,
+                            remoteIdentityId = bootstrapPayload.initiatorIdentityId
                         )
-                        if (!IdentityCrypto.verifyEd25519(bootstrapPayload.initiatorSigningPublicKey, signedData, bootstrapPayload.signature)) {
-                            Log.e(TAG, "Bootstrap payload signature verification failed!")
-                            return false
-                        }
+                    )
 
-                        // Establish responder 3DH
-                        val responderResult = com.torxone.app.relationship.RelationshipService.establishResponder(
-                            localIdentity = localIdentity,
-                            ephemeralBootstrapPrivateKey = pendingInvite.ephemeralPrivateKey,
-                            remoteEphemeralPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
-                            remoteSigningPublicKey = bootstrapPayload.initiatorSigningPublicKey,
-                            remoteEncryptionPublicKey = bootstrapPayload.initiatorEncryptionPublicKey,
-                            remoteDisplayName = bootstrapPayload.initiatorDisplayName
+                    conversationDao?.upsert(
+                        com.torxone.app.data.entity.ConversationEntity(
+                            conversationId = responderResult.relationship.relationshipId,
+                            type = com.torxone.app.data.entity.ConversationType.DIRECT,
+                            title = bootstrapPayload.initiatorDisplayName,
+                            unreadCount = 0
                         )
-
-                        val conn = Connection(
-                            connectionId = UUID.randomUUID().toString(),
-                            relationshipId = responderResult.relationship.relationshipId,
-                            generation = 1,
-                            sendQueueId = responderResult.bobToAliceQueueId,
-                            recvQueueId = responderResult.aliceToBobQueueId,
-                            sendAuth = responderResult.bobSendAuth,
-                            recvAuth = responderResult.aliceSendAuth
-                        )
-                        connectionManager.registerConnection(conn)
-
-                        connectionDao?.upsert(
-                            com.torxone.app.data.entity.ConnectionDbEntity(
-                                connectionId = conn.connectionId,
-                                relationshipId = conn.relationshipId,
-                                generation = conn.generation,
-                                sendQueueId = conn.sendQueueId,
-                                recvQueueId = conn.recvQueueId,
-                                sendAuth = conn.sendAuth,
-                                recvAuth = conn.recvAuth,
-                                state = "ACTIVE"
-                            )
-                        )
-
-                        sessionCrypto.initializeSession(
-                            relationshipId = responderResult.relationship.relationshipId,
-                            sessionInitializationSecret = responderResult.secrets.sessionInitializationSecret,
-                            isInitiator = false,
-                            remoteRatchetPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
-                            localRatchetPrivateKey = pendingInvite.ephemeralPrivateKey,
-                            localRatchetPublicKey = pendingInvite.ephemeralPublicKey
-                        )
-
-                        val contactId = responderResult.relationship.contactId
-                        contactDao?.upsert(
-                            com.torxone.app.data.entity.ContactEntity(
-                                contactId = contactId,
-                                relationshipId = responderResult.relationship.relationshipId,
-                                displayName = bootstrapPayload.initiatorDisplayName,
-                                signingPublicKey = bootstrapPayload.initiatorSigningPublicKey,
-                                verificationState = "VERIFIED",
-                                conversationId = responderResult.relationship.relationshipId
-                            )
-                        )
-
-                        conversationDao?.upsert(
-                            com.torxone.app.data.entity.ConversationEntity(
-                                conversationId = responderResult.relationship.relationshipId,
-                                type = com.torxone.app.data.entity.ConversationType.DIRECT,
-                                title = bootstrapPayload.initiatorDisplayName,
-                                unreadCount = 0
-                            )
-                        )
+                    )
 
                         pendingInviteDao.delete(pendingInvite.inviteId)
-                        sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorDisplayName)
+                    sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorDisplayName)
 
-                        Log.i(TAG, "[BOOTSTRAP SUCCESS] Established bilateral relationship with ${bootstrapPayload.initiatorDisplayName}")
-                        return true
-                    }
+                    Log.i(TAG, "[BOOTSTRAP SUCCESS] Established bilateral relationship with ${bootstrapPayload.initiatorDisplayName}")
+                    return true
                 }
             }
 
@@ -200,10 +214,11 @@ class IncomingDispatcher(
         }
 
         // Stage 5: Dedupe transport envelope
-        if (processedEnvelopeDao.isProcessed(opaqueEnvelope.envelopeId)) {
+        val existingProcessed = processedEnvelopeDao.getByEnvelopeId(opaqueEnvelope.envelopeId)
+        if (existingProcessed != null) {
             Log.w(TAG, "[STAGE 5] Duplicate envelope $envShort already processed — re-sending ACK")
-            // Re-send ACK if this is a known connection to resolve lost-ACK retries
-            sendAck(connection, opaqueEnvelope.envelopeId, opaqueEnvelope.envelopeId)
+            // Re-send ACK with original logical message ID
+            sendAck(connection, existingProcessed.logicalMessageId, opaqueEnvelope.envelopeId)
             return true
         }
 
@@ -245,7 +260,10 @@ class IncomingDispatcher(
                     if (secureEnvelope.directionSequence <= 0) {
                         throw IllegalStateException("Message type ${secureEnvelope.messageType} requires positive directional sequence, got ${secureEnvelope.directionSequence}")
                     }
-                    connectionManager.updateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                    val accepted = connectionManager.tryAdvanceRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                    if (!accepted) {
+                        throw IllegalStateException("Non-monotonic directional sequence: received ${secureEnvelope.directionSequence}, current ${connection.recvSequence}")
+                    }
                 }
 
                 // Stage 8c: Validate group authorization and epoch if group envelope
@@ -274,6 +292,7 @@ class IncomingDispatcher(
                 // Stage 9, 10, 11: Atomic Database Transaction
                 // Ratchet receive state + Message persistence + Dedup record committed together!
                 transactionRunner {
+                    sessionStore?.saveSession(updatedState)
                     // Dispatch to feature handler
                     when (secureEnvelope.messageType) {
                         MessageType.TEXT -> {
@@ -421,7 +440,8 @@ class IncomingDispatcher(
                 ciphertext = opaqueAck,
                 queueAuthenticator = connection.sendAuth,
                 status = DeliveryStatus.QUEUED,
-                priority = DeliveryPriority.HIGH
+                priority = DeliveryPriority.HIGH,
+                expectsAck = false
             )
 
             Log.d(TAG, "[ACK] Enqueueing ACK for msg=${originalMessageId.take(8)}")

@@ -18,14 +18,15 @@ class SettingsViewModel(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     val uiState: StateFlow<SettingsUiState> = combine(
-        settingsRepo.displayName,
-        settingsRepo.about,
-        settingsRepo.lastSeenVisible,
-        settingsRepo.onlineVisible,
-        settingsRepo.readReceiptsEnabled
-    ) { name, about, lastSeen, online, readReceipts ->
-        PartialState1(name, about, lastSeen, online, readReceipts)
-    }.combine(
+        combine(
+            combine(settingsRepo.displayName, settingsRepo.about) { name, about -> Pair(name, about) },
+            settingsRepo.avatarUri,
+            settingsRepo.lastSeenVisible,
+            settingsRepo.onlineVisible,
+            settingsRepo.readReceiptsEnabled
+        ) { (name, about), avatar, lastSeen, online, readReceipts ->
+            PartialState1(name, about, avatar, lastSeen, online, readReceipts)
+        },
         combine(
             settingsRepo.notificationsEnabled,
             settingsRepo.soundEnabled,
@@ -33,21 +34,16 @@ class SettingsViewModel(
             settingsRepo.notificationPreviewMode
         ) { notifs, sound, vibration, preview ->
             PartialState2(notifs, sound, vibration, preview)
-        }
-    ) { p1, p2 ->
-        Pair(p1, p2)
-    }.combine(
+        },
         combine(
             settingsRepo.appLockEnabled,
+            settingsRepo.appLockTimeout,
             settingsRepo.screenSecurityEnabled,
             settingsRepo.autoConnectNearby,
             settingsRepo.lowBandwidthMode
-        ) { appLock, screenSec, autoNearby, lowBw ->
-            PartialState3(appLock, screenSec, autoNearby, lowBw)
-        }
-    ) { (p1, p2), p3 ->
-        Triple(p1, p2, p3)
-    }.combine(
+        ) { appLock, lockTimeout, screenSec, autoNearby, lowBw ->
+            PartialState3(appLock, lockTimeout, screenSec, autoNearby, lowBw)
+        },
         combine(
             settingsRepo.themeMode,
             settingsRepo.dynamicColorsEnabled,
@@ -55,10 +51,11 @@ class SettingsViewModel(
         ) { theme, dynamic, autoDownload ->
             PartialState4(theme, dynamic, autoDownload)
         }
-    ) { (p1, p2, p3), p4 ->
+    ) { p1, p2, p3, p4 ->
         SettingsUiState(
             displayName = p1.displayName,
             about = p1.about,
+            avatarUri = p1.avatarUri,
             lastSeenVisible = p1.lastSeenVisible,
             onlineVisible = p1.onlineVisible,
             readReceiptsEnabled = p1.readReceiptsEnabled,
@@ -67,6 +64,7 @@ class SettingsViewModel(
             vibrationEnabled = p2.vibrationEnabled,
             notificationPreviewMode = p2.notificationPreviewMode,
             appLockEnabled = p3.appLockEnabled,
+            appLockTimeoutMs = p3.appLockTimeoutMs,
             screenSecurityEnabled = p3.screenSecurityEnabled,
             autoConnectNearby = p3.autoConnectNearby,
             lowBandwidthMode = p3.lowBandwidthMode,
@@ -139,9 +137,9 @@ class SettingsViewModel(
     }
 
     // ─── Profile Update ──────────────────────────────────────────────
-    fun updateProfile(name: String, about: String) {
+    fun updateProfile(name: String, about: String, avatarUri: String? = null) {
         scope.launch {
-            settingsRepo.updateProfile(displayName = name, about = about)
+            settingsRepo.updateProfile(displayName = name, about = about, avatarUri = avatarUri)
         }
     }
 }
@@ -149,6 +147,7 @@ class SettingsViewModel(
 data class SettingsUiState(
     val displayName: String = "",
     val about: String = "",
+    val avatarUri: String? = null,
     val lastSeenVisible: Boolean = true,
     val onlineVisible: Boolean = true,
     val readReceiptsEnabled: Boolean = true,
@@ -157,6 +156,7 @@ data class SettingsUiState(
     val vibrationEnabled: Boolean = true,
     val notificationPreviewMode: String = "FULL",
     val appLockEnabled: Boolean = false,
+    val appLockTimeoutMs: Long = 0L,
     val screenSecurityEnabled: Boolean = false,
     val autoConnectNearby: Boolean = true,
     val lowBandwidthMode: Boolean = false,
@@ -169,6 +169,7 @@ data class SettingsUiState(
 private data class PartialState1(
     val displayName: String,
     val about: String,
+    val avatarUri: String?,
     val lastSeenVisible: Boolean,
     val onlineVisible: Boolean,
     val readReceiptsEnabled: Boolean
@@ -183,6 +184,7 @@ private data class PartialState2(
 
 private data class PartialState3(
     val appLockEnabled: Boolean,
+    val appLockTimeoutMs: Long,
     val screenSecurityEnabled: Boolean,
     val autoConnectNearby: Boolean,
     val lowBandwidthMode: Boolean

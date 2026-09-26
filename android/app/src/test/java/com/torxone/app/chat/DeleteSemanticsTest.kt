@@ -224,28 +224,57 @@ class DeleteSemanticsTest {
         }
     }
 
-    class TestOutboxDao : OutboxDao {
-        val outbox = ConcurrentHashMap<String, OutboxEntity>()
-
-        override suspend fun insert(item: OutboxEntity) {
-            outbox[item.deliveryId] = item
-        }
-
-        override suspend fun getPending(now: Long): List<OutboxEntity> =
-            outbox.values.filter { it.status == DeliveryStatus.QUEUED.name }
-
-        override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
-            outbox[deliveryId]?.let { outbox[deliveryId] = it.copy(status = status) }
-        }
-
-        override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {
-            outbox[deliveryId]?.let {
-                outbox[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt)
+    class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
+        override suspend fun getPending(now: Long): List<OutboxEntity> {
+            return store.getPendingItems().map {
+                OutboxEntity(
+                    deliveryId = it.deliveryId,
+                    logicalMessageId = it.logicalMessageId,
+                    conversationId = it.conversationId,
+                    connectionId = it.connectionId,
+                    queueAddress = it.queueAddress,
+                    ciphertext = it.ciphertext,
+                    queueAuthenticator = it.queueAuthenticator,
+                    status = it.status.name,
+                    priority = it.priority,
+                    attemptCount = it.attemptCount,
+                    nextAttemptAt = it.nextAttemptAt,
+                    createdAt = it.createdAt,
+                    updatedAt = it.updatedAt,
+                    expectsAck = it.expectsAck
+                )
             }
         }
 
+        override suspend fun insert(item: OutboxEntity) {
+            store.insert(DeliveryItem(
+                deliveryId = item.deliveryId,
+                logicalMessageId = item.logicalMessageId,
+                conversationId = item.conversationId,
+                connectionId = item.connectionId,
+                queueAddress = item.queueAddress,
+                ciphertext = item.ciphertext,
+                queueAuthenticator = item.queueAuthenticator,
+                status = DeliveryStatus.valueOf(item.status),
+                priority = item.priority,
+                attemptCount = item.attemptCount,
+                nextAttemptAt = item.nextAttemptAt,
+                createdAt = item.createdAt,
+                updatedAt = item.updatedAt,
+                expectsAck = item.expectsAck
+            ))
+        }
+
+        override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
+            store.updateStatus(deliveryId, DeliveryStatus.valueOf(status))
+        }
+
+        override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {
+            store.updateRetry(deliveryId, attemptCount, nextAttemptAt)
+        }
+
         override suspend fun removeByMessageId(logicalMessageId: String) {
-            outbox.values.removeIf { it.logicalMessageId == logicalMessageId }
+            store.removeByMessageId(logicalMessageId)
         }
     }
 
@@ -311,17 +340,46 @@ class DeleteSemanticsTest {
     }
 
     class InMemoryOutboxStore : OutboxStore {
+        private val seqCounter = java.util.concurrent.atomic.AtomicLong(0)
+        private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, DeliveryItem>()
-        override suspend fun insert(item: DeliveryItem) { items[item.deliveryId] = item }
-        override suspend fun getPendingItems(): List<DeliveryItem> = items.values.filter { it.status == DeliveryStatus.QUEUED }
+
+        override suspend fun insert(item: DeliveryItem) {
+            insertOrder.putIfAbsent(item.deliveryId, seqCounter.incrementAndGet())
+            items[item.deliveryId] = item
+        }
+
+        override suspend fun getPendingItems(): List<DeliveryItem> {
+            val now = System.currentTimeMillis()
+            return items.values
+                .filter {
+                    (it.status == DeliveryStatus.QUEUED ||
+                     it.status == DeliveryStatus.RETRY_WAIT ||
+                     it.status == DeliveryStatus.TRANSMITTING ||
+                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
+                    it.nextAttemptAt <= now
+                }
+                .sortedWith(
+                    compareByDescending<DeliveryItem> { it.priority }
+                        .thenBy { insertOrder[it.deliveryId] ?: 0L }
+                        .thenBy { it.createdAt }
+                )
+        }
+
         override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(status = status) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = status, updatedAt = System.currentTimeMillis()) }
         }
+
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
         }
+
         override suspend fun removeByMessageId(logicalMessageId: String) {
-            items.values.removeIf { it.logicalMessageId == logicalMessageId }
+            val keys = items.values.filter { it.logicalMessageId == logicalMessageId }.map { it.deliveryId }
+            for (key in keys) {
+                items.remove(key)
+                insertOrder.remove(key)
+            }
         }
     }
 
@@ -360,6 +418,7 @@ class DeleteSemanticsTest {
         val rxDao: TestReactionDao = TestReactionDao(),
         val localStateDao: TestLocalMessageStateDao = TestLocalMessageStateDao(),
         val outboxStore: InMemoryOutboxStore = InMemoryOutboxStore(),
+        val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(outboxStore),
         val processedStore: InMemoryProcessedStore = InMemoryProcessedStore(),
         val connManager: ConnectionManager = ConnectionManager(),
         val router: TransportRouter = TransportRouter(),
@@ -433,8 +492,8 @@ class DeleteSemanticsTest {
         val chatReceiverAlice = ChatReceiver(alice.msgDao, alice.convDao, activeTrackerAlice)
         val chatReceiverBob = ChatReceiver(bob.msgDao, bob.convDao, activeTrackerBob)
 
-        val receiptHandlerAlice = DeliveryReceiptHandler(alice.msgDao, TestOutboxDao(), alice.agent!!)
-        val receiptHandlerBob = DeliveryReceiptHandler(bob.msgDao, TestOutboxDao(), bob.agent!!)
+        val receiptHandlerAlice = DeliveryReceiptHandler(alice.msgDao, alice.outboxDao, alice.agent!!)
+        val receiptHandlerBob = DeliveryReceiptHandler(bob.msgDao, bob.outboxDao, bob.agent!!)
 
         val presenceServiceAlice = PresenceService(alice.connManager, alice.crypto, alice.agent!!, routeTableAlice, { "alice" })
         val presenceServiceBob = PresenceService(bob.connManager, bob.crypto, bob.agent!!, routeTableBob, { "bob" })
@@ -455,6 +514,7 @@ class DeleteSemanticsTest {
                 override suspend fun isProcessed(envelopeId: String) = false
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) {}
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? = null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = chatReceiverAlice,
@@ -476,6 +536,7 @@ class DeleteSemanticsTest {
                 override suspend fun isProcessed(envelopeId: String) = false
                 override suspend fun isMessageProcessed(logicalMessageId: String) = false
                 override suspend fun insert(entity: ProcessedEnvelopeEntity) {}
+                override suspend fun getByEnvelopeId(envelopeId: String): ProcessedEnvelopeEntity? = null
                 override suspend fun pruneOlderThan(before: Long) {}
             },
             chatReceiver = chatReceiverBob,
@@ -502,7 +563,7 @@ class DeleteSemanticsTest {
             agent = alice.agent!!,
             messageDao = alice.msgDao,
             conversationDao = alice.convDao,
-            outboxDao = TestOutboxDao(),
+            outboxDao = alice.outboxDao,
             reactionDao = alice.rxDao,
             localMessageStateDao = alice.localStateDao,
             transactionRunner = { it() }
@@ -514,7 +575,7 @@ class DeleteSemanticsTest {
             agent = bob.agent!!,
             messageDao = bob.msgDao,
             conversationDao = bob.convDao,
-            outboxDao = TestOutboxDao(),
+            outboxDao = bob.outboxDao,
             reactionDao = bob.rxDao,
             localMessageStateDao = bob.localStateDao,
             transactionRunner = { it() }
