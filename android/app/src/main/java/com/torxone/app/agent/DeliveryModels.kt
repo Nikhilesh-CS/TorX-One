@@ -111,6 +111,43 @@ data class DeliveryItem(
      */
     val queueAuthSecret: ByteArray get() = queueAuthenticator
 
+    companion object {
+        /**
+         * Factory function allowing explicit instantiation using the cryptographic name queueAuthSecret.
+         */
+        fun createWithSecret(
+            deliveryId: String = UUID.randomUUID().toString(),
+            logicalMessageId: String,
+            conversationId: String,
+            connectionId: String,
+            queueAddress: String,
+            ciphertext: ByteArray,
+            queueAuthSecret: ByteArray,
+            status: DeliveryStatus = DeliveryStatus.QUEUED,
+            priority: Int = DeliveryPriority.NORMAL,
+            attemptCount: Int = 0,
+            nextAttemptAt: Long = 0L,
+            createdAt: Long = System.currentTimeMillis(),
+            updatedAt: Long = System.currentTimeMillis(),
+            expectsAck: Boolean = true
+        ): DeliveryItem = DeliveryItem(
+            deliveryId = deliveryId,
+            logicalMessageId = logicalMessageId,
+            conversationId = conversationId,
+            connectionId = connectionId,
+            queueAddress = queueAddress,
+            ciphertext = ciphertext,
+            queueAuthenticator = queueAuthSecret,
+            status = status,
+            priority = priority,
+            attemptCount = attemptCount,
+            nextAttemptAt = nextAttemptAt,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            expectsAck = expectsAck
+        )
+    }
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is DeliveryItem) return false

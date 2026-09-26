@@ -15,3 +15,15 @@
 -dontwarn net.sqlcipher.**
 -keep class net.zetetic.** { *; }
 -dontwarn net.zetetic.**
+
+# WebRTC (JNI native bindings and reflection)
+-keep class org.webrtc.** { *; }
+-dontwarn org.webrtc.**
+
+# BouncyCastle (cryptographic providers and reflection)
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+
+# ZXing (QR scanning)
+-keep class com.google.zxing.** { *; }
+-dontwarn com.google.zxing.**
