@@ -163,7 +163,6 @@ class TestGroupMessageDeliveryDao : GroupMessageDeliveryDao {
 class TestConversationDao : ConversationDao {
     val convs = ConcurrentHashMap<String, ConversationEntity>()
 
-    override fun observeAll(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
     override fun observeActive(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
     override fun observeArchived(): Flow<List<ConversationEntity>> = flowOf(emptyList())
     override fun observeArchivedCount(): Flow<Int> = flowOf(0)

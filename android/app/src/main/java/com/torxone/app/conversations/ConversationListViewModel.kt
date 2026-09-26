@@ -37,7 +37,7 @@ class ConversationListViewModel(
         // 1. Observe active conversations or search results
         viewModelScope.launch {
             searchQueryFlow
-                .debounce { if (it.isBlank()) 0L else 150L }
+                .debounce { if (it.isBlank()) 0L else 300L }
                 .flatMapLatest { query ->
                     if (query.isBlank()) {
                         chatService.observeConversations()

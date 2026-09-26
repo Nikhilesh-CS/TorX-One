@@ -120,15 +120,22 @@ class ConnectionManager(
      * Commits the validated sequence to in-memory state ONLY AFTER the database transaction has succeeded.
      */
     fun commitRecvSequence(relationshipId: String, sequence: Long) {
+        var changed = false
         connectionsByRelationship.compute(relationshipId) { _, existing ->
             if (existing == null) return@compute null
             if (sequence <= existing.recvSequence) return@compute existing
+            changed = true
             val updated = existing.copy(recvSequence = sequence)
             connectionsByRecvQueue[updated.recvQueueId] = updated
             connectionsBySendQueue[updated.sendQueueId] = updated
             updated
         }
-        _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+        if (changed) {
+            _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+            scope.launch {
+                connectionDao?.updateRecvSequence(relationshipId, sequence)
+            }
+        }
     }
 
     /**
@@ -139,10 +146,22 @@ class ConnectionManager(
     fun tryAdvanceRecvSequence(relationshipId: String, sequence: Long): Boolean {
         if (!validateRecvSequence(relationshipId, sequence)) return false
         commitRecvSequence(relationshipId, sequence)
-        kotlinx.coroutines.runBlocking {
-            connectionDao?.updateRecvSequence(relationshipId, sequence)
-        }
         return true
+    }
+
+    /**
+     * Atomically updates and persists both directional sequence counters.
+     */
+    suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long) {
+        connectionsByRelationship.compute(relationshipId) { _, existing ->
+            if (existing == null) return@compute null
+            val updated = existing.copy(sendSequence = sendSequence, recvSequence = recvSequence)
+            connectionsByRecvQueue[updated.recvQueueId] = updated
+            connectionsBySendQueue[updated.sendQueueId] = updated
+            updated
+        }
+        _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+        connectionDao?.updateSequence(relationshipId, sendSequence, recvSequence)
     }
 
     fun updateRecvSequence(relationshipId: String, sequence: Long) {

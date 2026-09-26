@@ -45,6 +45,7 @@ class ChatService(
     private val notificationManager: TorXNotificationManager? = null,
     private val appSettingsRepository: AppSettingsRepository? = null,
     private val sessionStore: com.torxone.app.crypto.SessionStore? = null,
+    private val mediaStorage: com.torxone.app.media.MediaStorage? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
     }
@@ -343,7 +344,7 @@ class ChatService(
      * Invariants:
      * - Strictly LOCAL: Never sends any protocol packet to peer or transport.
      * - Preserves Contact, PairRelationship, Session, Connection.
-     * - Deletes messages, reactions, local message state, and conversation record.
+     * - Deletes messages, reactions, local message state, conversation record, and associated media records and files.
      * - Cancels active notifications for this conversation.
      */
     suspend fun deleteChatLocally(conversationId: String): Boolean {
@@ -351,14 +352,35 @@ class ChatService(
         if (contact != null) {
             sessionCrypto.closeSession(contact.relationshipId)
         }
+        val mediaDao = database?.mediaDao()
+        val mediaTransferDao = database?.mediaTransferDao()
+        val mediaList = mediaDao?.getMediaForConversation(conversationId) ?: emptyList()
+
         transactionRunner {
             messageDao.deleteByConversation(conversationId)
             reactionDao?.deleteByConversation(conversationId)
             localMessageStateDao?.deleteByConversation(conversationId)
+            mediaDao?.deleteByConversation(conversationId)
+            mediaTransferDao?.deleteByConversation(conversationId)
             conversationDao.deleteById(conversationId)
         }
+
+        // Purge decrypted media and temporary transfer chunks from app-private disk
+        for (media in mediaList) {
+            mediaStorage?.deleteLocalFile(media.localPath)
+            mediaStorage?.cleanupTempTransfer(media.mediaId)
+            if (mediaStorage == null && !media.localPath.isNullOrEmpty()) {
+                try {
+                    val file = java.io.File(media.localPath)
+                    if (file.exists()) file.delete()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to delete media file: ${media.localPath}", e)
+                }
+            }
+        }
+
         notificationManager?.cancelForConversation(conversationId)
-        Log.i(TAG, "[DELETE CHAT] Conversation $conversationId deleted locally")
+        Log.i(TAG, "[DELETE CHAT] Conversation $conversationId deleted locally (including media)")
         return true
     }
 

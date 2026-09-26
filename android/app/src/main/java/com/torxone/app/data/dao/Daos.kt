@@ -7,9 +7,6 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE is_archived = 0 ORDER BY is_pinned DESC, pinned_at DESC, last_message_time DESC")
-    fun observeAll(): Flow<List<ConversationEntity>>
-
-    @Query("SELECT * FROM conversations WHERE is_archived = 0 ORDER BY is_pinned DESC, pinned_at DESC, last_message_time DESC")
     fun observeActive(): Flow<List<ConversationEntity>>
 
     @Query("SELECT * FROM conversations WHERE is_archived = 1 ORDER BY archived_at DESC, last_message_time DESC")
@@ -221,6 +218,9 @@ interface ConnectionDao {
 
     @Query("UPDATE connections SET recv_sequence = :recvSequence WHERE relationship_id = :relationshipId")
     suspend fun updateRecvSequence(relationshipId: String, recvSequence: Long)
+
+    @Query("UPDATE connections SET send_sequence = :sendSequence, recv_sequence = :recvSequence WHERE relationship_id = :relationshipId")
+    suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long)
 }
 
 @Dao
@@ -394,6 +394,9 @@ interface MediaTransferDao {
 
     @Query("DELETE FROM media_transfers WHERE media_id = :mediaId")
     suspend fun deleteByMediaId(mediaId: String)
+
+    @Query("DELETE FROM media_transfers WHERE conversation_id = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
 }
 
 @Dao

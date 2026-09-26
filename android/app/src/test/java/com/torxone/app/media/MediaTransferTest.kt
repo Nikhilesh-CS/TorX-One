@@ -152,6 +152,10 @@ class MediaTransferTest {
         override suspend fun deleteByMediaId(mediaId: String) {
             transfers.entries.removeIf { it.value.mediaId == mediaId }
         }
+
+        override suspend fun deleteByConversation(conversationId: String) {
+            transfers.entries.removeIf { it.value.conversationId == conversationId }
+        }
     }
 
     class TestMessageDao : MessageDao {
@@ -201,7 +205,6 @@ class MediaTransferTest {
     class TestConversationDao : ConversationDao {
         val convs = ConcurrentHashMap<String, ConversationEntity>()
 
-        override fun observeAll(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
         override fun observeActive(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
         override fun observeArchived(): Flow<List<ConversationEntity>> = flowOf(emptyList())
         override fun observeArchivedCount(): Flow<Int> = flowOf(0)

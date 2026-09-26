@@ -122,8 +122,6 @@ class DirectChatInteractionTest {
     class TestConversationDao : ConversationDao {
         val convs = ConcurrentHashMap<String, ConversationEntity>()
 
-        override fun observeAll(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
-
         override fun observeActive(): Flow<List<ConversationEntity>> =
             flowOf(convs.values.filter { !it.isArchived }.sortedWith(
                 compareByDescending<ConversationEntity> { it.isPinned }

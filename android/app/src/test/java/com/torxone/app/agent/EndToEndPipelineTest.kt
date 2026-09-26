@@ -143,7 +143,6 @@ class EndToEndPipelineTest {
 
     class InMemoryConversationDao : ConversationDao {
         val convs = ConcurrentHashMap<String, ConversationEntity>()
-        override fun observeAll(): Flow<List<ConversationEntity>> = flowOf(convs.values.toList())
         override fun observeActive(): Flow<List<ConversationEntity>> =
             flowOf(convs.values.filter { !it.isArchived }.sortedWith(
                 compareByDescending<ConversationEntity> { it.isPinned }
@@ -272,6 +271,10 @@ class EndToEndPipelineTest {
         override suspend fun updateRecvSequence(relationshipId: String, recvSequence: Long) {
             val conn = connections.values.find { it.relationshipId == relationshipId }
             if (conn != null) connections[conn.connectionId] = conn.copy(recvSequence = recvSequence)
+        }
+        override suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long) {
+            val conn = connections.values.find { it.relationshipId == relationshipId }
+            if (conn != null) connections[conn.connectionId] = conn.copy(sendSequence = sendSequence, recvSequence = recvSequence)
         }
     }
 

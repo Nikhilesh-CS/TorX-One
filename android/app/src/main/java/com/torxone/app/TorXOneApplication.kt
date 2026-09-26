@@ -339,7 +339,8 @@ class TorXOneApplication : Application() {
             localMessageStateDao = database.localMessageStateDao(),
             notificationManager = notificationManager,
             appSettingsRepository = settingsRepository,
-            sessionStore = sessionStore
+            sessionStore = sessionStore,
+            mediaStorage = com.torxone.app.media.MediaStorage(this)
         )
 
         // 10. Explicit asynchronous application initialization

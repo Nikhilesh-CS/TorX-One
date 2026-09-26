@@ -975,4 +975,17 @@ class MediaService(
             mediaTransferDao.deleteByMediaId(media.mediaId)
         }
     }
+
+    suspend fun deleteMediaForConversation(conversationId: String, cleanupLocalFiles: Boolean = true) {
+        val mediaList = mediaDao.getMediaForConversation(conversationId)
+        for (media in mediaList) {
+            cancelTransfer(media.mediaId)
+            if (cleanupLocalFiles) {
+                mediaStorage.deleteLocalFile(media.localPath)
+            }
+            mediaStorage.cleanupTempTransfer(media.mediaId)
+        }
+        mediaDao.deleteByConversation(conversationId)
+        mediaTransferDao.deleteByConversation(conversationId)
+    }
 }

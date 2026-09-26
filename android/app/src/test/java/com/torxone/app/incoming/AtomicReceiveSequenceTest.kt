@@ -137,5 +137,13 @@ class AtomicReceiveSequenceTest {
                 }
             }
         }
+
+        override suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long) {
+            for ((id, c) in connections) {
+                if (c.relationshipId == relationshipId) {
+                    connections[id] = c.copy(sendSequence = sendSequence, recvSequence = recvSequence)
+                }
+            }
+        }
     }
 }
