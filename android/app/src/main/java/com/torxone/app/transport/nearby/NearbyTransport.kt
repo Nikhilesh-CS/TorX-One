@@ -171,6 +171,57 @@ class NearbyTransport(
 
     private val endpointHandshakeStates = ConcurrentHashMap<String, EndpointHandshakeState>()
     private val endpointExpectedAuthOk = ConcurrentHashMap<String, String>()
+    private val pendingInviteIds = ConcurrentHashMap.newKeySet<String>()
+    private val scannedInviteIds = ConcurrentHashMap.newKeySet<String>()
+
+    fun registerPendingInvite(inviteId: String) {
+        pendingInviteIds.add(inviteId)
+    }
+
+    fun unregisterPendingInvite(inviteId: String) {
+        pendingInviteIds.remove(inviteId)
+    }
+
+    fun registerScannedInvite(inviteId: String) {
+        scannedInviteIds.add(inviteId)
+    }
+
+    fun unregisterScannedInvite(inviteId: String) {
+        scannedInviteIds.remove(inviteId)
+    }
+
+    fun bindInviteEndpoint(inviteId: String, endpointId: String) {
+        val queueAddress = "invite-$inviteId"
+        directRouteTable.bindQueue(queueAddress, endpointId)
+        Log.i(TAG, "[BOOTSTRAP ROUTE] Explicitly bound $queueAddress -> endpoint $endpointId")
+    }
+
+    fun computeRelHint(relationshipId: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest("torx-rel-hint-v1:$relationshipId".toByteArray(Charsets.UTF_8))
+        return hash.take(8).joinToString("") { "%02x".format(it) }
+    }
+
+    fun computeInviteHint(inviteId: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest("torx-invite-hint-v1:$inviteId".toByteArray(Charsets.UTF_8))
+        return hash.take(8).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun buildHelloFeatures(): List<String> {
+        val features = mutableListOf("direct-chat-v1", "fast-ack-v1")
+        val activeConnections = connectionManager?.getAllActiveConnections() ?: emptyList()
+        for (conn in activeConnections) {
+            features.add("rel-hint:${computeRelHint(conn.relationshipId)}")
+        }
+        for (invId in pendingInviteIds) {
+            features.add("invite-hint:${computeInviteHint(invId)}")
+        }
+        for (invId in scannedInviteIds) {
+            features.add("invite-hint:${computeInviteHint(invId)}")
+        }
+        return features
+    }
 
     val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
@@ -198,7 +249,7 @@ class NearbyTransport(
                 val hello = NearbyWireFrame.Control.Hello(
                     protocolVersion = NEARBY_PROTOCOL_VERSION,
                     peerTieBreaker = localTieBreaker,
-                    supportedFeatures = listOf("direct-chat-v1", "fast-ack-v1"),
+                    supportedFeatures = buildHelloFeatures(),
                     maxFrameSize = MAX_DIRECT_FRAME_SIZE,
                     challenge = challenge
                 )
@@ -259,19 +310,33 @@ class NearbyTransport(
             val myHello = NearbyWireFrame.Control.Hello(
                 protocolVersion = NEARBY_PROTOCOL_VERSION,
                 peerTieBreaker = localTieBreaker,
-                supportedFeatures = listOf("direct-chat-v1", "fast-ack-v1"),
+                supportedFeatures = buildHelloFeatures(),
                 maxFrameSize = MAX_DIRECT_FRAME_SIZE,
                 challenge = challenge
             )
             sendControlMessage(endpointId, myHello)
         }
 
-        // Prove active relationship capability:
-        // Do not broadcast entire address book to unauthenticated peers (C12)
+        // 1. Process invite hints for deterministic bootstrap route binding
+        val remoteInviteHints = hello.supportedFeatures.filter { it.startsWith("invite-hint:") }.map { it.removePrefix("invite-hint:") }.toSet()
+        val allLocalInvites = pendingInviteIds + scannedInviteIds
+        for (invId in allLocalInvites) {
+            val hint = computeInviteHint(invId)
+            if (hint in remoteInviteHints || invId in remoteInviteHints) {
+                bindInviteEndpoint(invId, endpointId)
+            }
+        }
+
+        // 2. Prove active relationship capability:
+        // Do not broadcast entire address book to unauthenticated peers
         val activeConnections = connectionManager?.getAllActiveConnections() ?: emptyList()
-        val requestedRelHint = hello.supportedFeatures.firstOrNull { it.startsWith("rel-hint:") }?.removePrefix("rel-hint:")
-        val matchingConnections = if (requestedRelHint != null) {
-            activeConnections.filter { it.relationshipId.startsWith(requestedRelHint) }
+        val remoteRelHints = hello.supportedFeatures.filter { it.startsWith("rel-hint:") }.map { it.removePrefix("rel-hint:") }.toSet()
+
+        val matchingConnections = if (remoteRelHints.isNotEmpty()) {
+            activeConnections.filter { conn ->
+                val hint = computeRelHint(conn.relationshipId)
+                hint in remoteRelHints || conn.relationshipId in remoteRelHints || remoteRelHints.any { r -> conn.relationshipId.startsWith(r) }
+            }
         } else {
             val boundRel = directRouteTable.getRelationshipForEndpoint(endpointId)
             if (boundRel != null) {
@@ -302,12 +367,16 @@ class NearbyTransport(
         val challenge = localChallenges[endpointId]
         if (challenge == null) {
             Log.w(TAG, "[AUTH FAIL] No local challenge found for endpoint $endpointId")
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
             return
         }
 
         val conn = connectionManager?.getConnectionByRelationship(proofMsg.relationshipId)
-        if (conn == null) {
-            Log.w(TAG, "[AUTH] Unknown relationship ${proofMsg.relationshipId.take(8)} from $endpointId")
+        if (conn == null || conn.sendQueueId.isBlank() || conn.recvQueueId.isBlank()) {
+            Log.w(TAG, "[AUTH] Unknown or invalid relationship ${proofMsg.relationshipId.take(8)} from $endpointId")
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
             return
         }
 
@@ -343,17 +412,26 @@ class NearbyTransport(
         val expectedRel = endpointExpectedAuthOk[endpointId]
         if (expectedState != EndpointHandshakeState.AUTH_OK_EXPECTED || expectedRel != authOk.relationshipId) {
             Log.w(TAG, "[AUTH OK REJECT] Unexpected AUTH_OK from $endpointId for relationship ${authOk.relationshipId.take(8)} (state=$expectedState, expectedRel=$expectedRel)")
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
+            return
+        }
+
+        val conn = connectionManager?.getConnectionByRelationship(authOk.relationshipId)
+        if (conn == null || conn.sendQueueId.isBlank() || conn.recvQueueId.isBlank()) {
+            Log.w(TAG, "[AUTH OK REJECT] Missing or invalid connection for relationship ${authOk.relationshipId}")
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
             return
         }
 
         Log.i(TAG, "[AUTH OK] Peer confirmed route for relationship ${authOk.relationshipId.take(8)}")
-        val conn = connectionManager?.getConnectionByRelationship(authOk.relationshipId)
         directRouteTable.bindRoute(
             relationshipId = authOk.relationshipId,
             endpointId = endpointId,
             state = RouteState.READY,
-            sendQueueId = conn?.sendQueueId,
-            recvQueueId = conn?.recvQueueId
+            sendQueueId = conn.sendQueueId,
+            recvQueueId = conn.recvQueueId
         )
         endpointHandshakeStates[endpointId] = EndpointHandshakeState.READY
         _healthState.value = TransportHealthState.READY
@@ -457,8 +535,8 @@ class NearbyTransport(
 
         // 2. Exact peer routing via DirectRouteTable
         val targetEndpoint = if (destination.address.startsWith("invite-")) {
-            // QR bootstrap payloads allowed through single connected endpoint
-            directRouteTable.getAllEndpoints().firstOrNull()
+            // Explicit bootstrap route binding: must be explicitly bound to specific endpoint
+            directRouteTable.getEndpointForQueue(destination.address)
         } else {
             val ep = directRouteTable.getEndpointForQueue(destination.address)
             if (ep != null && directRouteTable.isEndpointReady(ep)) {
@@ -469,10 +547,12 @@ class NearbyTransport(
         }
 
         if (targetEndpoint == null) {
-            return TransportResult.Failed(
-                type,
+            val reason = if (destination.address.startsWith("invite-")) {
+                "No bound bootstrap endpoint for ${destination.address.take(16)}"
+            } else {
                 "No authenticated READY route for destination ${destination.address.take(8)}"
-            )
+            }
+            return TransportResult.Failed(type, reason)
         }
 
         // 3. Bounded concurrency / Flow control backpressure

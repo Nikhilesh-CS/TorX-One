@@ -1067,7 +1067,7 @@ class GroupService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = messageId,
@@ -1154,7 +1154,7 @@ class GroupService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = UUID.randomUUID().toString(),

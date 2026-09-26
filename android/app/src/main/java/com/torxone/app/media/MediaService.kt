@@ -56,7 +56,8 @@ class MediaService(
     private val mediaStorage: MediaStorage = MediaStorage(context),
     private val appSettingsRepository: AppSettingsRepository? = null,
     private val coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() }
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { it() },
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
 ) {
     companion object {
         private const val TAG = "MediaService"
@@ -77,6 +78,9 @@ class MediaService(
 
     suspend fun getMediaById(mediaId: String): MediaEntity? =
         mediaDao.getById(mediaId)
+
+    suspend fun resolveLocalConversationId(relationshipId: String): String? =
+        contactDao?.getByRelationshipId(relationshipId)?.conversationId
 
     // ═══════════════════════════════════════════════════════════════
     //  Outgoing Media Sending
@@ -212,6 +216,10 @@ class MediaService(
         waveformData: ByteArray? = null,
         replyToMessageId: String? = null
     ): String {
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            throw IllegalStateException("Security information for this contact needs to be refreshed. Reconnect or re-add this contact.")
+        }
+
         val messageId = UUID.randomUUID().toString()
         val deliveryId = UUID.randomUUID().toString()
         val chunkSize = DEFAULT_CHUNK_SIZE
@@ -249,7 +257,7 @@ class MediaService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val seq = connectionManager.incrementSendSequence(relationshipId)
+        val seq = connectionManager.allocateSendSequence(relationshipId)
 
         val envelope = SecureEnvelope(
             logicalMessageId = messageId,
@@ -465,14 +473,21 @@ class MediaService(
 
                     bitmaskSet.add(chunkIndex)
                     val progress = (count + 1).toFloat() / indices.size
-                    mediaDao.updateStatus(mediaId, MediaStatus.UPLOADING.name, progress)
-                    mediaTransferDao.updateProgress(
-                        transferId = mediaId,
-                        completedChunks = bitmaskSet.size,
-                        chunkBitmask = bitmaskSet.joinToString(","),
-                        bytesTransferred = (bitmaskSet.size * chunkSize).toLong().coerceAtMost(totalBytes),
-                        status = TransferStatus.ACTIVE.name
-                    )
+                    val current = mediaDao.getById(mediaId)
+                    if (current?.status != MediaStatus.DELIVERED.name &&
+                        current?.status != MediaStatus.COMPLETE.name &&
+                        current?.status != MediaStatus.CANCELLED.name &&
+                        current?.status != MediaStatus.FAILED.name
+                    ) {
+                        mediaDao.updateStatus(mediaId, MediaStatus.UPLOADING.name, progress)
+                        mediaTransferDao.updateProgress(
+                            transferId = mediaId,
+                            completedChunks = bitmaskSet.size,
+                            chunkBitmask = bitmaskSet.joinToString(","),
+                            bytesTransferred = (bitmaskSet.size * chunkSize).toLong().coerceAtMost(totalBytes),
+                            status = TransferStatus.ACTIVE.name
+                        )
+                    }
 
                     // Cooperative yield: ensures text messages, reactions, typing, and ACKs NEVER starve
                     delay(5)
@@ -481,8 +496,15 @@ class MediaService(
                 if (isActive) {
                     // All chunks have been enqueued locally.
                     // Transfer remains in ACTIVE state until peer receiver confirms complete file via FILE_COMPLETE!
-                    mediaDao.updateStatus(mediaId, MediaStatus.SENT.name, 1.0f)
-                    Log.i(TAG, "[ALL CHUNKS ENQUEUED] mediaId=${mediaId.take(8)} awaiting receiver confirmation")
+                    val current = mediaDao.getById(mediaId)
+                    if (current?.status != MediaStatus.DELIVERED.name &&
+                        current?.status != MediaStatus.COMPLETE.name &&
+                        current?.status != MediaStatus.CANCELLED.name &&
+                        current?.status != MediaStatus.FAILED.name
+                    ) {
+                        mediaDao.updateStatus(mediaId, MediaStatus.SENT.name, 1.0f)
+                        Log.i(TAG, "[ALL CHUNKS ENQUEUED] mediaId=${mediaId.take(8)} awaiting receiver confirmation")
+                    }
                 }
             } catch (e: CancellationException) {
                 mediaDao.updateStatus(mediaId, MediaStatus.CANCELLED.name, 0f)
@@ -515,10 +537,28 @@ class MediaService(
 
         val messageId = envelope.logicalMessageId
         val mediaId = descriptor.mediaId
-        val conversationId = envelope.conversationId
+        val isGroup = envelope.groupMetadata != null
+        val conversationId: String
+        if (isGroup) {
+            conversationId = envelope.groupMetadata!!.groupId
+        } else {
+            if (contactDao != null) {
+                val contact = contactDao.getByRelationshipId(connection.relationshipId)
+                if (contact == null || contact.conversationId.isBlank()) {
+                    Log.e(
+                        TAG,
+                        "[RX_DESCRIPTOR REJECT] No local contact/conversation mapping for relationshipId=${connection.relationshipId}"
+                    )
+                    return false
+                }
+                conversationId = contact.conversationId
+            } else {
+                conversationId = envelope.conversationId
+            }
+        }
         val now = System.currentTimeMillis()
 
-        Log.i(TAG, "[RX_DESCRIPTOR] mediaId=${mediaId.take(8)} type=${descriptor.type} chunks=${descriptor.totalChunks}")
+        Log.i(TAG, "[RX_DESCRIPTOR] mediaId=${mediaId.take(8)} type=${descriptor.type} chunks=${descriptor.totalChunks} conv=${conversationId.take(8)}")
 
         val mediaKey = try {
             Base64.getDecoder().decode(descriptor.mediaKeyBase64)

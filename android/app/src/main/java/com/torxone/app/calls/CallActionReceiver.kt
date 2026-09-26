@@ -31,12 +31,23 @@ class CallActionReceiver : BroadcastReceiver() {
         when (intent.action) {
             CallNotificationManager.ACTION_ANSWER -> {
                 Log.d(TAG, "Answer action for call=$callId")
-                if (!com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
-                    Log.w(TAG, "RECORD_AUDIO not granted; opening activity to handle permission flow")
+                val activeSession = callManager.activeCall.value
+                val isVideo = activeSession?.type == CallType.VIDEO
+                val audioGranted = com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)
+                val cameraGranted = com.torxone.app.ui.permissions.PermissionHelper.isCameraGranted(context)
+                val permissionsGranted = if (isVideo) {
+                    audioGranted && cameraGranted
+                } else {
+                    audioGranted
+                }
+
+                if (!permissionsGranted) {
+                    Log.w(TAG, "Required permissions not granted (isVideo=$isVideo, audio=$audioGranted, camera=$cameraGranted); opening activity to handle permission flow")
                     val callIntent = Intent(context, com.torxone.app.MainActivity::class.java).apply {
                         action = "ACTION_ANSWER_CALL"
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                         putExtra("callId", callId)
+                        putExtra("isVideo", isVideo)
                     }
                     context.startActivity(callIntent)
                     return

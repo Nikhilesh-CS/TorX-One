@@ -2,6 +2,7 @@ package com.torxone.app.contacts
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.torxone.app.connection.Connection
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.crypto.SessionCrypto
@@ -28,7 +29,8 @@ class ContactsViewModel(
     private val identityRepository: IdentityRepository,
     private val sessionCrypto: SessionCrypto,
     private val connectionManager: ConnectionManager,
-    private val agent: com.torxone.app.agent.TorXAgent? = null
+    private val agent: com.torxone.app.agent.TorXAgent? = null,
+    private val nearbyTransport: com.torxone.app.transport.nearby.NearbyTransport? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -49,6 +51,7 @@ class ContactsViewModel(
         viewModelScope.launch {
             try {
                 val invite = identityRepository.createContactInvite()
+                nearbyTransport?.registerPendingInvite(invite.inviteId)
                 val qr = ContactInviteCodec.encodeToQrString(invite)
                 _uiState.update { it.copy(myInviteQrString = qr) }
             } catch (e: Exception) {
@@ -74,11 +77,12 @@ class ContactsViewModel(
                 _uiState.update { it.copy(error = "Contact already exists with this peer") }
                 return@launch
             }
-            val consumedInviteIds = existingContacts.map { it.remoteIdentityId }.filter { it.isNotBlank() }.toSet()
+            val consumedInviteIds = database.consumedInviteDao().getAllConsumedInviteIds().toSet()
             val result = ContactInviteCodec.validate(invite, localIdentity, consumedInviteIds)
 
             when (result) {
                 is InviteValidationResult.Valid -> {
+                    nearbyTransport?.registerScannedInvite(invite.inviteId)
                     _uiState.update { it.copy(pendingInviteValidation = result, error = null) }
                 }
                 is InviteValidationResult.Invalid -> {
@@ -100,7 +104,6 @@ class ContactsViewModel(
                     ?: throw IllegalStateException("Local identity not initialized")
 
                 val contactId = UUID.randomUUID().toString()
-                val conversationId = UUID.randomUUID().toString()
 
                 // 1. Establish pairwise relationship (3DH)
                 val bootstrap = RelationshipService.establishFromInvite(
@@ -108,18 +111,18 @@ class ContactsViewModel(
                     invite = valid.invite,
                     contactId = contactId
                 )
+                val conversationId = bootstrap.relationship.relationshipId
 
-                // 2. Persist Relationship & Contact
+                // 2. Persist Relationship, Contact, Connection, Conversation, ConsumedInvite, and BootstrapState transactionally
                 val relationshipEntity = PairRelationshipEntity(
                     relationshipId = bootstrap.relationship.relationshipId,
                     localIdentityId = localIdentity.identityId,
                     contactId = contactId,
                     rootSecret = bootstrap.relationship.pairRootSecret,
-                    state = "ACTIVE",
+                    state = "LOCAL_ESTABLISHED",
                     generation = 1,
                     verifiedAt = System.currentTimeMillis()
                 )
-                database.pairRelationshipDao().upsert(relationshipEntity)
 
                 val contactEntity = ContactEntity(
                     contactId = contactId,
@@ -130,9 +133,7 @@ class ContactsViewModel(
                     conversationId = conversationId,
                     remoteIdentityId = valid.invite.identityId
                 )
-                database.contactDao().upsert(contactEntity)
 
-                // 3. Register Connection
                 val connection = Connection(
                     relationshipId = bootstrap.relationship.relationshipId,
                     generation = 1,
@@ -141,7 +142,6 @@ class ContactsViewModel(
                     sendAuth = bootstrap.aliceSendAuth,
                     recvAuth = bootstrap.bobSendAuth
                 )
-                connectionManager.registerConnection(connection)
 
                 val connectionDbEntity = ConnectionDbEntity(
                     connectionId = connection.connectionId,
@@ -151,11 +151,48 @@ class ContactsViewModel(
                     recvQueueId = connection.recvQueueId,
                     sendAuth = connection.sendAuth,
                     recvAuth = connection.recvAuth,
-                    state = "ACTIVE"
+                    state = "LOCAL_ESTABLISHED"
                 )
-                database.connectionDao().upsert(connectionDbEntity)
 
-                // 4. Initialize Double Ratchet session
+                val conversationEntity = ConversationEntity(
+                    conversationId = conversationId,
+                    type = ConversationType.DIRECT,
+                    title = valid.invite.displayName,
+                    unreadCount = 0
+                )
+
+                val consumedInviteEntity = ConsumedInviteEntity(
+                    inviteId = valid.invite.inviteId,
+                    consumedAt = System.currentTimeMillis()
+                )
+
+                val bootstrapStateEntity = BootstrapStateEntity(
+                    relationshipId = bootstrap.relationship.relationshipId,
+                    inviteId = valid.invite.inviteId,
+                    status = BootstrapStatus.BOOTSTRAP_QUEUED,
+                    isInitiator = true
+                )
+
+                database.withTransaction {
+                    database.bootstrapStateDao().upsert(
+                        BootstrapStateEntity(
+                            relationshipId = bootstrap.relationship.relationshipId,
+                            inviteId = valid.invite.inviteId,
+                            status = BootstrapStatus.LOCAL_ESTABLISHED,
+                            isInitiator = true
+                        )
+                    )
+                    database.pairRelationshipDao().upsert(relationshipEntity)
+                    database.contactDao().upsert(contactEntity)
+                    database.connectionDao().upsert(connectionDbEntity)
+                    database.conversationDao().upsert(conversationEntity)
+                    database.consumedInviteDao().insert(consumedInviteEntity)
+                    database.bootstrapStateDao().upsert(bootstrapStateEntity)
+                }
+
+                // 3. Register Connection in-memory and initialize Double Ratchet session
+                connectionManager.registerConnection(connection)
+
                 sessionCrypto.initializeSession(
                     relationshipId = bootstrap.relationship.relationshipId,
                     sessionInitializationSecret = bootstrap.secrets.sessionInitializationSecret,
@@ -165,16 +202,9 @@ class ContactsViewModel(
                     localRatchetPublicKey = bootstrap.aliceEphemeralPublicKey
                 )
 
-                // 5. Create Conversation
-                val conversationEntity = ConversationEntity(
-                    conversationId = conversationId,
-                    type = ConversationType.DIRECT,
-                    title = valid.invite.displayName,
-                    unreadCount = 0
-                )
-                database.conversationDao().upsert(conversationEntity)
+                nearbyTransport?.registerScannedInvite(valid.invite.inviteId)
 
-                // 6. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys (Phase 4 & 5)
+                // 4. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys (Phase 4 & 5)
                 val bootstrapSignedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
                     inviteId = valid.invite.inviteId,
                     initiatorIdentityId = localIdentity.identityId,

@@ -165,6 +165,13 @@ data class ContactEntity(
     @ColumnInfo(name = "remote_identity_id", defaultValue = "''")
     val remoteIdentityId: String = ""
 ) {
+    companion object {
+        const val REMOTE_IDENTITY_UNKNOWN = "REMOTE_IDENTITY_UNKNOWN"
+    }
+
+    val isRemoteIdentityKnown: Boolean
+        get() = remoteIdentityId.isNotBlank() && remoteIdentityId != REMOTE_IDENTITY_UNKNOWN
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ContactEntity) return false
@@ -679,6 +686,50 @@ data class MediaTransferEntity(
 
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "consumed_invites")
+data class ConsumedInviteEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "invite_id")
+    val inviteId: String,
+
+    @ColumnInfo(name = "consumed_at")
+    val consumedAt: Long = System.currentTimeMillis()
+)
+
+enum class BootstrapStatus {
+    PENDING,
+    LOCAL_ESTABLISHED,
+    BOOTSTRAP_QUEUED,
+    REMOTE_CONFIRMED,
+    ACTIVE,
+    FAILED
+}
+
+@Entity(tableName = "bootstrap_states")
+data class BootstrapStateEntity(
+    @PrimaryKey
+    @ColumnInfo(name = "relationship_id")
+    val relationshipId: String,
+
+    @ColumnInfo(name = "invite_id")
+    val inviteId: String,
+
+    @ColumnInfo(name = "status")
+    val status: BootstrapStatus,
+
+    @ColumnInfo(name = "is_initiator")
+    val isInitiator: Boolean,
+
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "error_message")
+    val errorMessage: String? = null
 )
 
 

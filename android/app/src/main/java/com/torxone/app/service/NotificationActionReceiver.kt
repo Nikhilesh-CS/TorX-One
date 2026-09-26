@@ -70,7 +70,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                     return@launch
                                 }
                                 val relationshipId = contact.relationshipId
-                                val recipientId = contact.remoteIdentityId.ifBlank { contact.contactId }
+                                val recipientId = contact.remoteIdentityId
+                                if (!contact.isRemoteIdentityKnown) {
+                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Security information for contact '${contact.displayName}' needs to be refreshed. Reconnect or re-add this contact.")
+                                    return@launch
+                                }
 
                                 // Route through golden path
                                 chatService.sendTextMessage(
@@ -123,7 +127,11 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                 return@launch
                             }
                             val relationshipId = contact.relationshipId
-                            val recipientId = contact.remoteIdentityId.ifBlank { contact.contactId }
+                            val recipientId = contact.remoteIdentityId
+                            if (!contact.isRemoteIdentityKnown) {
+                                Log.e(TAG, "[MARK READ] Fail closed: Security information for contact '${contact.displayName}' needs to be refreshed. Reconnect or re-add this contact.")
+                                return@launch
+                            }
 
                             chatService.markConversationRead(
                                 conversationId = conversationId,

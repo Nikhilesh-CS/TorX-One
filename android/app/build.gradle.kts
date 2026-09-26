@@ -46,12 +46,21 @@ android {
         compose = true
     }
 
+    sourceSets {
+        getByName("test").assets.srcDir("$projectDir/schemas")
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.all {
             it.maxHeapSize = "2048m"
         }
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

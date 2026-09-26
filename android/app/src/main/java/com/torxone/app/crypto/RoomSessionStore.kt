@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 class RoomSessionStore(
     private val sessionDao: SessionDao,
     private val skippedKeyDao: SkippedKeyDao,
-    private val keyProtector: KeyProtector = NoOpKeyProtector()
+    val keyProtector: KeyProtector = NoOpKeyProtector()
 ) : SessionStore {
 
     override suspend fun loadSession(relationshipId: String): SessionState? = withContext(Dispatchers.IO) {

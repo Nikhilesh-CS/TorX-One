@@ -54,6 +54,10 @@ class CallManager(
         peerIdentityId: String,
         type: CallType
     ): CallSession? {
+        if (peerIdentityId.isBlank() || peerIdentityId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.e(TAG, "Cannot start call: Peer identity is unknown or legacy. Security information must be refreshed.")
+            return null
+        }
         if (_activeCall.value != null) {
             Log.w(TAG, "Cannot start call — already in call ${_activeCall.value?.callId}")
             return null
@@ -344,10 +348,11 @@ class CallManager(
     }
 
     /**
-     * Upgrade a voice call to include video.
+     * Upgrade local call session to VIDEO and enable camera.
      */
     fun enableVideo() {
         val session = _activeCall.value ?: return
+        if (session.type == CallType.VIDEO) return
         _activeCall.value = session.copy(type = CallType.VIDEO, isCameraOn = true)
         callEventListener?.onCameraChanged(true)
     }
@@ -390,7 +395,7 @@ class CallManager(
         val now = System.currentTimeMillis()
         val durationMs = session.connectedAt?.let { now - it }
 
-        val terminalState = if (session.state in setOf(CallState.DECLINED, CallState.BUSY, CallState.MISSED)) {
+        val terminalState = if (session.state in setOf(CallState.DECLINED, CallState.BUSY, CallState.MISSED, CallState.FAILED)) {
             session.state
         } else {
             CallState.ENDED

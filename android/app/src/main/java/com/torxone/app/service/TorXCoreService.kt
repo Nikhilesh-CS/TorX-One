@@ -19,7 +19,7 @@ class TorXCoreService : Service() {
 
     companion object {
         private const val CHANNEL_SERVICE = "torx_core_service_channel"
-        private const val NOTIFICATION_ID = 9001
+        const val CORE_SERVICE_NOTIFICATION_ID = 8001
 
         fun start(context: Context) {
             val intent = Intent(context, TorXCoreService::class.java)
@@ -39,11 +39,29 @@ class TorXCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildForegroundNotification())
+        startForeground(CORE_SERVICE_NOTIFICATION_ID, buildForegroundNotification())
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val app = applicationContext as? TorXOneApplication
+        if (app != null) {
+            app.agent.start()
+            if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(
+                    this,
+                    com.torxone.app.ui.permissions.PermissionHelper.getNearbyPermissions()
+                )
+            ) {
+                app.nearbyTransport.start()
+            }
+        }
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        val app = applicationContext as? TorXOneApplication
+        app?.nearbyTransport?.stop()
+        app?.agent?.stop()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

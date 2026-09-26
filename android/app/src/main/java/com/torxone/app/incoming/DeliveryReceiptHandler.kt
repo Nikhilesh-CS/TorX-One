@@ -48,7 +48,7 @@ class DeliveryReceiptHandler(
                     val targetMsg = messageDao.getById(receipt.upToMessageId)
                     if (targetMsg != null) {
                         messageDao.markOutgoingReadUpTo(
-                            conversationId = receipt.conversationId,
+                            conversationId = targetMsg.conversationId,
                             upToCreatedAt = targetMsg.createdAt,
                             status = DeliveryStatus.READ.name,
                             readAt = receipt.readAt

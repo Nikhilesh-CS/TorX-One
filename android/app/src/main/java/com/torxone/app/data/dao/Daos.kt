@@ -396,5 +396,32 @@ interface MediaTransferDao {
     suspend fun deleteByMediaId(mediaId: String)
 }
 
+@Dao
+interface ConsumedInviteDao {
+    @Query("SELECT invite_id FROM consumed_invites")
+    suspend fun getAllConsumedInviteIds(): List<String>
 
+    @Query("SELECT * FROM consumed_invites WHERE invite_id = :inviteId")
+    suspend fun getById(inviteId: String): ConsumedInviteEntity?
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: ConsumedInviteEntity)
+}
+
+@Dao
+interface BootstrapStateDao {
+    @Query("SELECT * FROM bootstrap_states WHERE relationship_id = :relationshipId")
+    suspend fun getByRelationshipId(relationshipId: String): BootstrapStateEntity?
+
+    @Query("SELECT * FROM bootstrap_states WHERE status != 'ACTIVE' AND status != 'FAILED'")
+    suspend fun getIncompleteBootstraps(): List<BootstrapStateEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: BootstrapStateEntity)
+
+    @Query("UPDATE bootstrap_states SET status = :status, updated_at = :updatedAt, error_message = :error WHERE relationship_id = :relationshipId")
+    suspend fun updateStatus(relationshipId: String, status: BootstrapStatus, updatedAt: Long = System.currentTimeMillis(), error: String? = null)
+
+    @Query("DELETE FROM bootstrap_states WHERE relationship_id = :relationshipId")
+    suspend fun delete(relationshipId: String)
+}

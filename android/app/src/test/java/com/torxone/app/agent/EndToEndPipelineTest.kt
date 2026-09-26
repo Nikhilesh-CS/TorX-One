@@ -1204,12 +1204,18 @@ class EndToEndPipelineTest {
 
         // 1. Send normal message with sequence 1
         sendMessage(alice, bob, relationshipId, conversationId, "m-seq-1", "First message")
-        waitFor { bob.messageDao.exists("m-seq-1") }
+        waitFor { 
+            bob.messageDao.exists("m-seq-1") && 
+            bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence == 1L 
+        }
         assertEquals("Bob recvSequence must advance to 1", 1L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
 
         // 2. Send normal message with sequence 2
         sendMessage(alice, bob, relationshipId, conversationId, "m-seq-2", "Second message")
-        waitFor { bob.messageDao.exists("m-seq-2") }
+        waitFor { 
+            bob.messageDao.exists("m-seq-2") && 
+            bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence == 2L 
+        }
         assertEquals("Bob recvSequence must advance to 2", 2L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
 
         // 3. Send exempt control packet (DELIVERY_ACK) with directionSequence = 99L
@@ -1243,7 +1249,10 @@ class EndToEndPipelineTest {
 
         // 4. Send normal message with sequence 3
         sendMessage(alice, bob, relationshipId, conversationId, "m-seq-3", "Third message")
-        waitFor { bob.messageDao.exists("m-seq-3") }
+        waitFor { 
+            bob.messageDao.exists("m-seq-3") && 
+            bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence == 3L 
+        }
         assertEquals("Bob recvSequence must advance monotonically to 3", 3L, bob.connectionManager.getConnectionByRelationship(relationshipId)?.recvSequence)
 
         alice.stop()

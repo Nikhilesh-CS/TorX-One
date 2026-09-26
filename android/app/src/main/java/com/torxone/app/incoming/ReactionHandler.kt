@@ -30,7 +30,7 @@ class ReactionHandler(
             return
         }
 
-        val conversationId = envelope.conversationId.ifEmpty { targetMsg.conversationId }
+        val conversationId = targetMsg.conversationId
         val senderId = envelope.senderIdentity
 
         when (reaction.operation) {

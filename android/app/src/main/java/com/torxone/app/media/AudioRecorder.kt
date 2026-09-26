@@ -65,7 +65,9 @@ class RealVoiceNoteRecorder(
     private var recordingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val pcmOutputStream = ByteArrayOutputStream()
+    private var tempPcmFile: java.io.File? = null
+    private var fileOutputStream: java.io.FileOutputStream? = null
+    private var bytesWritten: Long = 0L
     private val waveformAmplitudes = mutableListOf<Byte>()
     private var startTimeMs: Long = 0L
 
@@ -106,10 +108,13 @@ class RealVoiceNoteRecorder(
                 return false
             }
 
-            audioRecord = record
-            pcmOutputStream.reset()
+            val pcmFile = java.io.File.createTempFile("voice_note_pcm_", ".tmp", context.cacheDir)
+            tempPcmFile = pcmFile
+            fileOutputStream = java.io.FileOutputStream(pcmFile)
+            bytesWritten = 0L
             waveformAmplitudes.clear()
             startTimeMs = System.currentTimeMillis()
+            audioRecord = record
             isRecording = true
 
             record.startRecording()
@@ -120,7 +125,7 @@ class RealVoiceNoteRecorder(
 
                 while (isActive && isRecording) {
                     if (System.currentTimeMillis() - startTimeMs > MAX_RECORDING_DURATION_MS ||
-                        pcmOutputStream.size() >= MAX_PCM_SIZE_BYTES
+                        bytesWritten >= MAX_PCM_SIZE_BYTES
                     ) {
                         Log.w(TAG, "[RECORD LIMIT] Maximum duration or buffer size reached; stopping recording")
                         break
@@ -128,7 +133,7 @@ class RealVoiceNoteRecorder(
 
                     val readShorts = record.read(buffer, 0, buffer.size)
                     if (readShorts > 0) {
-                        // 1. Convert shorts to 16-bit little-endian bytes and append to output stream
+                        // 1. Convert shorts to 16-bit little-endian bytes and stream to temporary file
                         var sumSquares = 0.0
                         for (i in 0 until readShorts) {
                             val sample = buffer[i]
@@ -138,9 +143,10 @@ class RealVoiceNoteRecorder(
                             byteBuffer[i * 2 + 1] = b2
                             sumSquares += sample.toDouble() * sample.toDouble()
                         }
-                        synchronized(pcmOutputStream) {
-                            if (pcmOutputStream.size() + readShorts * 2 <= MAX_PCM_SIZE_BYTES) {
-                                pcmOutputStream.write(byteBuffer, 0, readShorts * 2)
+                        synchronized(this@RealVoiceNoteRecorder) {
+                            if (bytesWritten + readShorts * 2 <= MAX_PCM_SIZE_BYTES) {
+                                fileOutputStream?.write(byteBuffer, 0, readShorts * 2)
+                                bytesWritten += readShorts * 2
                             }
                         }
 
@@ -187,8 +193,20 @@ class RealVoiceNoteRecorder(
             Log.w(TAG, "Error stopping AudioRecord: ${e.message}")
         }
 
-        val rawPcm = synchronized(pcmOutputStream) {
-            pcmOutputStream.toByteArray()
+        synchronized(this) {
+            try {
+                fileOutputStream?.flush()
+                fileOutputStream?.close()
+            } catch (_: Exception) {}
+            fileOutputStream = null
+        }
+
+        val pcmFile = tempPcmFile
+        val rawPcm = try {
+            if (pcmFile != null && pcmFile.exists()) pcmFile.readBytes() else ByteArray(0)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read PCM temp file: ${e.message}")
+            ByteArray(0)
         }
 
         cleanup()
@@ -228,6 +246,16 @@ class RealVoiceNoteRecorder(
     private fun cleanup() {
         isRecording = false
         _amplitudeFlow.value = 0f
+        synchronized(this) {
+            try {
+                fileOutputStream?.close()
+            } catch (_: Exception) {}
+            fileOutputStream = null
+            try {
+                tempPcmFile?.delete()
+            } catch (_: Exception) {}
+            tempPcmFile = null
+        }
         try {
             audioRecord?.release()
         } catch (e: Exception) {

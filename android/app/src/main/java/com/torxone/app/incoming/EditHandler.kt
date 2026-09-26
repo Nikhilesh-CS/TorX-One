@@ -71,7 +71,7 @@ class EditHandler(
         )
 
         notificationManager?.onMessageEdited(
-            conversationId = envelope.conversationId,
+            conversationId = targetMsg.conversationId,
             messageId = edit.targetMessageId,
             newText = edit.newText
         )

@@ -65,6 +65,9 @@ class ChatService(
         replyToMessageId: String? = null
     ): String {
         require(text.isNotBlank()) { "Message text cannot be blank" }
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            throw IllegalStateException("Security information for this contact needs to be refreshed. Reconnect or re-add this contact.")
+        }
 
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
@@ -75,7 +78,7 @@ class ChatService(
 
         Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)} replyTo=${replyToMessageId?.take(8)}")
 
-        val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
 
         // 1. Build SecureEnvelope with directional sequence and optional replyToMessageId
         val envelope = SecureEnvelope(
@@ -130,6 +133,7 @@ class ChatService(
             )
 
             transactionRunner {
+                database?.connectionDao()?.updateSendSequence(relationshipId, sendSeq)
                 sessionStore?.saveSession(updatedState)
                 messageDao.insertIfAbsent(messageEntity)
                 outboxDao.insert(outboxEntity)
@@ -209,6 +213,10 @@ class ChatService(
         val readReceiptsEnabled = appSettingsRepository?.readReceiptsEnabled?.first() ?: true
         if (!readReceiptsEnabled) {
             Log.d(TAG, "Read receipts disabled in settings; suppressing read receipt for conv=$conversationId")
+            return
+        }
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.w(TAG, "Skipping read receipt dispatch: Contact has unknown remote identity. Security upgrade required.")
             return
         }
         try {
@@ -398,6 +406,11 @@ class ChatService(
             }
         }
 
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.w(TAG, "Cannot send reaction: Contact has unknown remote identity. Security upgrade required.")
+            return
+        }
+
         // 2. Build and transmit secure protocol event
         try {
             val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return
@@ -407,7 +420,7 @@ class ChatService(
                 operation = operation
             ).toByteArray()
 
-            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
@@ -458,6 +471,10 @@ class ChatService(
         newText: String
     ): Boolean {
         require(newText.isNotBlank()) { "Edited text cannot be blank" }
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.w(TAG, "Cannot edit message: Contact has unknown remote identity. Security upgrade required.")
+            return false
+        }
 
         val targetMsg = messageDao.getById(targetMessageId) ?: return false
         if (targetMsg.senderId != localIdentityId) {
@@ -499,7 +516,7 @@ class ChatService(
                 editedAt = now
             ).toByteArray()
 
-            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
@@ -553,6 +570,10 @@ class ChatService(
             Log.w(TAG, "Cannot delete message: not original author")
             return false
         }
+        if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.w(TAG, "Cannot send delete remotely: Contact has unknown remote identity. Security upgrade required.")
+            return false
+        }
         if (targetMsg.deletedAt != null) {
             return true
         }
@@ -581,7 +602,7 @@ class ChatService(
                 deletedAt = now
             ).toByteArray()
 
-            val sendSeq = connectionManager.incrementSendSequence(relationshipId)
+            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),

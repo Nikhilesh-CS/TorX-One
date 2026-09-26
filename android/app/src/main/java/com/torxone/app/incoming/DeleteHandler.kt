@@ -57,7 +57,7 @@ class DeleteHandler(
         )
 
         notificationManager?.onMessageTombstoned(
-            conversationId = envelope.conversationId,
+            conversationId = targetMsg.conversationId,
             messageId = delete.targetMessageId
         )
 

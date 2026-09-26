@@ -22,7 +22,9 @@ import com.torxone.app.incoming.*
 import com.torxone.app.transport.TransportRouter
 import com.torxone.app.transport.nearby.NearbyTransport
 import androidx.room.withTransaction
+import com.torxone.app.crypto.AndroidKeystoreKeyProtector
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * TorX One Application.
@@ -60,6 +62,9 @@ class TorXOneApplication : Application() {
         private set
 
     lateinit var transportRouter: TransportRouter
+        private set
+
+    lateinit var sessionStore: RoomSessionStore
         private set
 
     lateinit var agent: TorXAgent
@@ -100,19 +105,20 @@ class TorXOneApplication : Application() {
 
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    sealed class AppInitState {
+        data object Initializing : AppInitState()
+        data class Ready(val identityId: String?) : AppInitState()
+        data class Failed(val error: Throwable) : AppInitState()
+    }
+
+    private val _initState = kotlinx.coroutines.flow.MutableStateFlow<AppInitState>(AppInitState.Initializing)
+    val initState: kotlinx.coroutines.flow.StateFlow<AppInitState> = _initState.asStateFlow()
+
     @Volatile
     var cachedLocalIdentityId: String? = null
         private set
 
-    fun getLocalIdentityId(): String? {
-        val cached = cachedLocalIdentityId
-        if (cached != null) return cached
-        return runBlocking {
-            identityRepository.loadIdentity()?.identityId.also {
-                cachedLocalIdentityId = it
-            }
-        }
-    }
+    fun getLocalIdentityId(): String? = cachedLocalIdentityId
 
     override fun onCreate() {
         super.onCreate()
@@ -132,16 +138,13 @@ class TorXOneApplication : Application() {
         identityRepository = KeystoreIdentityRepository(this, database.pendingInviteDao())
 
         // 3. Crypto / Session
-        val sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao())
+        val keyProtector = AndroidKeystoreKeyProtector()
+        sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao(), keyProtector)
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 
-        // 4. Connection Manager & Active Conversation Tracker (Restore persisted connections synchronously to prevent startup races, M1)
+        // 4. Connection Manager & Active Conversation Tracker
         connectionManager = ConnectionManager(database.connectionDao())
         activeConversationTracker = ActiveConversationTracker()
-        runBlocking {
-            cachedLocalIdentityId = identityRepository.loadIdentity()?.identityId
-            connectionManager.restoreFromDatabase(database.connectionDao())
-        }
 
         // 4b. Notification Authority (inject appSettingsRepository, M17)
         notificationManager = com.torxone.app.notifications.TorXNotificationManager(
@@ -205,7 +208,8 @@ class TorXOneApplication : Application() {
             outboxDao = database.outboxDao(),
             localIdentityIdProvider = { getLocalIdentityId() },
             appSettingsRepository = settingsRepository,
-            transactionRunner = { block -> database.withTransaction { block() } }
+            transactionRunner = { block -> database.withTransaction { block() } },
+            contactDao = database.contactDao()
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -271,7 +275,8 @@ class TorXOneApplication : Application() {
             messageDao = database.messageDao(),
             conversationDao = database.conversationDao(),
             activeConversationTracker = activeConversationTracker,
-            notificationManager = notificationManager
+            notificationManager = notificationManager,
+            contactDao = database.contactDao()
         )
         val receiptHandler = DeliveryReceiptHandler(
             messageDao = database.messageDao(),
@@ -303,7 +308,9 @@ class TorXOneApplication : Application() {
             connectionDao = database.connectionDao(),
             contactDao = database.contactDao(),
             conversationDao = database.conversationDao(),
-            sessionStore = sessionStore
+            sessionStore = sessionStore,
+            consumedInviteDao = database.consumedInviteDao(),
+            bootstrapStateDao = database.bootstrapStateDao()
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
@@ -334,19 +341,31 @@ class TorXOneApplication : Application() {
             sessionStore = sessionStore
         )
 
-        // 10. Start background agent and transport
-        agent.start()
-        if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(
-                this,
-                com.torxone.app.ui.permissions.PermissionHelper.getNearbyPermissions()
-            )
-        ) {
-            nearbyTransport.start()
-        }
-
-        // 11. Recover any interrupted media transfers & sweep orphan temp files
+        // 10. Explicit asynchronous application initialization
         applicationScope.launch {
-            mediaService.recoverPendingTransfersOnStartup()
+            try {
+                val identity = identityRepository.loadIdentity()
+                cachedLocalIdentityId = identity?.identityId
+                connectionManager.restoreFromDatabase(database.connectionDao())
+
+                // Start background agent and transport only AFTER async initialization completes
+                agent.start()
+                if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(
+                        this@TorXOneApplication,
+                        com.torxone.app.ui.permissions.PermissionHelper.getNearbyPermissions()
+                    )
+                ) {
+                    nearbyTransport.start()
+                }
+
+                // Recover any interrupted media transfers & sweep orphan temp files
+                mediaService.recoverPendingTransfersOnStartup()
+
+                _initState.value = AppInitState.Ready(cachedLocalIdentityId)
+            } catch (e: Throwable) {
+                android.util.Log.e("TorXOneApplication", "Async app initialization failed", e)
+                _initState.value = AppInitState.Failed(e)
+            }
         }
     }
 

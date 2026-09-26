@@ -17,7 +17,8 @@ class ChatReceiver(
     private val messageDao: MessageDao,
     private val conversationDao: ConversationDao,
     private val activeConversationTracker: ActiveConversationTracker,
-    private val notificationManager: TorXNotificationManager? = null
+    private val notificationManager: TorXNotificationManager? = null,
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
 ) {
     companion object {
         private const val TAG = "ChatReceiver"
@@ -29,9 +30,35 @@ class ChatReceiver(
     ): Boolean {
         val messageId = envelope.logicalMessageId
         val text = String(envelope.payload, Charsets.UTF_8)
-        val conversationId = envelope.conversationId
 
-        Log.i(TAG, "[RX] msg=${messageId.take(8)} received in conv=${conversationId.take(8)}")
+        val isGroup = envelope.groupMetadata != null
+        val conversationId: String
+        val conversationTitle: String
+
+        if (isGroup) {
+            conversationId = envelope.groupMetadata!!.groupId
+            conversationTitle = "Group"
+        } else {
+            // DIRECT conversation: NEVER trust the wire envelope.conversationId.
+            // Derive strictly from authenticated connection.relationshipId -> ContactEntity.conversationId
+            if (contactDao != null) {
+                val contact = contactDao.getByRelationshipId(connection.relationshipId)
+                if (contact == null || contact.conversationId.isBlank()) {
+                    Log.e(
+                        TAG,
+                        "[RX REJECT] Inconsistent direct route: No local contact or conversation mapping found for relationshipId=${connection.relationshipId}. Failing safely without creating remote-supplied conversation."
+                    )
+                    return false
+                }
+                conversationId = contact.conversationId
+                conversationTitle = contact.displayName.ifBlank { "Contact" }
+            } else {
+                conversationId = envelope.conversationId
+                conversationTitle = "Contact"
+            }
+        }
+
+        Log.i(TAG, "[RX] msg=${messageId.take(8)} routed to local conv=${conversationId.take(8)}")
 
         if (messageDao.exists(messageId)) {
             Log.d(TAG, "[RX] msg=${messageId.take(8)} already exists in DB")
@@ -42,8 +69,8 @@ class ChatReceiver(
         if (conv == null) {
             conv = ConversationEntity(
                 conversationId = conversationId,
-                type = ConversationType.DIRECT,
-                title = "Contact",
+                type = if (isGroup) ConversationType.GROUP else ConversationType.DIRECT,
+                title = conversationTitle,
                 unreadCount = 0,
                 lastMessageId = messageId,
                 lastMessagePreview = text.take(100),

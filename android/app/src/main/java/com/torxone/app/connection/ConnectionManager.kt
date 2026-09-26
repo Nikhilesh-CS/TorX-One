@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -53,6 +54,34 @@ class ConnectionManager(
         }
     }
 
+    private val sendSequenceLocks = ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
+    /**
+     * Durably and atomically allocate the next send sequence counter for a relationship.
+     * Guaranteed to persist the allocated sequence before returning, ensuring no sequence rewind on crash.
+     */
+    suspend fun allocateSendSequence(relationshipId: String): Long {
+        val mutex = sendSequenceLocks.computeIfAbsent(relationshipId) { kotlinx.coroutines.sync.Mutex() }
+        return mutex.withLock {
+            val dbSeq = connectionDao?.getByRelationshipId(relationshipId)?.sendSequence ?: 0L
+            val inMemorySeq = connectionsByRelationship[relationshipId]?.sendSequence ?: 0L
+            val nextSeq = maxOf(dbSeq, inMemorySeq) + 1
+
+            // Persist to database synchronously before proceeding
+            connectionDao?.updateSendSequence(relationshipId, nextSeq)
+
+            connectionsByRelationship.compute(relationshipId) { _, existing ->
+                if (existing == null) return@compute null
+                val updated = existing.copy(sendSequence = nextSeq)
+                connectionsByRecvQueue[updated.recvQueueId] = updated
+                connectionsBySendQueue[updated.sendQueueId] = updated
+                updated
+            }
+            _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
+            nextSeq
+        }
+    }
+
     /**
      * Atomically increment the send sequence counter for a relationship.
      * Uses ConcurrentHashMap.compute to prevent lost updates when send and
@@ -69,10 +98,37 @@ class ConnectionManager(
             updated
         } ?: return 0L
         _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-        scope.launch {
+        // Ensure immediate database update without fire-and-forget race
+        kotlinx.coroutines.runBlocking {
             connectionDao?.updateSendSequence(relationshipId, nextSeq)
         }
         return nextSeq
+    }
+
+    /**
+     * Phase 1 of atomic receive sequence advancement:
+     * Validates that the incoming sequence is strictly greater than the current receive sequence.
+     * Does NOT mutate in-memory state or database.
+     */
+    fun validateRecvSequence(relationshipId: String, sequence: Long): Boolean {
+        val conn = connectionsByRelationship[relationshipId] ?: return false
+        return sequence > conn.recvSequence
+    }
+
+    /**
+     * Phase 2 of atomic receive sequence advancement:
+     * Commits the validated sequence to in-memory state ONLY AFTER the database transaction has succeeded.
+     */
+    fun commitRecvSequence(relationshipId: String, sequence: Long) {
+        connectionsByRelationship.compute(relationshipId) { _, existing ->
+            if (existing == null) return@compute null
+            if (sequence <= existing.recvSequence) return@compute existing
+            val updated = existing.copy(recvSequence = sequence)
+            connectionsByRecvQueue[updated.recvQueueId] = updated
+            connectionsBySendQueue[updated.sendQueueId] = updated
+            updated
+        }
+        _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
     }
 
     /**
@@ -81,26 +137,12 @@ class ConnectionManager(
      * (non-monotonic / replay).
      */
     fun tryAdvanceRecvSequence(relationshipId: String, sequence: Long): Boolean {
-        var accepted = false
-        connectionsByRelationship.compute(relationshipId) { _, existing ->
-            if (existing == null) return@compute null
-            if (sequence <= existing.recvSequence) {
-                accepted = false
-                return@compute existing  // unchanged
-            }
-            accepted = true
-            val updated = existing.copy(recvSequence = sequence)
-            connectionsByRecvQueue[updated.recvQueueId] = updated
-            connectionsBySendQueue[updated.sendQueueId] = updated
-            updated
-        } ?: return false
-        if (accepted) {
-            _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-            scope.launch {
-                connectionDao?.updateRecvSequence(relationshipId, sequence)
-            }
+        if (!validateRecvSequence(relationshipId, sequence)) return false
+        commitRecvSequence(relationshipId, sequence)
+        kotlinx.coroutines.runBlocking {
+            connectionDao?.updateRecvSequence(relationshipId, sequence)
         }
-        return accepted
+        return true
     }
 
     fun updateRecvSequence(relationshipId: String, sequence: Long) {

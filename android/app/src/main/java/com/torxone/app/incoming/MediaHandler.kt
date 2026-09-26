@@ -43,8 +43,15 @@ class MediaHandler(
                 null -> "sent an attachment"
             }
 
+            val isGroup = envelope.groupMetadata != null
+            val targetConvId = if (isGroup) {
+                envelope.groupMetadata?.groupId ?: envelope.conversationId
+            } else {
+                mediaService.resolveLocalConversationId(connection.relationshipId) ?: envelope.conversationId
+            }
+
             notificationManager?.handleIncomingTextMessage(
-                conversationId = envelope.conversationId,
+                conversationId = targetConvId,
                 messageId = envelope.logicalMessageId,
                 senderId = envelope.senderIdentity,
                 text = preview,

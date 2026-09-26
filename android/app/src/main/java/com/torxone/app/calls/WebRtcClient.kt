@@ -411,6 +411,11 @@ class WebRtcClient(
         peerConnection?.dispose()
         peerConnection = null
 
+        isRemoteDescriptionSet = false
+        synchronized(pendingIceCandidates) {
+            pendingIceCandidates.clear()
+        }
+
         Log.i(TAG, "WebRTC resources released")
     }
 

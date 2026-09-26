@@ -58,7 +58,9 @@ class IncomingDispatcher(
     private val identityRepository: com.torxone.app.identity.IdentityRepository? = null,
     private val connectionDao: com.torxone.app.data.dao.ConnectionDao? = null,
     private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
-    private val conversationDao: com.torxone.app.data.dao.ConversationDao? = null
+    private val conversationDao: com.torxone.app.data.dao.ConversationDao? = null,
+    private val consumedInviteDao: com.torxone.app.data.dao.ConsumedInviteDao? = null,
+    private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -87,6 +89,10 @@ class IncomingDispatcher(
         if (connection == null) {
             if (opaqueEnvelope.queueAddress.startsWith("invite-") && pendingInviteDao != null && identityRepository != null) {
                 val inviteId = opaqueEnvelope.queueAddress.removePrefix("invite-")
+                if (consumedInviteDao?.getById(inviteId) != null) {
+                    Log.e(TAG, "[BOOTSTRAP REJECT] Invite $inviteId has already been consumed")
+                    return false
+                }
                 val pendingInvite = pendingInviteDao.getById(inviteId)
                 if (pendingInvite == null) {
                     Log.e(TAG, "[BOOTSTRAP REJECT] No matching pending invite found for $inviteId")
@@ -141,20 +147,69 @@ class IncomingDispatcher(
                         sendAuth = responderResult.bobSendAuth,
                         recvAuth = responderResult.aliceSendAuth
                     )
-                    connectionManager.registerConnection(conn)
 
-                    connectionDao?.upsert(
-                        com.torxone.app.data.entity.ConnectionDbEntity(
-                            connectionId = conn.connectionId,
-                            relationshipId = conn.relationshipId,
-                            generation = conn.generation,
-                            sendQueueId = conn.sendQueueId,
-                            recvQueueId = conn.recvQueueId,
-                            sendAuth = conn.sendAuth,
-                            recvAuth = conn.recvAuth,
-                            state = "ACTIVE"
+                    val contactId = responderResult.relationship.contactId
+
+                    transactionRunner {
+                        bootstrapStateDao?.upsert(
+                            com.torxone.app.data.entity.BootstrapStateEntity(
+                                relationshipId = responderResult.relationship.relationshipId,
+                                inviteId = inviteId,
+                                status = com.torxone.app.data.entity.BootstrapStatus.LOCAL_ESTABLISHED,
+                                isInitiator = false
+                            )
                         )
-                    )
+
+                        connectionDao?.upsert(
+                            com.torxone.app.data.entity.ConnectionDbEntity(
+                                connectionId = conn.connectionId,
+                                relationshipId = conn.relationshipId,
+                                generation = conn.generation,
+                                sendQueueId = conn.sendQueueId,
+                                recvQueueId = conn.recvQueueId,
+                                sendAuth = conn.sendAuth,
+                                recvAuth = conn.recvAuth,
+                                state = "ACTIVE"
+                            )
+                        )
+
+                        contactDao?.upsert(
+                            com.torxone.app.data.entity.ContactEntity(
+                                contactId = contactId,
+                                relationshipId = responderResult.relationship.relationshipId,
+                                displayName = bootstrapPayload.initiatorDisplayName,
+                                signingPublicKey = bootstrapPayload.initiatorSigningPublicKey,
+                                verificationState = "VERIFIED",
+                                conversationId = responderResult.relationship.relationshipId,
+                                remoteIdentityId = bootstrapPayload.initiatorIdentityId
+                            )
+                        )
+
+                        conversationDao?.upsert(
+                            com.torxone.app.data.entity.ConversationEntity(
+                                conversationId = responderResult.relationship.relationshipId,
+                                type = com.torxone.app.data.entity.ConversationType.DIRECT,
+                                title = bootstrapPayload.initiatorDisplayName,
+                                unreadCount = 0
+                            )
+                        )
+
+                        consumedInviteDao?.insert(
+                            com.torxone.app.data.entity.ConsumedInviteEntity(
+                                inviteId = inviteId,
+                                consumedAt = System.currentTimeMillis()
+                            )
+                        )
+
+                        pendingInviteDao.delete(pendingInvite.inviteId)
+
+                        bootstrapStateDao?.updateStatus(
+                            responderResult.relationship.relationshipId,
+                            com.torxone.app.data.entity.BootstrapStatus.ACTIVE
+                        )
+                    }
+
+                    connectionManager.registerConnection(conn)
 
                     sessionCrypto.initializeSession(
                         relationshipId = responderResult.relationship.relationshipId,
@@ -165,29 +220,6 @@ class IncomingDispatcher(
                         localRatchetPublicKey = pendingInvite.ephemeralPublicKey
                     )
 
-                    val contactId = responderResult.relationship.contactId
-                    contactDao?.upsert(
-                        com.torxone.app.data.entity.ContactEntity(
-                            contactId = contactId,
-                            relationshipId = responderResult.relationship.relationshipId,
-                            displayName = bootstrapPayload.initiatorDisplayName,
-                            signingPublicKey = bootstrapPayload.initiatorSigningPublicKey,
-                            verificationState = "VERIFIED",
-                            conversationId = responderResult.relationship.relationshipId,
-                            remoteIdentityId = bootstrapPayload.initiatorIdentityId
-                        )
-                    )
-
-                    conversationDao?.upsert(
-                        com.torxone.app.data.entity.ConversationEntity(
-                            conversationId = responderResult.relationship.relationshipId,
-                            type = com.torxone.app.data.entity.ConversationType.DIRECT,
-                            title = bootstrapPayload.initiatorDisplayName,
-                            unreadCount = 0
-                        )
-                    )
-
-                        pendingInviteDao.delete(pendingInvite.inviteId)
                     sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorDisplayName)
 
                     Log.i(TAG, "[BOOTSTRAP SUCCESS] Established bilateral relationship with ${bootstrapPayload.initiatorDisplayName}")
@@ -255,12 +287,13 @@ class IncomingDispatcher(
                     throw IllegalStateException("Recipient binding mismatch: expected $localId, got ${secureEnvelope.recipientBinding}")
                 }
 
-                // Stage 8b: Validate directional sequence requirements
-                if (secureEnvelope.messageType.requiresApplicationSequence()) {
+                // Stage 8b: Validate directional sequence requirements (read current sequence, validate incoming > current, DO NOT mutate memory or DB yet)
+                val requiresSequence = secureEnvelope.messageType.requiresApplicationSequence()
+                if (requiresSequence) {
                     if (secureEnvelope.directionSequence <= 0) {
                         throw IllegalStateException("Message type ${secureEnvelope.messageType} requires positive directional sequence, got ${secureEnvelope.directionSequence}")
                     }
-                    val accepted = connectionManager.tryAdvanceRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                    val accepted = connectionManager.validateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
                     if (!accepted) {
                         throw IllegalStateException("Non-monotonic directional sequence: received ${secureEnvelope.directionSequence}, current ${connection.recvSequence}")
                     }
@@ -290,13 +323,17 @@ class IncomingDispatcher(
                 }
 
                 // Stage 9, 10, 11: Atomic Database Transaction
-                // Ratchet receive state + Message persistence + Dedup record committed together!
+                // Ratchet receive state + Persisted receive sequence + Message persistence + Dedup record committed together!
                 transactionRunner {
                     sessionStore?.saveSession(updatedState)
+                    if (requiresSequence) {
+                        connectionDao?.updateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                    }
                     // Dispatch to feature handler
                     when (secureEnvelope.messageType) {
                         MessageType.TEXT -> {
-                            chatReceiver.receiveTextMessage(connection, secureEnvelope)
+                            val ok = chatReceiver.receiveTextMessage(connection, secureEnvelope)
+                            if (!ok) throw IllegalStateException("Text message receiver returned failure")
                         }
                         MessageType.DELIVERY_ACK -> {
                             deliveryReceiptHandler.handleDeliveryAck(secureEnvelope)
@@ -380,6 +417,11 @@ class IncomingDispatcher(
                             processedAt = now
                         )
                     )
+                }
+
+                // Stage 11b: Only after transaction succeeds, update in-memory Connection state
+                if (requiresSequence) {
+                    connectionManager.commitRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
                 }
 
                 decryptedEnvelope = secureEnvelope

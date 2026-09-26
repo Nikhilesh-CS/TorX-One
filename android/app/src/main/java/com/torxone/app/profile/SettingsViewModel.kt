@@ -1,8 +1,7 @@
 package com.torxone.app.profile
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -14,8 +13,7 @@ import kotlinx.coroutines.launch
  */
 class SettingsViewModel(
     private val settingsRepo: AppSettingsRepository
-) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+) : ViewModel() {
 
     val uiState: StateFlow<SettingsUiState> = combine(
         combine(
@@ -72,11 +70,11 @@ class SettingsViewModel(
             dynamicColorsEnabled = p4.dynamicColorsEnabled,
             autoDownloadMedia = p4.autoDownloadMedia
         )
-    }.stateIn(scope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
     // ─── Privacy ─────────────────────────────────────────────────────
     fun setPrivacy(field: String, value: Boolean) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "lastSeen" -> settingsRepo.setLastSeenVisible(value)
                 "online" -> settingsRepo.setOnlineVisible(value)
@@ -87,7 +85,7 @@ class SettingsViewModel(
 
     // ─── Notifications ───────────────────────────────────────────────
     fun setNotification(field: String, value: Any) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "enabled" -> settingsRepo.setNotificationsEnabled(value as Boolean)
                 "sound" -> settingsRepo.setSoundEnabled(value as Boolean)
@@ -99,7 +97,7 @@ class SettingsViewModel(
 
     // ─── Security ────────────────────────────────────────────────────
     fun setSecurity(field: String, value: Boolean) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "appLock" -> settingsRepo.setAppLockEnabled(value)
                 "screenSecurity" -> settingsRepo.setScreenSecurityEnabled(value)
@@ -109,7 +107,7 @@ class SettingsViewModel(
 
     // ─── Connection ──────────────────────────────────────────────────
     fun setConnection(field: String, value: Boolean) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "autoNearby" -> settingsRepo.setAutoConnectNearby(value)
                 "lowBandwidth" -> settingsRepo.setLowBandwidthMode(value)
@@ -119,7 +117,7 @@ class SettingsViewModel(
 
     // ─── Appearance ──────────────────────────────────────────────────
     fun setAppearance(field: String, value: Any) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "theme" -> settingsRepo.setThemeMode(value as String)
                 "dynamicColors" -> settingsRepo.setDynamicColorsEnabled(value as Boolean)
@@ -129,7 +127,7 @@ class SettingsViewModel(
 
     // ─── Data ────────────────────────────────────────────────────────
     fun setData(field: String, value: Boolean) {
-        scope.launch {
+        viewModelScope.launch {
             when (field) {
                 "autoDownload" -> settingsRepo.setAutoDownloadMedia(value)
             }
@@ -138,7 +136,7 @@ class SettingsViewModel(
 
     // ─── Profile Update ──────────────────────────────────────────────
     fun updateProfile(name: String, about: String, avatarUri: String? = null) {
-        scope.launch {
+        viewModelScope.launch {
             settingsRepo.updateProfile(displayName = name, about = about, avatarUri = avatarUri)
         }
     }

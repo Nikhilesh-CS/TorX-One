@@ -80,6 +80,17 @@ fun TorXOneApp() {
     // Don't render anything until we know the onboarding state (avoid flash)
     val resolved = onboardingComplete ?: return
 
+    val appInitState by app.initState.collectAsState()
+    if (resolved && appInitState is TorXOneApplication.AppInitState.Initializing) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator()
+        }
+        return
+    }
+
     val launchNavigateTo = (context as? android.app.Activity)?.intent?.getStringExtra("navigate_to")
     var currentScreen by remember(resolved) {
         val launchConvId = (context as? android.app.Activity)?.intent?.getStringExtra("conversationId")
@@ -105,28 +116,29 @@ fun TorXOneApp() {
         }
     }
 
-    val contactsViewModel = remember {
+    val contactsViewModel: ContactsViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         ContactsViewModel(
             database = app.database,
             identityRepository = app.identityRepository,
             sessionCrypto = app.sessionCrypto,
             connectionManager = app.connectionManager,
-            agent = app.agent
+            agent = app.agent,
+            nearbyTransport = app.nearbyTransport
         )
     }
 
-    val conversationListViewModel = remember {
+    val conversationListViewModel: com.torxone.app.conversations.ConversationListViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         com.torxone.app.conversations.ConversationListViewModel(
             chatService = app.chatService,
             messageDao = app.database.messageDao()
         )
     }
 
-    val settingsViewModel = remember {
+    val settingsViewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         SettingsViewModel(settingsRepo = app.settingsRepository)
     }
 
-    val callViewModel = remember {
+    val callViewModel: com.torxone.app.calls.CallViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         com.torxone.app.calls.CallViewModel(
             callManager = app.callManager,
             contactDao = app.database.contactDao()
@@ -383,7 +395,9 @@ fun TorXOneApp() {
                 }
             } else if (conversation != null && localIdentity != null) {
                 if (conversation!!.type == ConversationType.GROUP) {
-                    val groupViewModel = remember(screen.conversationId) {
+                    val groupViewModel: com.torxone.app.groups.GroupChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                        key = "group_${screen.conversationId}"
+                    ) {
                         com.torxone.app.groups.GroupChatViewModel(
                             groupId = screen.conversationId,
                             conversationId = screen.conversationId,
@@ -444,22 +458,66 @@ fun TorXOneApp() {
                             }
                         }
                     } else if (contact != null) {
-                        val voiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
-                        // Cryptographic remoteIdentityId strictly bound (C1)
-                        val peerNetworkIdentity = contact!!.remoteIdentityId.ifBlank { contact!!.contactId }
-                        val viewModel = remember(screen.conversationId, contact!!.relationshipId) {
-                            com.torxone.app.chat.ChatViewModel(
-                                conversationId = screen.conversationId,
-                                relationshipId = contact!!.relationshipId,
-                                localIdentityId = localIdentity!!.identityId,
-                                recipientId = peerNetworkIdentity,
-                                contactName = screen.contactName,
-                                chatService = app.chatService,
-                                presenceService = app.presenceService,
-                                mediaService = app.mediaService,
-                                voiceNoteRecorder = voiceRecorder
-                            )
-                        }
+                        if (!contact!!.isRemoteIdentityKnown) {
+                            Scaffold(
+                                topBar = {
+                                    TopAppBar(
+                                        title = { Text(screen.contactName.ifBlank { "Contact" }) },
+                                        navigationIcon = {
+                                            IconButton(onClick = { navigateBack() }) {
+                                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                                            }
+                                        }
+                                    )
+                                }
+                            ) { padding ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(padding)
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                                    ) {
+                                        Text(
+                                            text = "Security Upgrade Required",
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = MaterialTheme.colorScheme.error,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Security information for this contact needs to be refreshed. Reconnect or re-add this contact.",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Button(onClick = { navigateBack() }) {
+                                            Text("Back to Conversations")
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            val voiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
+                            val peerNetworkIdentity = contact!!.remoteIdentityId
+                            val viewModel: com.torxone.app.chat.ChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                                key = "chat_${screen.conversationId}_${contact!!.relationshipId}"
+                            ) {
+                                com.torxone.app.chat.ChatViewModel(
+                                    conversationId = screen.conversationId,
+                                    relationshipId = contact!!.relationshipId,
+                                    localIdentityId = localIdentity!!.identityId,
+                                    recipientId = peerNetworkIdentity,
+                                    contactName = screen.contactName,
+                                    chatService = app.chatService,
+                                    presenceService = app.presenceService,
+                                    mediaService = app.mediaService,
+                                    voiceNoteRecorder = voiceRecorder
+                                )
+                            }
 
                         ChatScreen(
                             viewModel = viewModel,
@@ -492,7 +550,8 @@ fun TorXOneApp() {
                                 }
                             }
                         )
-                    } else {
+                    }
+                } else {
                         Scaffold(
                             topBar = {
                                 TopAppBar(

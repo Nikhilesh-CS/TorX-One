@@ -28,10 +28,12 @@ import com.torxone.app.calls.CallHistoryDao
         GroupEntity::class,
         GroupMemberEntity::class,
         GroupMessageDeliveryEntity::class,
-        CallHistoryEntity::class
+        CallHistoryEntity::class,
+        ConsumedInviteEntity::class,
+        BootstrapStateEntity::class
     ],
-    version = 8,
-    exportSchema = false
+    version = 9,
+    exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
@@ -52,6 +54,8 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun groupMemberDao(): GroupMemberDao
     abstract fun groupMessageDeliveryDao(): GroupMessageDeliveryDao
     abstract fun callHistoryDao(): CallHistoryDao
+    abstract fun consumedInviteDao(): ConsumedInviteDao
+    abstract fun bootstrapStateDao(): BootstrapStateDao
 
     companion object {
         @Volatile
@@ -85,6 +89,30 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `consumed_invites` (
+                        `invite_id` TEXT NOT NULL,
+                        `consumed_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`invite_id`)
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `bootstrap_states` (
+                        `relationship_id` TEXT NOT NULL,
+                        `invite_id` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `is_initiator` INTEGER NOT NULL,
+                        `created_at` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL,
+                        `error_message` TEXT,
+                        PRIMARY KEY(`relationship_id`)
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getInstance(context: Context): TorXDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: buildDatabase(context).also { INSTANCE = it }
@@ -97,7 +125,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 TorXDatabase::class.java,
                 "torxone.db"
             )
-                .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build()
         }
     }
