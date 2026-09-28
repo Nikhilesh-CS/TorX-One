@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.app.RemoteInput
+import com.torxone.app.MainActivity
 import com.torxone.app.TorXOneApplication
 import com.torxone.app.notifications.TorXNotificationManager
 import kotlinx.coroutines.CoroutineScope
@@ -29,8 +30,6 @@ class NotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         val conversationId = intent.getStringExtra(TorXNotificationManager.EXTRA_CONVERSATION_ID) ?: return
-        val relationshipId = intent.getStringExtra(TorXNotificationManager.EXTRA_RELATIONSHIP_ID) ?: conversationId
-
         val app = TorXOneApplication.instance
         val chatService = app.chatService
         val identityRepo = app.identityRepository
@@ -47,6 +46,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
+                            if (openIfLocked(context, app, conversationId)) return@launch
                             val conv = app.database.conversationDao().getById(conversationId) ?: run {
                                 Log.e(TAG, "[INLINE REPLY] Conversation not found: $conversationId")
                                 return@launch
@@ -108,6 +108,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
+                        if (openIfLocked(context, app, conversationId)) return@launch
                         val conv = app.database.conversationDao().getById(conversationId) ?: run {
                             Log.e(TAG, "[MARK READ] Conversation not found: $conversationId")
                             return@launch
@@ -149,5 +150,14 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 }
             }
         }
+    }
+
+    private suspend fun openIfLocked(context: Context, app: TorXOneApplication, conversationId: String): Boolean {
+        if (!app.settingsRepository.isAppLockedNow()) return false
+        context.startActivity(Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("conversationId", conversationId)
+        })
+        return true
     }
 }

@@ -54,6 +54,7 @@ class DirectRouteTable {
         endpointLastSeen[endpointId] = System.currentTimeMillis()
     }
 
+    @Synchronized
     fun bindRoute(
         relationshipId: String,
         endpointId: String,
@@ -74,6 +75,17 @@ class DirectRouteTable {
             sendQueueId = sendQueueId,
             recvQueueId = recvQueueId
         )
+        // Remove every alias owned by either side of a previous binding before replacing it.
+        val previousEndpoint = routesByRelationship[relationshipId]?.endpointId
+        if (previousEndpoint != null && previousEndpoint != endpointId) removeEndpointBindings(previousEndpoint)
+        val previousRelationship = endpointToRelationship[endpointId]
+        if (previousRelationship != null && previousRelationship != relationshipId) {
+            routesByRelationship.remove(previousRelationship)?.let { old ->
+                removeQueueBinding(old.sendQueueId, endpointId)
+                removeQueueBinding(old.recvQueueId, endpointId)
+                notifyRouteChanged(previousRelationship, RouteState.DISCONNECTED, now)
+            }
+        }
         routesByRelationship[relationshipId] = route
         endpointToRelationship[endpointId] = relationshipId
         endpointLastSeen[endpointId] = now
@@ -107,8 +119,13 @@ class DirectRouteTable {
         }
     }
 
+    @Synchronized
     fun bindQueue(queueAddress: String, endpointId: String) {
-        queueToEndpoint[queueAddress] = endpointId
+        val previousEndpoint = queueToEndpoint.put(queueAddress, endpointId)
+        if (previousEndpoint != null && previousEndpoint != endpointId) {
+            endpointToQueues[previousEndpoint]?.remove(queueAddress)
+            if (endpointToQueues[previousEndpoint].isNullOrEmpty()) endpointToQueues.remove(previousEndpoint)
+        }
         endpointToQueues.computeIfAbsent(endpointId) { ConcurrentHashMap.newKeySet() }.add(queueAddress)
     }
 
@@ -149,19 +166,39 @@ class DirectRouteTable {
         notifyRouteChanged(relId, RouteState.STALE, now)
     }
 
+    @Synchronized
     fun removeEndpoint(endpointId: String): Set<String> {
         val now = System.currentTimeMillis()
         endpointLastSeen.remove(endpointId)
         val relId = endpointToRelationship.remove(endpointId)
         val affected = mutableSetOf<String>()
         if (relId != null) {
-            routesByRelationship.remove(relId)
-            affected.add(relId)
-            notifyRouteChanged(relId, RouteState.DISCONNECTED, now)
+            val removed = routesByRelationship[relId]?.takeIf { it.endpointId == endpointId }?.let { routesByRelationship.remove(relId) }
+            if (removed != null) {
+                affected.add(relId)
+                notifyRouteChanged(relId, RouteState.DISCONNECTED, now)
+            }
         }
         val queues = endpointToQueues.remove(endpointId)
-        queues?.forEach { queueToEndpoint.remove(it) }
+        queues?.forEach { queueToEndpoint.remove(it, endpointId) }
         return affected
+    }
+
+    private fun removeQueueBinding(queueId: String?, endpointId: String) {
+        if (queueId != null) {
+            queueToEndpoint.remove(queueId, endpointId)
+            endpointToQueues[endpointId]?.remove(queueId)
+        }
+    }
+
+    private fun removeEndpointBindings(endpointId: String) {
+        val rel = endpointToRelationship.remove(endpointId)
+        if (rel != null && routesByRelationship[rel]?.endpointId == endpointId) {
+            routesByRelationship.remove(rel)
+            notifyRouteChanged(rel, RouteState.DISCONNECTED, System.currentTimeMillis())
+        }
+        endpointToQueues.remove(endpointId)?.forEach { queueToEndpoint.remove(it, endpointId) }
+        endpointLastSeen.remove(endpointId)
     }
 
     fun clear() {

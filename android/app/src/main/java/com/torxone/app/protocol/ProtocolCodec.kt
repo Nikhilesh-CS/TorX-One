@@ -14,15 +14,24 @@ object ProtocolCodec {
     private const val TRANSPORT_MAGIC = 0x54585445 // "TXTE" (TorX Transport Envelope)
 
     fun encodeSecureEnvelope(envelope: SecureEnvelope): ByteArray {
+        require(envelope.protocolVersion == 1)
+        require(envelope.logicalMessageId.isNotBlank() && envelope.logicalMessageId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.conversationId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.senderIdentity.isNotBlank() && envelope.senderIdentity.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.recipientBinding.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.timestamp > 0 && envelope.directionSequence >= 0)
+        require(envelope.payload.size <= ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES)
+        require(envelope.replyToMessageId == null || envelope.replyToMessageId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.groupMetadata == null || (envelope.groupMetadata.groupId.isNotBlank() && envelope.groupMetadata.groupId.length <= ProtocolLimits.MAX_ID_LENGTH && envelope.groupMetadata.groupEpoch >= 0 && envelope.groupMetadata.keyVersion >= 0))
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
 
         dos.writeInt(SECURE_MAGIC)
         dos.writeShort(envelope.protocolVersion)
-        dos.writeUTF(envelope.logicalMessageId.take(ProtocolLimits.MAX_ID_LENGTH))
-        dos.writeUTF(envelope.conversationId.take(ProtocolLimits.MAX_ID_LENGTH))
-        dos.writeUTF(envelope.senderIdentity.take(ProtocolLimits.MAX_ID_LENGTH))
-        dos.writeUTF(envelope.recipientBinding.take(ProtocolLimits.MAX_ID_LENGTH))
+        dos.writeUTF(envelope.logicalMessageId)
+        dos.writeUTF(envelope.conversationId)
+        dos.writeUTF(envelope.senderIdentity)
+        dos.writeUTF(envelope.recipientBinding)
         dos.writeUTF(envelope.messageType.name)
         dos.writeLong(envelope.timestamp)
         dos.writeUTF(envelope.replyToMessageId ?: "")
@@ -32,7 +41,7 @@ object ProtocolCodec {
 
         if (envelope.groupMetadata != null) {
             dos.writeBoolean(true)
-            dos.writeUTF(envelope.groupMetadata.groupId.take(ProtocolLimits.MAX_ID_LENGTH))
+            dos.writeUTF(envelope.groupMetadata.groupId)
             dos.writeInt(envelope.groupMetadata.groupEpoch)
             dos.writeInt(envelope.groupMetadata.keyVersion)
         } else {
@@ -51,6 +60,7 @@ object ProtocolCodec {
         require(magic == SECURE_MAGIC) { "Invalid secure envelope magic header" }
 
         val version = dis.readShort().toInt()
+        require(version == 1) { "Unsupported secure envelope version" }
         val messageId = dis.readUTF()
         val conversationId = dis.readUTF()
         val senderIdentity = dis.readUTF()
@@ -65,6 +75,10 @@ object ProtocolCodec {
         val replyToRaw = dis.readUTF()
         val replyTo = if (replyToRaw.isEmpty()) null else replyToRaw
         val directionSequence = dis.readLong()
+        require(messageId.isNotBlank() && messageId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(conversationId.length <= ProtocolLimits.MAX_ID_LENGTH && senderIdentity.isNotBlank() && senderIdentity.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(recipientBinding.length <= ProtocolLimits.MAX_ID_LENGTH && (replyTo == null || replyTo.length <= ProtocolLimits.MAX_ID_LENGTH))
+        require(timestamp > 0 && directionSequence >= 0)
 
         val payloadSize = dis.readInt()
         require(payloadSize in 0..ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES) { "Invalid payload size: $payloadSize" }
@@ -77,9 +91,11 @@ object ProtocolCodec {
                 val gId = dis.readUTF()
                 val gEpoch = dis.readInt()
                 val kVer = dis.readInt()
+                require(gId.isNotBlank() && gId.length <= ProtocolLimits.MAX_ID_LENGTH && gEpoch >= 0 && kVer >= 0)
                 GroupEnvelopeMetadata(groupId = gId, groupEpoch = gEpoch, keyVersion = kVer)
             } else null
         } else null
+        require(dis.available() == 0) { "Trailing bytes in secure envelope" }
 
         return SecureEnvelope(
             protocolVersion = version,
@@ -97,13 +113,18 @@ object ProtocolCodec {
     }
 
     fun encodeTransportEnvelope(envelope: OpaqueTransportEnvelope): ByteArray {
+        require(envelope.version == 1)
+        require(envelope.envelopeId.isNotBlank() && envelope.envelopeId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.queueAddress.isNotBlank() && envelope.queueAddress.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(envelope.queueAuthenticator.size == 32)
+        require(envelope.opaqueCiphertext.size in 1..ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
 
         dos.writeInt(TRANSPORT_MAGIC)
         dos.writeShort(envelope.version)
-        dos.writeUTF(envelope.envelopeId.take(ProtocolLimits.MAX_ID_LENGTH))
-        dos.writeUTF(envelope.queueAddress.take(ProtocolLimits.MAX_ID_LENGTH))
+        dos.writeUTF(envelope.envelopeId)
+        dos.writeUTF(envelope.queueAddress)
 
         dos.writeShort(envelope.queueAuthenticator.size)
         dos.write(envelope.queueAuthenticator)
@@ -122,10 +143,12 @@ object ProtocolCodec {
         require(magic == TRANSPORT_MAGIC) { "Invalid transport envelope magic header" }
 
         val version = dis.readShort().toInt()
+        require(version == 1) { "Unsupported transport envelope version" }
         val envelopeId = dis.readUTF()
         val queueAddress = dis.readUTF()
 
         val authLen = dis.readShort().toInt()
+        require(authLen == 32) { "Invalid queue authenticator length" }
         val auth = ByteArray(authLen)
         dis.readFully(auth)
 
@@ -133,6 +156,9 @@ object ProtocolCodec {
         require(cipherLen in 0..ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) { "Invalid ciphertext length: $cipherLen" }
         val ciphertext = ByteArray(cipherLen)
         dis.readFully(ciphertext)
+        require(envelopeId.isNotBlank() && envelopeId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(queueAddress.isNotBlank() && queueAddress.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(cipherLen > 0 && dis.available() == 0) { "Invalid ciphertext or trailing transport bytes" }
 
         return OpaqueTransportEnvelope(
             version = version,

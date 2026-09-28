@@ -28,6 +28,7 @@ class EditHandler(
             Log.w(TAG, "Edit target ${edit.targetMessageId.take(8)} not found")
             return false
         }
+        if (targetMsg.conversationId != (envelope.groupMetadata?.groupId ?: envelope.conversationId)) return false
 
         // Rule 1: Only original sender may edit
         if (targetMsg.senderId != envelope.senderIdentity) {
@@ -45,10 +46,10 @@ class EditHandler(
         }
 
         // Rule 3: new version > stored version; duplicate or older edit ignored
-        if (edit.editVersion <= targetMsg.editVersion) {
+        if (targetMsg.editVersion == Int.MAX_VALUE || edit.editVersion != targetMsg.editVersion + 1) {
             Log.d(
                 TAG,
-                "Edit ignored: incoming version ${edit.editVersion} <= stored version ${targetMsg.editVersion}"
+                "Edit rejected: incoming version ${edit.editVersion} is not the exact next version after ${targetMsg.editVersion}"
             )
             return false
         }

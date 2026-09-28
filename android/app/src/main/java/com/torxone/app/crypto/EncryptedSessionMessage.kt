@@ -43,11 +43,14 @@ data class MessageHeader(
 
     companion object {
         fun fromByteArray(bytes: ByteArray): MessageHeader {
+            require(bytes.size == 40) { "Invalid ratchet header size" }
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val pub = ByteArray(32)
             dis.readFully(pub)
             val pn = dis.readInt()
             val n = dis.readInt()
+            require(pn >= 0 && n >= 0) { "Negative ratchet counters are invalid" }
+            require(dis.available() == 0) { "Trailing bytes in ratchet header" }
             return MessageHeader(pub, pn, n)
         }
     }
@@ -88,16 +91,22 @@ data class EncryptedSessionMessage(
     }
 
     companion object {
+        const val MAX_CIPHERTEXT_BYTES = 60 * 1024
+
         fun deserialize(bytes: ByteArray): EncryptedSessionMessage {
+            require(bytes.size in 2 + 40 + 4..(2 + 40 + 4 + MAX_CIPHERTEXT_BYTES)) { "Invalid encrypted session message size" }
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val headerLen = dis.readShort().toInt()
+            require(headerLen == 40) { "Invalid ratchet header length" }
             val headerBytes = ByteArray(headerLen)
             dis.readFully(headerBytes)
             val header = MessageHeader.fromByteArray(headerBytes)
 
             val cipherLen = dis.readInt()
+            require(cipherLen in 16..MAX_CIPHERTEXT_BYTES && cipherLen == dis.available()) { "Invalid ciphertext length" }
             val ciphertext = ByteArray(cipherLen)
             dis.readFully(ciphertext)
+            require(dis.available() == 0) { "Trailing bytes in encrypted session message" }
 
             return EncryptedSessionMessage(header, ciphertext)
         }

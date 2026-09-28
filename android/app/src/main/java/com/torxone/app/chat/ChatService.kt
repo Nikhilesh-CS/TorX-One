@@ -6,6 +6,7 @@ import com.torxone.app.agent.DeliveryItem
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.ConnectionManager
+import com.torxone.app.connection.RelationshipSendCoordinator
 import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.TorXDatabase
 import com.torxone.app.data.dao.ConversationDao
@@ -48,10 +49,17 @@ class ChatService(
     private val mediaStorage: com.torxone.app.media.MediaStorage? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
-    }
+    },
+    private val relationshipSendCoordinator: RelationshipSendCoordinator? = null
 ) {
     companion object {
         private const val TAG = "ChatService"
+    }
+
+    private val sendCoordinator: RelationshipSendCoordinator by lazy {
+        relationshipSendCoordinator ?: throw IllegalStateException(
+            "ChatService requires the application-scoped RelationshipSendCoordinator; constructing a feature-local sender is unsafe"
+        )
     }
 
     /**
@@ -79,63 +87,53 @@ class ChatService(
 
         Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)} replyTo=${replyToMessageId?.take(8)}")
 
-        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
+        val sendResult = sendCoordinator.sendSequenced(
+            relationshipId = relationshipId,
+            connection = connection,
+            buildEnvelope = { seq ->
+                SecureEnvelope(
+                    protocolVersion = 1,
+                    logicalMessageId = messageId,
+                    conversationId = conversationId,
+                    senderIdentity = localIdentityId,
+                    recipientBinding = recipientId,
+                    messageType = MessageType.TEXT,
+                    timestamp = now,
+                    payload = text.toByteArray(Charsets.UTF_8),
+                    replyToMessageId = replyToMessageId,
+                    directionSequence = seq
+                )
+            },
+            persistDomain = { seq, _, ciphertext ->
+                val messageEntity = MessageEntity(
+                    logicalMessageId = messageId,
+                    conversationId = conversationId,
+                    senderId = localIdentityId,
+                    type = MessageType.TEXT.name,
+                    body = text,
+                    direction = MessageDirection.OUTGOING,
+                    status = DeliveryStatus.QUEUED.name,
+                    createdAt = now,
+                    replyToMessageId = replyToMessageId
+                )
 
-        // 1. Build SecureEnvelope with directional sequence and optional replyToMessageId
-        val envelope = SecureEnvelope(
-            protocolVersion = 1,
-            logicalMessageId = messageId,
-            conversationId = conversationId,
-            senderIdentity = localIdentityId,
-            recipientBinding = recipientId,
-            messageType = MessageType.TEXT,
-            timestamp = now,
-            payload = text.toByteArray(Charsets.UTF_8),
-            replyToMessageId = replyToMessageId,
-            directionSequence = sendSeq
-        )
-        val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+                val outboxEntity = OutboxEntity(
+                    deliveryId = deliveryId,
+                    logicalMessageId = messageId,
+                    conversationId = conversationId,
+                    connectionId = connection.connectionId,
+                    queueAddress = connection.sendQueueId,
+                    ciphertext = ciphertext,
+                    queueAuthenticator = connection.sendAuth,
+                    status = DeliveryStatus.QUEUED.name,
+                    attemptCount = 0,
+                    nextAttemptAt = now,
+                    createdAt = now,
+                    updatedAt = now,
+                    applicationSequence = seq,
+                    relationshipId = connection.relationshipId
+                )
 
-        // 2. Cryptographically bind AAD to prevent routing metadata tampering
-        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-
-        // 3. Critical atomic send boundary: Encrypt + Ratchet Save + Message + Outbox in one Room transaction
-        var opaqueCiphertext: ByteArray? = null
-
-        sessionCrypto.encryptAndCommit(relationshipId, envelopeBytes, aad) { encrypted, updatedState ->
-            val ciphertext = encrypted.serialize()
-            opaqueCiphertext = ciphertext
-
-            val messageEntity = MessageEntity(
-                logicalMessageId = messageId,
-                conversationId = conversationId,
-                senderId = localIdentityId,
-                type = MessageType.TEXT.name,
-                body = text,
-                direction = MessageDirection.OUTGOING,
-                status = DeliveryStatus.QUEUED.name,
-                createdAt = now,
-                replyToMessageId = replyToMessageId
-            )
-
-            val outboxEntity = OutboxEntity(
-                deliveryId = deliveryId,
-                logicalMessageId = messageId,
-                conversationId = conversationId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED.name,
-                attemptCount = 0,
-                nextAttemptAt = now,
-                createdAt = now,
-                updatedAt = now
-            )
-
-            transactionRunner {
-                database?.connectionDao()?.updateSendSequence(relationshipId, sendSeq)
-                sessionStore?.saveSession(updatedState)
                 messageDao.insertIfAbsent(messageEntity)
                 outboxDao.insert(outboxEntity)
                 conversationDao.updateLastMessage(
@@ -146,13 +144,11 @@ class ChatService(
                 )
                 conversationDao.unarchive(conversationId)
                 conversationDao.updateManuallyUnread(conversationId, false)
+                messageId
             }
-        }
+        )
 
-        // 4. Notify TorXAgent to drive transport (wakes agent; outbox already persisted atomically)
-        agent.wake(messageId)
-
-        Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery")
+        Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery at seq ${sendResult.sequence}")
         return messageId
     }
 
@@ -457,39 +453,42 @@ class ChatService(
                 operation = operation
             ).toByteArray()
 
-            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
-            val envelope = SecureEnvelope(
-                protocolVersion = 1,
-                logicalMessageId = UUID.randomUUID().toString(),
-                conversationId = conversationId,
-                senderIdentity = localIdentityId,
-                recipientBinding = recipientId,
-                messageType = MessageType.REACTION,
-                timestamp = now,
-                payload = payload,
-                directionSequence = sendSeq
+            sendCoordinator.sendSequenced(
+                relationshipId = relationshipId,
+                connection = connection,
+                buildEnvelope = { seq ->
+                    SecureEnvelope(
+                        protocolVersion = 1,
+                        logicalMessageId = UUID.randomUUID().toString(),
+                        conversationId = conversationId,
+                        senderIdentity = localIdentityId,
+                        recipientBinding = recipientId,
+                        messageType = MessageType.REACTION,
+                        timestamp = now,
+                        payload = payload,
+                        directionSequence = seq
+                    )
+                },
+                persistDomain = { seq, envelope, ciphertext ->
+                    val outboxEntity = OutboxEntity(
+                        deliveryId = UUID.randomUUID().toString(),
+                        logicalMessageId = envelope.logicalMessageId,
+                        conversationId = conversationId,
+                        connectionId = connection.connectionId,
+                        queueAddress = connection.sendQueueId,
+                        ciphertext = ciphertext,
+                        queueAuthenticator = connection.sendAuth,
+                        status = DeliveryStatus.QUEUED.name,
+                        priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
+                        expectsAck = false,
+                        applicationSequence = seq,
+                        relationshipId = connection.relationshipId
+                    )
+                    outboxDao.insert(outboxEntity)
+                }
             )
-            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
 
-            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
-            val ciphertext = encrypted.serialize()
-
-            val deliveryItem = DeliveryItem(
-                deliveryId = UUID.randomUUID().toString(),
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = conversationId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                expectsAck = false
-            )
-
-            Log.i(TAG, "[REACTION] Enqueueing reaction $emoji on msg=${targetMessageId.take(8)}")
-            agent.enqueue(deliveryItem)
+            Log.i(TAG, "[REACTION] Enqueued reaction $emoji on msg=${targetMessageId.take(8)}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send reaction: ${e.message}")
         }
@@ -553,39 +552,42 @@ class ChatService(
                 editedAt = now
             ).toByteArray()
 
-            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
-            val envelope = SecureEnvelope(
-                protocolVersion = 1,
-                logicalMessageId = UUID.randomUUID().toString(),
-                conversationId = conversationId,
-                senderIdentity = localIdentityId,
-                recipientBinding = recipientId,
-                messageType = MessageType.EDIT,
-                timestamp = now,
-                payload = payload,
-                directionSequence = sendSeq
+            sendCoordinator.sendSequenced(
+                relationshipId = relationshipId,
+                connection = connection,
+                buildEnvelope = { seq ->
+                    SecureEnvelope(
+                        protocolVersion = 1,
+                        logicalMessageId = UUID.randomUUID().toString(),
+                        conversationId = conversationId,
+                        senderIdentity = localIdentityId,
+                        recipientBinding = recipientId,
+                        messageType = MessageType.EDIT,
+                        timestamp = now,
+                        payload = payload,
+                        directionSequence = seq
+                    )
+                },
+                persistDomain = { seq, envelope, ciphertext ->
+                    val outboxEntity = OutboxEntity(
+                        deliveryId = UUID.randomUUID().toString(),
+                        logicalMessageId = envelope.logicalMessageId,
+                        conversationId = conversationId,
+                        connectionId = connection.connectionId,
+                        queueAddress = connection.sendQueueId,
+                        ciphertext = ciphertext,
+                        queueAuthenticator = connection.sendAuth,
+                        status = DeliveryStatus.QUEUED.name,
+                        priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
+                        expectsAck = false,
+                        applicationSequence = seq,
+                        relationshipId = connection.relationshipId
+                    )
+                    outboxDao.insert(outboxEntity)
+                }
             )
-            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
 
-            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
-            val ciphertext = encrypted.serialize()
-
-            val deliveryItem = DeliveryItem(
-                deliveryId = UUID.randomUUID().toString(),
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = conversationId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                expectsAck = false
-            )
-
-            Log.i(TAG, "[EDIT] Enqueueing edit for msg=${targetMessageId.take(8)} version=$newVersion")
-            agent.enqueue(deliveryItem)
+            Log.i(TAG, "[EDIT] Enqueued edit for msg=${targetMessageId.take(8)} version=$newVersion")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send edit: ${e.message}")
         }
@@ -639,39 +641,42 @@ class ChatService(
                 deletedAt = now
             ).toByteArray()
 
-            val sendSeq = connectionManager.allocateSendSequence(relationshipId)
-            val envelope = SecureEnvelope(
-                protocolVersion = 1,
-                logicalMessageId = UUID.randomUUID().toString(),
-                conversationId = conversationId,
-                senderIdentity = localIdentityId,
-                recipientBinding = recipientId,
-                messageType = MessageType.DELETE,
-                timestamp = now,
-                payload = payload,
-                directionSequence = sendSeq
+            sendCoordinator.sendSequenced(
+                relationshipId = relationshipId,
+                connection = connection,
+                buildEnvelope = { seq ->
+                    SecureEnvelope(
+                        protocolVersion = 1,
+                        logicalMessageId = UUID.randomUUID().toString(),
+                        conversationId = conversationId,
+                        senderIdentity = localIdentityId,
+                        recipientBinding = recipientId,
+                        messageType = MessageType.DELETE,
+                        timestamp = now,
+                        payload = payload,
+                        directionSequence = seq
+                    )
+                },
+                persistDomain = { seq, envelope, ciphertext ->
+                    val outboxEntity = OutboxEntity(
+                        deliveryId = UUID.randomUUID().toString(),
+                        logicalMessageId = envelope.logicalMessageId,
+                        conversationId = conversationId,
+                        connectionId = connection.connectionId,
+                        queueAddress = connection.sendQueueId,
+                        ciphertext = ciphertext,
+                        queueAuthenticator = connection.sendAuth,
+                        status = DeliveryStatus.QUEUED.name,
+                        priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
+                        expectsAck = false,
+                        applicationSequence = seq,
+                        relationshipId = connection.relationshipId
+                    )
+                    outboxDao.insert(outboxEntity)
+                }
             )
-            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
 
-            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
-            val ciphertext = encrypted.serialize()
-
-            val deliveryItem = DeliveryItem(
-                deliveryId = UUID.randomUUID().toString(),
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = conversationId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                expectsAck = false
-            )
-
-            Log.i(TAG, "[DELETE] Enqueueing delete for msg=${targetMessageId.take(8)}")
-            agent.enqueue(deliveryItem)
+            Log.i(TAG, "[DELETE] Enqueued delete for msg=${targetMessageId.take(8)}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send delete: ${e.message}")
         }
@@ -784,7 +789,6 @@ class ChatService(
                 val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: continue
                 if (contact.remoteIdentityId.isBlank()) continue
                 val recipientId = contact.remoteIdentityId
-                val sendSeq = connectionManager.allocateSendSequence(connection.relationshipId)
                 val envelope = SecureEnvelope(
                     protocolVersion = 1,
                     logicalMessageId = UUID.randomUUID().toString(),
@@ -794,24 +798,27 @@ class ChatService(
                     messageType = MessageType.PROFILE_UPDATE,
                     timestamp = now,
                     payload = payload,
-                    directionSequence = sendSeq
+                    directionSequence = 0L
                 )
                 val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
                 val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-                val encrypted = sessionCrypto.encrypt(connection.relationshipId, envelopeBytes, aad)
-                val deliveryItem = DeliveryItem(
-                    deliveryId = UUID.randomUUID().toString(),
-                    logicalMessageId = envelope.logicalMessageId,
-                    conversationId = contact.conversationId,
-                    connectionId = connection.connectionId,
-                    queueAddress = connection.sendQueueId,
-                    ciphertext = encrypted.serialize(),
-                    queueAuthenticator = connection.sendAuth,
-                    status = DeliveryStatus.QUEUED,
-                    priority = com.torxone.app.agent.DeliveryPriority.HIGH,
-                    expectsAck = false
-                )
-                agent.enqueue(deliveryItem)
+                sessionCrypto.encryptAndCommit(connection.relationshipId, envelopeBytes, aad) { encrypted, updatedState ->
+                    sessionStore?.saveSession(updatedState)
+                    val deliveryItem = DeliveryItem(
+                        deliveryId = UUID.randomUUID().toString(),
+                        logicalMessageId = envelope.logicalMessageId,
+                        conversationId = contact.conversationId,
+                        connectionId = connection.connectionId,
+                        queueAddress = connection.sendQueueId,
+                        ciphertext = encrypted.serialize(),
+                        queueAuthenticator = connection.sendAuth,
+                        status = DeliveryStatus.QUEUED,
+                        priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                        expectsAck = false,
+                        applicationSequence = null
+                    )
+                    agent.enqueue(deliveryItem)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to broadcast profile update to ${connection.relationshipId}: ${e.message}")
             }

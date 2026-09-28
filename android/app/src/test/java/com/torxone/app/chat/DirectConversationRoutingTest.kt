@@ -198,6 +198,9 @@ class DirectConversationRoutingTest {
         override suspend fun markOutgoingReadUpTo(conversationId: String, upToCreatedAt: Long, status: String, readAt: Long) {}
         override suspend fun markAllIncomingRead(conversationId: String, status: String, readAt: Long) {}
         override suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity? = null
+        override suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity> =
+            getMessagesForConversationDesc(conversationId).filter { it.direction == MessageDirection.INCOMING && it.status != "READ" }
+
         override suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long) {
             messages[messageId]?.let { messages[messageId] = it.copy(body = newBody, editVersion = editVersion, editedAt = editedAt) }
         }

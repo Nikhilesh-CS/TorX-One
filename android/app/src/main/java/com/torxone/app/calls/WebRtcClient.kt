@@ -441,6 +441,11 @@ class WebRtcClient(
         Log.i(TAG, "WebRTC resources released")
     }
 
+    fun closePeerConnection(callId: String) {
+        if (activeCallId != null && activeCallId != callId) return
+        release()
+    }
+
     /**
      * Full shutdown — call only when application is shutting down.
      */

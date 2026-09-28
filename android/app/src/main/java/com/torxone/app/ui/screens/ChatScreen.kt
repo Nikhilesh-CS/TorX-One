@@ -106,6 +106,7 @@ fun ChatScreen(
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
         onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
+        onSendVideo = { name, bytes -> viewModel.sendImage(name, bytes) },
         onSendDocument = { name, bytes -> viewModel.sendDocument(name, bytes) },
         onRequestMessageInfo = { msg ->
             infoMessageId = msg.logicalMessageId
@@ -187,6 +188,7 @@ fun ChatScreen(
         onCancelVoiceRecording = viewModel::cancelVoiceRecording,
         onFinishVoiceRecording = viewModel::finishVoiceRecording,
         onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
+        onSendVideo = { name, bytes -> viewModel.sendVideo(name, bytes) },
         onSendDocument = { name, bytes -> viewModel.sendDocument(name, bytes) },
         onCancelMediaTransfer = viewModel::cancelMediaTransfer,
         onHeaderClick = onHeaderClick,
@@ -245,6 +247,7 @@ fun ChatScreen(
     onCancelVoiceRecording: () -> Unit = {},
     onFinishVoiceRecording: () -> Unit = {},
     onSendImage: (String, ByteArray) -> Unit = { _, _ -> },
+    onSendVideo: (String, ByteArray) -> Unit = { _, _ -> },
     onSendDocument: (String, ByteArray) -> Unit = { _, _ -> },
     onCancelMediaTransfer: (String) -> Unit = {},
     onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
@@ -269,9 +272,9 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "photo_${System.currentTimeMillis()}.jpg")
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                onSendImage(fileName, bytes)
+            coroutineScope.launch {
+                val bytes = readUriWithLimit(context, uri)
+                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes)
             }
         }
     }
@@ -281,9 +284,9 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "video_${System.currentTimeMillis()}.mp4")
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                onSendImage(fileName, bytes)
+            coroutineScope.launch {
+                val bytes = readUriWithLimit(context, uri)
+                if (bytes != null && bytes.isNotEmpty()) onSendVideo(fileName, bytes)
             }
         }
     }
@@ -293,9 +296,9 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "document_${System.currentTimeMillis()}.pdf")
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                onSendDocument(fileName, bytes)
+            coroutineScope.launch {
+                val bytes = readUriWithLimit(context, uri)
+                if (bytes != null && bytes.isNotEmpty()) onSendDocument(fileName, bytes)
             }
         }
     }
@@ -1501,5 +1504,25 @@ private fun resolveMediaFileName(context: android.content.Context, uri: android.
         } ?: defaultName
     } catch (_: Exception) {
         defaultName
+    }
+}
+
+private suspend fun readUriWithLimit(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    maxBytes: Int = 32 * 1024 * 1024
+): ByteArray? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        val output = java.io.ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
+        val buffer = ByteArray(64 * 1024)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            if (total > maxBytes) return@withContext null
+            output.write(buffer, 0, count)
+        }
+        output.toByteArray()
     }
 }

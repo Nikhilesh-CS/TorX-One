@@ -30,7 +30,8 @@ class ContactsViewModel(
     private val sessionCrypto: SessionCrypto,
     private val connectionManager: ConnectionManager,
     private val agent: com.torxone.app.agent.TorXAgent? = null,
-    private val nearbyTransport: com.torxone.app.transport.nearby.NearbyTransport? = null
+    private val nearbyTransport: com.torxone.app.transport.nearby.NearbyTransport? = null,
+    private val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -118,10 +119,11 @@ class ContactsViewModel(
                     relationshipId = bootstrap.relationship.relationshipId,
                     localIdentityId = localIdentity.identityId,
                     contactId = contactId,
-                    rootSecret = bootstrap.relationship.pairRootSecret,
+                    rootSecret = keyProtector.wrap(bootstrap.relationship.pairRootSecret),
                     state = "LOCAL_ESTABLISHED",
                     generation = 1,
-                    verifiedAt = System.currentTimeMillis()
+                    verifiedAt = System.currentTimeMillis(),
+                    cryptoFormatVersion = 1
                 )
 
                 val contactEntity = ContactEntity(
@@ -149,9 +151,10 @@ class ContactsViewModel(
                     generation = connection.generation,
                     sendQueueId = connection.sendQueueId,
                     recvQueueId = connection.recvQueueId,
-                    sendAuth = connection.sendAuth,
-                    recvAuth = connection.recvAuth,
-                    state = "LOCAL_ESTABLISHED"
+                    sendAuth = keyProtector.wrap(connection.sendAuth),
+                    recvAuth = keyProtector.wrap(connection.recvAuth),
+                    state = "LOCAL_ESTABLISHED",
+                    cryptoFormatVersion = 1
                 )
 
                 val conversationEntity = ConversationEntity(
@@ -173,6 +176,7 @@ class ContactsViewModel(
                     isInitiator = true
                 )
 
+                // 1. Persist local relationship, contact, connection, and initial bootstrap state (LOCAL_ESTABLISHED)
                 database.withTransaction {
                     database.bootstrapStateDao().upsert(
                         BootstrapStateEntity(
@@ -187,10 +191,9 @@ class ContactsViewModel(
                     database.connectionDao().upsert(connectionDbEntity)
                     database.conversationDao().upsert(conversationEntity)
                     database.consumedInviteDao().insert(consumedInviteEntity)
-                    database.bootstrapStateDao().upsert(bootstrapStateEntity)
                 }
 
-                // 3. Register Connection in-memory and initialize Double Ratchet session
+                // 2. Register Connection in-memory and initialize Double Ratchet session
                 connectionManager.registerConnection(connection)
 
                 sessionCrypto.initializeSession(
@@ -202,9 +205,15 @@ class ContactsViewModel(
                     localRatchetPublicKey = bootstrap.aliceEphemeralPublicKey
                 )
 
+                // 3. Ratchet ready -> advance state to CRYPTO_READY
+                database.bootstrapStateDao().updateStatus(
+                    relationshipId = bootstrap.relationship.relationshipId,
+                    status = BootstrapStatus.CRYPTO_READY
+                )
+
                 nearbyTransport?.registerScannedInvite(valid.invite.inviteId)
 
-                // 4. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys (Phase 4 & 5)
+                // 4. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys
                 val bootstrapSignedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
                     inviteId = valid.invite.inviteId,
                     initiatorIdentityId = localIdentity.identityId,
@@ -224,19 +233,30 @@ class ContactsViewModel(
                     signature = bootstrapSig
                 )
 
-                agent?.enqueue(
-                    com.torxone.app.agent.DeliveryItem(
-                        deliveryId = UUID.randomUUID().toString(),
-                        logicalMessageId = UUID.randomUUID().toString(),
-                        conversationId = conversationId,
-                        connectionId = connection.connectionId,
-                        queueAddress = "invite-${valid.invite.inviteId}",
-                        ciphertext = bootstrapWire.toByteArray(),
-                        queueAuthenticator = ByteArray(0),
-                        status = com.torxone.app.agent.DeliveryStatus.QUEUED,
-                        priority = com.torxone.app.agent.DeliveryPriority.HIGH
-                    )
+                val outboxEntity = com.torxone.app.data.entity.OutboxEntity(
+                    deliveryId = UUID.randomUUID().toString(),
+                    logicalMessageId = UUID.randomUUID().toString(),
+                    conversationId = conversationId,
+                    connectionId = connection.connectionId,
+                    queueAddress = "invite-${valid.invite.inviteId}",
+                    ciphertext = bootstrapWire.toByteArray(),
+                    queueAuthenticator = ByteArray(0),
+                    status = com.torxone.app.agent.DeliveryStatus.QUEUED.name,
+                    priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                    expectsAck = false,
+                    createdAt = System.currentTimeMillis()
                 )
+
+                // 5. Persist outbox item and advance state to BOOTSTRAP_QUEUED atomically
+                database.withTransaction {
+                    database.outboxDao().insert(outboxEntity)
+                    database.bootstrapStateDao().updateStatus(
+                        relationshipId = bootstrap.relationship.relationshipId,
+                        status = BootstrapStatus.BOOTSTRAP_QUEUED
+                    )
+                }
+
+                agent?.wake()
 
                 _uiState.update { it.copy(pendingInviteValidation = null) }
                 onComplete(conversationId)

@@ -13,34 +13,45 @@ import kotlinx.coroutines.withContext
 class RoomSessionStore(
     private val sessionDao: SessionDao,
     private val skippedKeyDao: SkippedKeyDao,
-    val keyProtector: KeyProtector = NoOpKeyProtector()
+    val keyProtector: KeyProtector = NoOpKeyProtector(),
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block -> block() }
 ) : SessionStore {
 
     override suspend fun loadSession(relationshipId: String): SessionState? = withContext(Dispatchers.IO) {
         val entity = sessionDao.getByRelationshipId(relationshipId) ?: return@withContext null
         val skippedEntities = skippedKeyDao.getKeysForSession(entity.sessionId)
 
-        var needsMigration = false
-        fun unwrapOrLegacy(bytes: ByteArray?): ByteArray? {
+        val isLegacy = entity.cryptoFormatVersion == 0
+        var needsMigration = isLegacy
+
+        fun unwrapField(bytes: ByteArray?): ByteArray? {
             if (bytes == null || bytes.isEmpty()) return bytes
-            return if (keyProtector.isWrapped(bytes)) {
-                keyProtector.unwrap(bytes)
-            } else {
+            return if (isLegacy) {
+                // Version 0: treat as legacy raw secret even if first byte happens to be 0x54
                 needsMigration = true
                 bytes
+            } else {
+                // Version 1: strictly unwrap with KeyProtector. Tampered data throws SecurityException.
+                keyProtector.unwrap(bytes)
             }
         }
 
         val skippedMap = mutableMapOf<SkippedKeyId, ByteArray>()
         for (skip in skippedEntities) {
-            val unwrapped = unwrapOrLegacy(skip.messageKey) ?: skip.messageKey
+            val skipLegacy = skip.cryptoFormatVersion == 0 || isLegacy
+            val unwrapped = if (skipLegacy) {
+                needsMigration = true
+                skip.messageKey
+            } else {
+                keyProtector.unwrap(skip.messageKey)
+            }
             skippedMap[SkippedKeyId(skip.ratchetPublicKeyHex, skip.counter)] = unwrapped
         }
 
-        val rootKey = unwrapOrLegacy(entity.rootKey) ?: entity.rootKey
-        val localRatchetPrivateKey = unwrapOrLegacy(entity.localDhPrivateKey) ?: entity.localDhPrivateKey
-        val sendChainKey = unwrapOrLegacy(entity.sendChainKey)
-        val recvChainKey = unwrapOrLegacy(entity.recvChainKey)
+        val rootKey = unwrapField(entity.rootKey) ?: entity.rootKey
+        val localRatchetPrivateKey = unwrapField(entity.localDhPrivateKey) ?: entity.localDhPrivateKey
+        val sendChainKey = unwrapField(entity.sendChainKey)
+        val recvChainKey = unwrapField(entity.recvChainKey)
 
         val state = SessionState(
             sessionId = entity.sessionId,
@@ -78,30 +89,36 @@ class RoomSessionStore(
             receiveMessageNumber = state.receiveMessageNumber,
             previousSendCount = state.previousSendCount,
             state = "ACTIVE",
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            cryptoFormatVersion = 1
         )
-        sessionDao.upsert(entity)
+        transactionRunner {
+            sessionDao.upsert(entity)
 
-        // Sync skipped keys: delete consumed/obsolete keys to prevent resurrection
-        skippedKeyDao.deleteKeysForSession(state.sessionId)
-        val skippedList = state.skippedKeys.map { (keyId, mk) ->
-            SkippedKeyEntity(
-                sessionId = state.sessionId,
-                ratchetPublicKeyHex = keyId.ratchetPublicKeyHex,
-                counter = keyId.counter,
-                messageKey = keyProtector.wrap(mk)
-            )
-        }
-        if (skippedList.isNotEmpty()) {
-            skippedKeyDao.insertAll(skippedList)
+            // Sync skipped keys atomically with the chain state; consumed keys cannot be resurrected.
+            skippedKeyDao.deleteKeysForSession(state.sessionId)
+            val skippedList = state.skippedKeys.map { (keyId, mk) ->
+                SkippedKeyEntity(
+                    sessionId = state.sessionId,
+                    ratchetPublicKeyHex = keyId.ratchetPublicKeyHex,
+                    counter = keyId.counter,
+                    messageKey = keyProtector.wrap(mk),
+                    cryptoFormatVersion = 1
+                )
+            }
+            if (skippedList.isNotEmpty()) {
+                skippedKeyDao.insertAll(skippedList)
+            }
         }
     }
 
     override suspend fun deleteSession(relationshipId: String): Unit = withContext(Dispatchers.IO) {
-        val existing = sessionDao.getByRelationshipId(relationshipId)
-        if (existing != null) {
-            skippedKeyDao.deleteKeysForSession(existing.sessionId)
+        transactionRunner {
+            val existing = sessionDao.getByRelationshipId(relationshipId)
+            if (existing != null) {
+                skippedKeyDao.deleteKeysForSession(existing.sessionId)
+            }
+            sessionDao.deleteByRelationshipId(relationshipId)
         }
-        sessionDao.deleteByRelationshipId(relationshipId)
     }
 }

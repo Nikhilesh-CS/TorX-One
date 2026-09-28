@@ -153,6 +153,7 @@ class TorXAgent(
         Log.i(TAG, "[DELIVERED] ACK confirmed msg=${logicalMessageId.take(8)}")
         outboxStore.removeByMessageId(logicalMessageId)
         emitUpdate(logicalMessageId, DeliveryStatus.DELIVERED)
+        wake()
     }
 
     /**
@@ -165,6 +166,7 @@ class TorXAgent(
         if (logicalMessageId != null) {
             emitUpdate(logicalMessageId, DeliveryStatus.DELIVERED)
         }
+        wake()
     }
 
     /**
@@ -200,17 +202,87 @@ class TorXAgent(
                 if (pending.isNotEmpty()) {
                     // Group by queueAddress so deliveries to the same peer/destination maintain strict FIFO ordering,
                     // while deliveries to independent destinations execute concurrently without head-of-line blocking.
-                    val groupedByDestination = pending.groupBy { it.queueAddress }
+                    val groupedByDestination = pending.groupBy { item ->
+                        if (item.applicationSequence != null && item.relationshipId.isNotBlank()) {
+                            "relationship:${item.relationshipId}"
+                        } else {
+                            "queue:${item.queueAddress}"
+                        }
+                    }
                     supervisorScope {
                         for ((_, destinationItems) in groupedByDestination) {
-                            // Phase 12: Sequenced durable items on the same relationship must NEVER be overtaken by priority.
-                            // Order strictly by createdAt ASC so sequence order is strictly preserved.
-                            val sortedItems = destinationItems.sortedWith(
-                                compareBy<DeliveryItem> { it.createdAt }
-                                    .thenByDescending { it.priority }
-                            )
                             launch {
-                                for (item in sortedItems) {
+                                // P0-4: Strict application sequence scheduling
+                                // 1. High-priority non-sequenced traffic can jump ahead where protocol-safe
+                                val highPriorityNonSequenced = destinationItems
+                                    .filter { it.applicationSequence == null && it.priority > DeliveryPriority.NORMAL }
+                                    .sortedWith(compareByDescending<DeliveryItem> { it.priority }.thenBy { it.createdAt })
+
+                                for (item in highPriorityNonSequenced) {
+                                    if (!isActive) break
+                                    if (inflightItems.add(item.deliveryId)) {
+                                        try {
+                                            processDeliveryItem(item)
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error delivering high-priority item ${item.deliveryId} to ${item.queueAddress}", e)
+                                        } finally {
+                                            inflightItems.remove(item.deliveryId)
+                                        }
+                                    }
+                                }
+
+                                // 2. Sequenced durable items MUST transmit strictly by applicationSequence ASC.
+                                // An item with sequence N+1 must not overtake N, and ACK timeout
+                                // retries must remain outstanding until authenticated delivery ACK.
+                                // Retry state must not allow sequence overtaking: if sequence N is in retry backoff, halt.
+                                val sequencedItems = destinationItems
+                                    .filter { it.applicationSequence != null }
+                                    .sortedWith(compareBy<DeliveryItem> { it.applicationSequence }.thenBy { it.createdAt })
+
+                                val now = System.currentTimeMillis()
+                                for (item in sequencedItems) {
+                                    if (!isActive) break
+                                    if (item.nextAttemptAt > now) {
+                                        // Sequence N is still waiting for its retry backoff window.
+                                        // Invariant: Sequence N+1 cannot transmit until N succeeds or expires.
+                                        break
+                                    }
+                                    if (item.status == DeliveryStatus.TRANSPORT_ACCEPTED) {
+                                        // Transport acceptance is not receiver commit. Re-send the
+                                        // same ciphertext only after ACK timeout, never transmit N+1.
+                                        if (inflightItems.add(item.deliveryId)) {
+                                            try {
+                                                val transportAccepted = processDeliveryItem(item)
+                                                if (!transportAccepted) break
+                                            } finally {
+                                                inflightItems.remove(item.deliveryId)
+                                            }
+                                        }
+                                        break
+                                    }
+                                    if (inflightItems.add(item.deliveryId)) {
+                                        try {
+                                            val transportAccepted = processDeliveryItem(item)
+                                            if (!transportAccepted) break
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Error delivering sequenced item ${item.deliveryId} to ${item.queueAddress}", e)
+                                            break
+                                        } finally {
+                                            inflightItems.remove(item.deliveryId)
+                                        }
+                                    }
+                                }
+
+                                // 3. Remaining normal or low-priority non-sequenced items
+                                val remainingNonSequenced = destinationItems
+                                    .filter { it.applicationSequence == null && it.priority <= DeliveryPriority.NORMAL }
+                                    .sortedWith(compareByDescending<DeliveryItem> { it.priority }.thenBy { it.createdAt })
+
+                                for (item in remainingNonSequenced) {
                                     if (!isActive) break
                                     if (inflightItems.add(item.deliveryId)) {
                                         try {
@@ -241,16 +313,24 @@ class TorXAgent(
         }
     }
 
-    private suspend fun processDeliveryItem(item: DeliveryItem) {
+    private suspend fun processDeliveryItem(item: DeliveryItem): Boolean {
         if (item.attemptCount >= MAX_RETRY_ATTEMPTS) {
+            if (item.applicationSequence != null) {
+                // Never abandon an allocated application sequence: doing so makes every later
+                // envelope permanently stale. Keep retrying the lane until transport accepts it.
+                val nextDelay = MAX_RETRY_DELAY_MS
+                outboxStore.updateRetry(item.deliveryId, item.attemptCount + 1, System.currentTimeMillis() + nextDelay)
+                emitUpdate(item.logicalMessageId, DeliveryStatus.RETRY_WAIT)
+                return false
+            }
             Log.w(TAG, "Delivery ${item.deliveryId.take(8)} exceeded max retries, marking FAILED")
             outboxStore.updateStatus(item.deliveryId, DeliveryStatus.FAILED)
             emitUpdate(item.logicalMessageId, DeliveryStatus.FAILED)
-            return
+            return true
         }
 
         if (item.nextAttemptAt > System.currentTimeMillis()) {
-            return
+            return false
         }
 
         outboxStore.updateStatus(item.deliveryId, DeliveryStatus.TRANSMITTING)
@@ -284,14 +364,16 @@ class TorXAgent(
                 } else {
                     // Schedule next attempt with backoff in case ACK is lost on the wire
                     val ackTimeout = calculateBackoff(item.attemptCount)
+                    val attempts = if (item.status == DeliveryStatus.TRANSPORT_ACCEPTED) item.attemptCount else item.attemptCount + 1
                     outboxStore.updateRetry(
                         deliveryId = item.deliveryId,
-                        attemptCount = item.attemptCount + 1,
+                        attemptCount = attempts,
                         nextAttemptAt = System.currentTimeMillis() + ackTimeout
                     )
                     outboxStore.updateStatus(item.deliveryId, DeliveryStatus.TRANSPORT_ACCEPTED)
                     emitUpdate(item.logicalMessageId, DeliveryStatus.TRANSPORT_ACCEPTED)
                 }
+                return true
             }
 
             is TransportResult.Failed -> {
@@ -303,6 +385,7 @@ class TorXAgent(
                     nextAttemptAt = System.currentTimeMillis() + nextDelay
                 )
                 emitUpdate(item.logicalMessageId, DeliveryStatus.RETRY_WAIT)
+                return false
             }
         }
     }

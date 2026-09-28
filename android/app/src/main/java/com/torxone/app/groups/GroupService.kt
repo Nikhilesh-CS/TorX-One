@@ -6,6 +6,7 @@ import com.torxone.app.agent.DeliveryPriority
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.ConnectionManager
+import com.torxone.app.connection.RelationshipSendCoordinator
 import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
@@ -31,10 +32,18 @@ class GroupService(
     private val sessionCrypto: SessionCrypto,
     private val agent: TorXAgent,
     private val localIdentityIdProvider: suspend () -> String?,
-    private val transactionRunner: suspend (suspend () -> Unit) -> Unit
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit,
+    private val relationshipSendCoordinator: RelationshipSendCoordinator? = null,
+    private val sessionStore: com.torxone.app.crypto.SessionStore? = null
 ) {
     companion object {
         private const val TAG = "GroupService"
+    }
+
+    private val sendCoordinator: RelationshipSendCoordinator by lazy {
+        relationshipSendCoordinator ?: throw IllegalStateException(
+            "GroupService requires the application-scoped RelationshipSendCoordinator; constructing a feature-local sender is unsafe"
+        )
     }
 
     // ─── Group Creation ────────────────────────────────────────────────────────
@@ -90,13 +99,15 @@ class GroupService(
             )
         )
 
-        // 2. Add invited contacts as MEMBER using their authoritative remote TorX identity ID (Phase 9)
+        // 2. Add invited contacts as MEMBER using their authoritative remote TorX identity ID
         initialMembers.forEach { contact ->
-            val memberId = contact.remoteIdentityId.ifEmpty { contact.contactId }
+            require(contact.remoteIdentityId.isNotBlank() && contact.remoteIdentityId != ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+                "Cannot add contact ${contact.contactId} to group: remote identity is missing or unauthenticated"
+            }
             memberEntities.add(
                 GroupMemberEntity(
                     groupId = groupId,
-                    memberIdentityId = memberId,
+                    memberIdentityId = contact.remoteIdentityId,
                     contactId = contact.contactId,
                     relationshipId = contact.relationshipId,
                     role = GroupMemberRole.MEMBER.name,
@@ -140,7 +151,7 @@ class GroupService(
             try {
                 fanoutControlEnvelope(
                     groupId = groupId,
-                    recipientIdentityId = contact.remoteIdentityId.ifEmpty { contact.contactId },
+                    recipientIdentityId = contact.remoteIdentityId,
                     relationshipId = contact.relationshipId,
                     localIdentityId = localIdentityId,
                     messageType = MessageType.GROUP_CREATE,
@@ -264,6 +275,8 @@ class GroupService(
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId)
         if (selfMember == null || selfMember.state != GroupMemberState.ACTIVE.name) return false
+        val target = messageDao.getById(targetMessageId) ?: return false
+        if (target.conversationId != groupId) return false
 
         val now = System.currentTimeMillis()
 
@@ -332,12 +345,14 @@ class GroupService(
         val group = groupDao.getById(groupId) ?: return false
 
         val targetMessage = messageDao.getById(targetMessageId) ?: return false
+        if (targetMessage.conversationId != groupId) return false
         if (targetMessage.senderId != localIdentityId) {
             Log.w(TAG, "Rejecting edit: local user is not author of msg=$targetMessageId")
             return false
         }
         if (targetMessage.deletedAt != null) return false
 
+        if (targetMessage.editVersion == Int.MAX_VALUE) return false
         val newVersion = targetMessage.editVersion + 1
         val now = System.currentTimeMillis()
 
@@ -394,6 +409,7 @@ class GroupService(
         val group = groupDao.getById(groupId) ?: return false
 
         val targetMessage = messageDao.getById(targetMessageId) ?: return false
+        if (targetMessage.conversationId != groupId) return false
         if (targetMessage.senderId != localIdentityId) {
             Log.w(TAG, "Rejecting delete: local user is not author of msg=$targetMessageId")
             return false
@@ -502,7 +518,7 @@ class GroupService(
     suspend fun getDeliverySummary(logicalMessageId: String): GroupMessageDeliverySummary? {
         val message = messageDao.getById(logicalMessageId) ?: return null
         val deliveries = groupMessageDeliveryDao.getDeliveriesForMessage(logicalMessageId)
-        val contacts = contactDao.getAll().associateBy { it.remoteIdentityId.ifEmpty { it.contactId } }
+        val contacts = contactDao.getAll().filter { it.remoteIdentityId.isNotBlank() }.associateBy { it.remoteIdentityId }
 
         val details = deliveries.map { d ->
             val contactName = contacts[d.recipientIdentityId]?.displayName ?: d.recipientIdentityId.take(8)
@@ -557,13 +573,18 @@ class GroupService(
             return false
         }
 
+        if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+            Log.w(TAG, "Cannot add contact with missing/unknown remote identity to group")
+            return false
+        }
+
         val previousEpoch = group.epoch
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
 
         val newMemberEntity = GroupMemberEntity(
             groupId = groupId,
-            memberIdentityId = contact.remoteIdentityId.ifEmpty { contact.contactId },
+            memberIdentityId = contact.remoteIdentityId,
             contactId = contact.contactId,
             relationshipId = contact.relationshipId,
             role = role.name,
@@ -582,7 +603,7 @@ class GroupService(
         val rosterSnapshot = allMembers.map {
             GroupMemberSnapshot(
                 identityId = it.memberIdentityId,
-                contactId = it.contactId,
+                contactId = it.memberIdentityId,
                 role = GroupMemberRole.fromString(it.role),
                 state = GroupMemberState.fromString(it.state)
             )
@@ -599,7 +620,7 @@ class GroupService(
         val inviteBytes = GroupProtocolCodec.encodeInvite(invitePayload)
         fanoutControlEnvelope(
             groupId = groupId,
-            recipientIdentityId = contact.contactId,
+            recipientIdentityId = contact.remoteIdentityId,
             relationshipId = contact.relationshipId,
             localIdentityId = localIdentityId,
             messageType = MessageType.GROUP_MEMBER_INVITE,
@@ -611,14 +632,14 @@ class GroupService(
         // 2. Notify existing members of new member joined
         val joinedPayload = GroupMemberJoinedPayload(
             groupId = groupId,
-            memberIdentity = contact.contactId,
+            memberIdentity = contact.remoteIdentityId,
             role = role,
             epoch = newEpoch,
             actorIdentity = localIdentityId
         )
         val joinedBytes = GroupProtocolCodec.encodeJoined(joinedPayload)
         val existingPeers = allMembers.filter {
-            it.memberIdentityId != localIdentityId && it.memberIdentityId != contact.contactId
+            it.memberIdentityId != localIdentityId && it.memberIdentityId != contact.remoteIdentityId
         }
 
         existingPeers.forEach { member ->
@@ -748,6 +769,9 @@ class GroupService(
         val group = groupDao.getById(groupId) ?: return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
+        if (GroupMemberRole.fromString(selfMember.role) == GroupMemberRole.OWNER &&
+            groupMemberDao.countActiveOwners(groupId) <= 1
+        ) return false
         val previousEpoch = group.epoch
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
@@ -763,13 +787,14 @@ class GroupService(
             )
         }
 
-        val leavePayload = GroupMemberLeavePayload(
+        val leavePayload = GroupMemberRemovePayload(
             groupId = groupId,
-            memberIdentity = localIdentityId,
+            targetIdentity = localIdentityId,
+            actorIdentity = localIdentityId,
             previousEpoch = previousEpoch,
             newEpoch = newEpoch
         )
-        val leaveBytes = GroupProtocolCodec.encodeLeave(leavePayload)
+        val leaveBytes = GroupProtocolCodec.encodeRemove(leavePayload)
 
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
@@ -808,6 +833,13 @@ class GroupService(
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         if (GroupMemberRole.fromString(selfMember.role) != GroupMemberRole.OWNER) {
             Log.w(TAG, "Only OWNER can change roles in group $groupId")
+            return false
+        }
+        val targetMember = groupMemberDao.getMember(groupId, targetIdentityId) ?: return false
+        if (GroupMemberRole.fromString(targetMember.role) == GroupMemberRole.OWNER &&
+            newRole != GroupMemberRole.OWNER && groupMemberDao.countActiveOwners(groupId) <= 1
+        ) {
+            Log.w(TAG, "Cannot demote the group's last active OWNER")
             return false
         }
 
@@ -973,16 +1005,19 @@ class GroupService(
         val localIdentityId = localIdentityIdProvider() ?: return
         val group = groupDao.getById(groupId) ?: return
 
+        // Snapshot unread messages before updating their read state so reopening the group
+        // does not resend receipts for historical messages.
+        val unreadIncoming = messageDao.getUnreadIncoming(groupId)
+            .filter { it.senderId != localIdentityId }
+        val latestBySender = unreadIncoming.groupBy { it.senderId }
+            .mapValues { (_, msgs) -> msgs.maxByOrNull { it.createdAt } }
+
         // 1. Mark local Room messages as READ
         messageDao.markAllIncomingRead(groupId, DeliveryStatus.READ.name, now)
         conversationDao.updateUnreadCount(groupId, 0)
         conversationDao.updateManuallyUnread(groupId, false)
 
         // 2. Find unread incoming messages and dispatch READ receipt back to each author
-        val unreadIncoming = messageDao.getMessagesForConversationDesc(groupId)
-            .filter { it.direction == MessageDirection.INCOMING && it.senderId != localIdentityId }
-        val latestBySender = unreadIncoming.groupBy { it.senderId }.mapValues { (_, msgs) -> msgs.maxByOrNull { it.createdAt } }
-
         val activeMembers = groupMemberDao.getActiveMembers(groupId).associateBy { it.memberIdentityId }
 
         for ((senderId, latestMsg) in latestBySender) {
@@ -1068,77 +1103,61 @@ class GroupService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
-        val envelope = SecureEnvelope(
-            protocolVersion = 1,
-            logicalMessageId = messageId,
-            conversationId = groupId,
-            senderIdentity = localIdentityId,
-            recipientBinding = recipientIdentityId,
-            messageType = messageType,
-            timestamp = System.currentTimeMillis(),
-            payload = payload,
-            replyToMessageId = replyToMessageId,
-            groupMetadata = GroupEnvelopeMetadata(
-                groupId = groupId,
-                groupEpoch = epoch.toInt(),
-                keyVersion = epoch.toInt()
-            ),
-            directionSequence = sendSeq
-        )
-        val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-
-        var opaqueCiphertext: ByteArray? = null
         val outboxDeliveryId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
 
-        sessionCrypto.encryptAndCommit(relationshipId, envelopeBytes, aad) { encrypted, _ ->
-            val ciphertext = encrypted.serialize()
-            opaqueCiphertext = ciphertext
-
-            val outboxEntity = OutboxEntity(
-                deliveryId = outboxDeliveryId,
-                logicalMessageId = messageId,
-                conversationId = groupId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED.name,
-                priority = priority,
-                expectsAck = true
-            )
-
-            outboxDao.insert(outboxEntity)
-            groupMessageDeliveryDao.upsert(
-                GroupMessageDeliveryEntity(
-                    deliveryId = deliveryId,
+        sendCoordinator.sendSequenced(
+            relationshipId = relationshipId,
+            connection = connection,
+            buildEnvelope = { seq ->
+                SecureEnvelope(
+                    protocolVersion = 1,
                     logicalMessageId = messageId,
-                    recipientIdentityId = recipientIdentityId,
-                    relationshipId = relationshipId,
-                    outboxDeliveryId = outboxDeliveryId,
-                    status = GroupDeliveryStatus.QUEUED.name,
-                    updatedAt = System.currentTimeMillis()
+                    conversationId = groupId,
+                    senderIdentity = localIdentityId,
+                    recipientBinding = recipientIdentityId,
+                    messageType = messageType,
+                    timestamp = now,
+                    payload = payload,
+                    replyToMessageId = replyToMessageId,
+                    groupMetadata = GroupEnvelopeMetadata(
+                        groupId = groupId,
+                        groupEpoch = epoch.toInt(),
+                        keyVersion = epoch.toInt()
+                    ),
+                    directionSequence = seq
                 )
-            )
-        }
+            },
+            persistDomain = { seq, _, ciphertext ->
+                val outboxEntity = OutboxEntity(
+                    deliveryId = outboxDeliveryId,
+                    logicalMessageId = messageId,
+                    conversationId = groupId,
+                    connectionId = connection.connectionId,
+                    queueAddress = connection.sendQueueId,
+                    ciphertext = ciphertext,
+                    queueAuthenticator = connection.sendAuth,
+                    status = DeliveryStatus.QUEUED.name,
+                    priority = priority,
+                    expectsAck = true,
+                    applicationSequence = seq,
+                    relationshipId = connection.relationshipId
+                )
 
-        // Notify TorXAgent delivery engine
-        opaqueCiphertext?.let { ct ->
-            val deliveryItem = DeliveryItem(
-                deliveryId = outboxDeliveryId,
-                logicalMessageId = messageId,
-                conversationId = groupId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ct,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = priority,
-                expectsAck = true
-            )
-            agent.enqueue(deliveryItem)
-        }
+                outboxDao.insert(outboxEntity)
+                groupMessageDeliveryDao.upsert(
+                    GroupMessageDeliveryEntity(
+                        deliveryId = deliveryId,
+                        logicalMessageId = messageId,
+                        recipientIdentityId = recipientIdentityId,
+                        relationshipId = relationshipId,
+                        outboxDeliveryId = outboxDeliveryId,
+                        status = GroupDeliveryStatus.QUEUED.name,
+                        updatedAt = now
+                    )
+                )
+            }
+        )
     }
 
     private suspend fun fanoutControlEnvelope(
@@ -1155,63 +1174,47 @@ class GroupService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val sendSeq = connectionManager.allocateSendSequence(relationshipId)
-        val envelope = SecureEnvelope(
-            protocolVersion = 1,
-            logicalMessageId = UUID.randomUUID().toString(),
-            conversationId = groupId,
-            senderIdentity = localIdentityId,
-            recipientBinding = recipientIdentityId,
-            messageType = messageType,
-            timestamp = System.currentTimeMillis(),
-            payload = payload,
-            groupMetadata = GroupEnvelopeMetadata(
-                groupId = groupId,
-                groupEpoch = epoch.toInt(),
-                keyVersion = epoch.toInt()
-            ),
-            directionSequence = sendSeq
-        )
-        val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-
-        var opaqueCiphertext: ByteArray? = null
         val outboxDeliveryId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
 
-        sessionCrypto.encryptAndCommit(relationshipId, envelopeBytes, aad) { encrypted, _ ->
-            val ciphertext = encrypted.serialize()
-            opaqueCiphertext = ciphertext
-
-            val outboxItem = OutboxEntity(
-                deliveryId = outboxDeliveryId,
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = groupId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ciphertext,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED.name,
-                priority = priority,
-                expectsAck = expectsAck
-            )
-            outboxDao.insert(outboxItem)
-        }
-
-        // Notify TorXAgent delivery engine
-        opaqueCiphertext?.let { ct ->
-            val deliveryItem = DeliveryItem(
-                deliveryId = outboxDeliveryId,
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = groupId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = ct,
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = priority,
-                expectsAck = expectsAck
-            )
-            agent.enqueue(deliveryItem)
-        }
+        sendCoordinator.sendSequenced(
+            relationshipId = relationshipId,
+            connection = connection,
+            buildEnvelope = { seq ->
+                SecureEnvelope(
+                    protocolVersion = 1,
+                    logicalMessageId = UUID.randomUUID().toString(),
+                    conversationId = groupId,
+                    senderIdentity = localIdentityId,
+                    recipientBinding = recipientIdentityId,
+                    messageType = messageType,
+                    timestamp = now,
+                    payload = payload,
+                    groupMetadata = GroupEnvelopeMetadata(
+                        groupId = groupId,
+                        groupEpoch = epoch.toInt(),
+                        keyVersion = epoch.toInt()
+                    ),
+                    directionSequence = seq
+                )
+            },
+            persistDomain = { seq, envelope, ciphertext ->
+                val outboxItem = OutboxEntity(
+                    deliveryId = outboxDeliveryId,
+                    logicalMessageId = envelope.logicalMessageId,
+                    conversationId = groupId,
+                    connectionId = connection.connectionId,
+                    queueAddress = connection.sendQueueId,
+                    ciphertext = ciphertext,
+                    queueAuthenticator = connection.sendAuth,
+                    status = DeliveryStatus.QUEUED.name,
+                    priority = priority,
+                    expectsAck = expectsAck,
+                    applicationSequence = seq,
+                    relationshipId = connection.relationshipId
+                )
+                outboxDao.insert(outboxItem)
+            }
+        )
     }
 }

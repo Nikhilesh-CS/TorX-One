@@ -33,7 +33,7 @@ object FounderIdentity {
      * @return true if this is the founder.
      */
     fun isFounder(signingPublicKey: ByteArray): Boolean {
-        return signingPublicKey.contentEquals(founderPublicKey)
+        return founderPublicKey.any { it.toInt() != 0 } && signingPublicKey.contentEquals(founderPublicKey)
     }
 
     /**

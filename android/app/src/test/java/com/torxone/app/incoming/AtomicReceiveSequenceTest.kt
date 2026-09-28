@@ -121,6 +121,11 @@ class AtomicReceiveSequenceTest {
         override suspend fun updateState(connectionId: String, state: String) {
             connections[connectionId]?.let { connections[connectionId] = it.copy(state = state) }
         }
+        override suspend fun updateStateByRelationship(relationshipId: String, state: String) {
+            connections.entries.firstOrNull { it.value.relationshipId == relationshipId }?.let { (id, connection) ->
+                connections[id] = connection.copy(state = state)
+            }
+        }
 
         override suspend fun updateSendSequence(relationshipId: String, sendSequence: Long) {
             for ((id, c) in connections) {

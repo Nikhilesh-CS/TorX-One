@@ -2,7 +2,7 @@ package com.torxone.app.connection
 
 import android.util.Log
 import com.torxone.app.agent.TorXAgent
-import com.torxone.app.crypto.RoomSessionStore
+import com.torxone.app.crypto.SessionStore
 import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.TorXDatabase
 import com.torxone.app.data.dao.ConnectionDao
@@ -36,9 +36,8 @@ import java.util.concurrent.ConcurrentHashMap
 class RelationshipSendCoordinator(
     private val database: TorXDatabase,
     private val connectionManager: ConnectionManager,
-    private val sessionStore: RoomSessionStore,
+    private val sessionStore: SessionStore,
     private val sessionCrypto: SessionCrypto,
-    private val outboxDao: OutboxDao,
     private val connectionDao: ConnectionDao,
     private val agent: TorXAgent,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block -> database.withTransaction { block() } }
@@ -62,7 +61,8 @@ class RelationshipSendCoordinator(
         return mutex.withLock {
             // 1. Read current durable sequence from database or connection
             val dbConn = connectionDao.getByRelationshipId(relationshipId)
-            val currentSeq = dbConn?.sendSequence ?: connection.sendSequence
+                ?: throw IllegalStateException("Cannot sequence a send without a durable connection row for $relationshipId")
+            val currentSeq = maxOf(dbConn.sendSequence, connection.sendSequence)
             val nextSeq = currentSeq + 1L
 
             // 2. Build authenticated SecureEnvelope containing sequence nextSeq

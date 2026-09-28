@@ -47,6 +47,9 @@ interface GroupMemberDao {
     @Query("SELECT * FROM group_members WHERE group_id = :groupId AND state = 'ACTIVE' ORDER BY joined_at ASC")
     suspend fun getActiveMembers(groupId: String): List<GroupMemberEntity>
 
+    @Query("SELECT COUNT(*) FROM group_members WHERE group_id = :groupId AND state = 'ACTIVE' AND role = 'OWNER'")
+    suspend fun countActiveOwners(groupId: String): Int
+
     @Query("SELECT * FROM group_members WHERE group_id = :groupId AND state = 'ACTIVE' ORDER BY joined_at ASC")
     fun observeActiveMembers(groupId: String): Flow<List<GroupMemberEntity>>
 

@@ -121,7 +121,7 @@ class SessionActor(
     private val sessionStore: SessionStore,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) {
-    private val channel = Channel<SessionCommand>(Channel.UNLIMITED)
+    private val channel = Channel<SessionCommand>(capacity = 64)
 
     init {
         scope.launch {
@@ -210,7 +210,7 @@ class SessionActor(
  * Operations on Alice↔Bob will never block Alice↔Charlie, and network I/O is never executed under a lock.
  */
 class DoubleRatchetSessionCrypto(
-    private val sessionStore: SessionStore
+    val sessionStore: SessionStore
 ) : SessionController {
 
     private val actors = ConcurrentHashMap<String, SessionActor>()

@@ -172,7 +172,7 @@ class TorXNotificationManager(
 
             val contactsMap = if (isGroup && contactDao != null) {
                 try {
-                    contactDao.getAll().associateBy { it.contactId }
+                    contactDao.getAll().associateBy { it.remoteIdentityId }
                 } catch (_: Exception) {
                     null
                 }

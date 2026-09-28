@@ -228,6 +228,8 @@ class ConsumedInviteTest {
     class FakeBootstrapStateDao : BootstrapStateDao {
         val states = ConcurrentHashMap<String, BootstrapStateEntity>()
         override suspend fun getByRelationshipId(relationshipId: String): BootstrapStateEntity? = states[relationshipId]
+        override suspend fun getByInviteId(inviteId: String): BootstrapStateEntity? =
+            states.values.firstOrNull { it.inviteId == inviteId }
         override suspend fun getIncompleteBootstraps(): List<BootstrapStateEntity> =
             states.values.filter { it.status != BootstrapStatus.ACTIVE && it.status != BootstrapStatus.FAILED }
         override suspend fun upsert(entity: BootstrapStateEntity) { states[entity.relationshipId] = entity }

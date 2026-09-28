@@ -7,6 +7,7 @@ import com.torxone.app.crypto.DoubleRatchetSessionCrypto
 import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
 import com.torxone.app.identity.IdentityCrypto
+import com.torxone.app.incoming.GroupHandler
 import com.torxone.app.protocol.MessageType
 import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.protocol.ReactionOperation
@@ -47,9 +48,11 @@ class GroupServiceTest {
         coroutineDispatcher = Dispatchers.Default
     )
 
-    private val aliceIdentityId = "alice_id"
-    private val bobContactId = "bob_id"
-    private val charlieContactId = "charlie_id"
+    private val aliceIdentityId = "identity-alice-111"
+    private val bobContactId = "contact-local-bob-222"
+    private val bobIdentityId = "identity-remote-bob-333"
+    private val charlieContactId = "contact-local-charlie-444"
+    private val charlieIdentityId = "identity-remote-charlie-555"
 
     private lateinit var groupService: GroupService
 
@@ -57,15 +60,31 @@ class GroupServiceTest {
     fun setUp() = runBlocking {
         // Setup Bob relationship & connection
         val relBob = "rel_alice_bob"
-        setupPairwiseSession(relBob, aliceIdentityId, bobContactId)
+        setupPairwiseSession(relBob, aliceIdentityId, bobIdentityId)
 
         // Setup Charlie relationship & connection
         val relCharlie = "rel_alice_charlie"
-        setupPairwiseSession(relCharlie, aliceIdentityId, charlieContactId)
+        setupPairwiseSession(relCharlie, aliceIdentityId, charlieIdentityId)
 
-        // Contacts
-        contactDao.upsert(ContactEntity(bobContactId, relBob, "Bob", null, ByteArray(32), "VERIFIED", bobContactId))
-        contactDao.upsert(ContactEntity(charlieContactId, relCharlie, "Charlie", null, ByteArray(32), "VERIFIED", charlieContactId))
+        // Contacts with distinct contactId vs remoteIdentityId
+        contactDao.upsert(ContactEntity(
+            contactId = bobContactId,
+            relationshipId = relBob,
+            displayName = "Bob",
+            signingPublicKey = ByteArray(32),
+            verificationState = "VERIFIED",
+            conversationId = bobContactId,
+            remoteIdentityId = bobIdentityId
+        ))
+        contactDao.upsert(ContactEntity(
+            contactId = charlieContactId,
+            relationshipId = relCharlie,
+            displayName = "Charlie",
+            signingPublicKey = ByteArray(32),
+            verificationState = "VERIFIED",
+            conversationId = charlieContactId,
+            remoteIdentityId = charlieIdentityId
+        ))
 
         groupService = GroupService(
             groupDao = groupDao,
@@ -153,9 +172,11 @@ class GroupServiceTest {
         assertEquals(GroupMemberRole.OWNER.name, aliceMember?.role)
         assertEquals(GroupMemberState.ACTIVE.name, aliceMember?.state)
 
-        val bobMember = groupMemberDao.getMember(group.groupId, bobContactId)
+        val bobMember = groupMemberDao.getMember(group.groupId, bobIdentityId)
         assertNotNull(bobMember)
         assertEquals(GroupMemberRole.MEMBER.name, bobMember?.role)
+        assertEquals(bobContactId, bobMember?.contactId)
+        assertEquals(bobIdentityId, bobMember?.memberIdentityId)
 
         // Two outbox items for GROUP_CREATE invites (one for Bob, one for Charlie)
         val outbox = outboxStore.items.values
@@ -182,8 +203,8 @@ class GroupServiceTest {
         // 2. Deliveries tracked per recipient
         val deliveries = groupMessageDeliveryDao.getDeliveriesForMessage(msg.logicalMessageId)
         assertEquals(2, deliveries.size)
-        assertTrue(deliveries.any { it.recipientIdentityId == bobContactId && it.status == GroupDeliveryStatus.QUEUED.name })
-        assertTrue(deliveries.any { it.recipientIdentityId == charlieContactId && it.status == GroupDeliveryStatus.QUEUED.name })
+        assertTrue(deliveries.any { it.recipientIdentityId == bobIdentityId && it.status == GroupDeliveryStatus.QUEUED.name })
+        assertTrue(deliveries.any { it.recipientIdentityId == charlieIdentityId && it.status == GroupDeliveryStatus.QUEUED.name })
 
         // 3. Two independent pairwise encrypted outbox items
         val outboxItems = outboxStore.items.values
@@ -200,7 +221,7 @@ class GroupServiceTest {
         assertEquals(DeliveryStatus.QUEUED.name, messageDao.getById(msg.logicalMessageId)?.status)
 
         // Bob ACKs delivery
-        groupService.handleDeliveryAck(msg.logicalMessageId, bobContactId)
+        groupService.handleDeliveryAck(msg.logicalMessageId, bobIdentityId)
 
         // Message should still not be DELIVERED because Charlie hasn't ACKed yet
         val msgAfterBob = messageDao.getById(msg.logicalMessageId)
@@ -212,7 +233,7 @@ class GroupServiceTest {
         assertEquals(0, summaryAfterBob?.readCount)
 
         // Charlie ACKs delivery -> All active delivered!
-        groupService.handleDeliveryAck(msg.logicalMessageId, charlieContactId)
+        groupService.handleDeliveryAck(msg.logicalMessageId, charlieIdentityId)
 
         val msgAfterBoth = messageDao.getById(msg.logicalMessageId)
         assertEquals(DeliveryStatus.DELIVERED.name, msgAfterBoth?.status)
@@ -230,15 +251,15 @@ class GroupServiceTest {
 
         val msg = groupService.sendGroupText(group.groupId, "Testing Read Receipts")
 
-        groupService.handleDeliveryAck(msg.logicalMessageId, bobContactId)
-        groupService.handleDeliveryAck(msg.logicalMessageId, charlieContactId)
+        groupService.handleDeliveryAck(msg.logicalMessageId, bobIdentityId)
+        groupService.handleDeliveryAck(msg.logicalMessageId, charlieIdentityId)
 
         // Bob reads
-        groupService.handleReadReceipt(msg.logicalMessageId, bobContactId)
+        groupService.handleReadReceipt(msg.logicalMessageId, bobIdentityId)
         assertEquals(DeliveryStatus.DELIVERED.name, messageDao.getById(msg.logicalMessageId)?.status)
 
         // Charlie reads -> All active read!
-        groupService.handleReadReceipt(msg.logicalMessageId, charlieContactId)
+        groupService.handleReadReceipt(msg.logicalMessageId, charlieIdentityId)
         assertEquals(DeliveryStatus.READ.name, messageDao.getById(msg.logicalMessageId)?.status)
 
         val summary = groupService.getDeliverySummary(msg.logicalMessageId)
@@ -281,19 +302,19 @@ class GroupServiceTest {
         val addSuccess = groupService.addMember(group.groupId, charlieContact, GroupMemberRole.MEMBER)
         assertTrue(addSuccess)
         assertEquals(2L, groupDao.getById(group.groupId)?.epoch)
-        assertEquals(GroupMemberRole.MEMBER.name, groupMemberDao.getMember(group.groupId, charlieContactId)?.role)
+        assertEquals(GroupMemberRole.MEMBER.name, groupMemberDao.getMember(group.groupId, charlieIdentityId)?.role)
 
         // 2. Promote Bob to ADMIN -> advances epoch to 3
-        val roleSuccess = groupService.changeRole(group.groupId, bobContactId, GroupMemberRole.ADMIN)
+        val roleSuccess = groupService.changeRole(group.groupId, bobIdentityId, GroupMemberRole.ADMIN)
         assertTrue(roleSuccess)
         assertEquals(3L, groupDao.getById(group.groupId)?.epoch)
-        assertEquals(GroupMemberRole.ADMIN.name, groupMemberDao.getMember(group.groupId, bobContactId)?.role)
+        assertEquals(GroupMemberRole.ADMIN.name, groupMemberDao.getMember(group.groupId, bobIdentityId)?.role)
 
         // 3. Remove Charlie -> advances epoch to 4
-        val removeSuccess = groupService.removeMember(group.groupId, charlieContactId)
+        val removeSuccess = groupService.removeMember(group.groupId, charlieIdentityId)
         assertTrue(removeSuccess)
         assertEquals(4L, groupDao.getById(group.groupId)?.epoch)
-        val charlieMember = groupMemberDao.getMember(group.groupId, charlieContactId)
+        val charlieMember = groupMemberDao.getMember(group.groupId, charlieIdentityId)
         assertEquals(GroupMemberState.REMOVED.name, charlieMember?.state)
         assertEquals(4L, charlieMember?.removedEpoch)
 
@@ -341,7 +362,7 @@ class GroupServiceTest {
         val pendingDelivery = GroupMessageDeliveryEntity(
             deliveryId = "del_uncompleted",
             logicalMessageId = msgId,
-            recipientIdentityId = bobContactId,
+            recipientIdentityId = bobIdentityId,
             relationshipId = "rel_alice_bob",
             status = GroupDeliveryStatus.PENDING.name
         )
@@ -356,5 +377,95 @@ class GroupServiceTest {
         val updatedDelivery = groupMessageDeliveryDao.deliveries["del_uncompleted"]
         assertEquals(GroupDeliveryStatus.QUEUED.name, updatedDelivery?.status)
         assertEquals(1, outboxStore.items.size)
+    }
+
+    @Test
+    fun testWirePayloadsNeverExposeLocalContactIds() = runBlocking {
+        val bobContact = contactDao.getById(bobContactId)!!
+        val charlieContact = contactDao.getById(charlieContactId)!!
+        val group = groupService.createGroup("Secret Devs", listOf(bobContact, charlieContact))
+
+        // Verify outbox items for group creation
+        val items = outboxStore.items.values.toList()
+        assertEquals(2, items.size)
+        // Decrypt and inspect invite payloads
+        items.forEach { item ->
+            // Envelopes are encrypted with pairwise ratchet session
+            val connection = connectionManager.getConnectionByRelationship(item.relationshipId)!!
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray()
+            val decryptedBytes = sessionCrypto.decrypt(
+                relationshipId = item.relationshipId,
+                message = com.torxone.app.crypto.EncryptedSessionMessage.deserialize(item.ciphertext),
+                associatedData = aad
+            )
+            val envelope = ProtocolCodec.decodeSecureEnvelope(decryptedBytes)
+            val invite = GroupProtocolCodec.decodeInvite(envelope.payload)
+
+            // Assert that every member snapshot uses identity ID and never local contactId
+            invite.members.forEach { m ->
+                assertNotEquals("Local contactId must NEVER appear as identityId", bobContactId, m.identityId)
+                assertNotEquals("Local contactId must NEVER appear as identityId", charlieContactId, m.identityId)
+                assertNotEquals("Local contactId must NEVER appear as contactId on wire", bobContactId, m.contactId)
+                assertNotEquals("Local contactId must NEVER appear as contactId on wire", charlieContactId, m.contactId)
+                assertTrue("Wire identity must be an authoritative identity ID",
+                    m.identityId == aliceIdentityId || m.identityId == bobIdentityId || m.identityId == charlieIdentityId)
+            }
+        }
+    }
+
+    @Test
+    fun testGroupMembershipSurvivesDevicesWithDifferentLocalContactIds() = runBlocking {
+        // Alice has Charlie as "contact-local-charlie-444"
+        // Bob has Charlie as "contact-charlie-on-bob-device-999"
+        // Both share charlieIdentityId = "identity-remote-charlie-555"
+        val bobContact = contactDao.getById(bobContactId)!!
+        val charlieContact = contactDao.getById(charlieContactId)!!
+        val group = groupService.createGroup("MultiDevice Group", listOf(bobContact, charlieContact))
+
+        // Alice's local database links to her local contactId
+        val aliceViewOfCharlie = groupMemberDao.getMember(group.groupId, charlieIdentityId)
+        assertNotNull(aliceViewOfCharlie)
+        assertEquals(charlieContactId, aliceViewOfCharlie?.contactId)
+        assertEquals(charlieIdentityId, aliceViewOfCharlie?.memberIdentityId)
+
+        // Bob receives the invite and handles it
+        val bobGroupDao = TestGroupDao()
+        val bobGroupMemberDao = TestGroupMemberDao()
+        val bobConversationDao = TestConversationDao()
+        val bobHandler = GroupHandler(
+            groupDao = bobGroupDao,
+            groupMemberDao = bobGroupMemberDao,
+            conversationDao = bobConversationDao,
+            localIdentityIdProvider = { bobIdentityId },
+            transactionRunner = { it() }
+        )
+
+        val aliceToBobOutbox = outboxStore.items.values.first { it.relationshipId == "rel_alice_bob" }
+        val aliceToBobConnection = connectionManager.getConnectionByRelationship(aliceToBobOutbox.relationshipId)!!
+        val aliceToBobAad = "torx-aad-v1:${aliceToBobConnection.generation}:${aliceToBobConnection.sendQueueId}".toByteArray()
+        val decrypted = sessionCrypto.decrypt(
+            aliceToBobOutbox.relationshipId,
+            com.torxone.app.crypto.EncryptedSessionMessage.deserialize(aliceToBobOutbox.ciphertext),
+            aliceToBobAad
+        )
+        val envelope = ProtocolCodec.decodeSecureEnvelope(decrypted)
+
+        val bobConnection = Connection(
+            relationshipId = "rel_alice_bob",
+            generation = 1,
+            sendQueueId = "q_s",
+            recvQueueId = "q_r",
+            sendAuth = ByteArray(32),
+            recvAuth = ByteArray(32)
+        )
+        val handled = bobHandler.handleGroupCreateOrInvite(bobConnection, envelope)
+        assertTrue(handled)
+
+        // In Bob's member DAO, Charlie is correctly identified by charlieIdentityId
+        val bobViewOfCharlie = bobGroupMemberDao.getMember(group.groupId, charlieIdentityId)
+        assertNotNull(bobViewOfCharlie)
+        assertEquals(charlieIdentityId, bobViewOfCharlie?.memberIdentityId)
+        // Alice's local contact ID was never leaked or assigned as Charlie's identity on Bob's device
+        assertNotEquals(charlieContactId, bobViewOfCharlie?.contactId)
     }
 }

@@ -21,7 +21,8 @@ import com.torxone.app.protocol.MessageType
  * Rejects signals for wrong/unknown callIds (stale packets from old calls).
  */
 class CallHandler(
-    private val callManager: CallManager
+    private val callManager: CallManager,
+    private val contactDao: com.torxone.app.data.dao.ContactDao
 ) {
     companion object {
         private const val TAG = "CallHandler"
@@ -48,11 +49,13 @@ class CallHandler(
 
     private suspend fun handleOffer(connection: Connection, envelope: SecureEnvelope) {
         val payload = CallProtocolCodec.decodeOffer(envelope.payload)
+        val conversationId = contactDao.getByRelationshipId(connection.relationshipId)?.conversationId
+            ?: throw IllegalStateException("No authenticated conversation for incoming call")
         Log.d(TAG, "[RX] CALL_OFFER call=${payload.callId.take(8)} type=${payload.callType} from=${envelope.senderIdentity.take(8)}")
 
         callManager.onIncomingOffer(
             callId = payload.callId,
-            conversationId = envelope.conversationId,
+            conversationId = conversationId,
             relationshipId = connection.relationshipId,
             peerIdentityId = envelope.senderIdentity,
             type = payload.callType,

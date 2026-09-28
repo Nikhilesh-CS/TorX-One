@@ -28,6 +28,7 @@ class DeleteHandler(
             Log.w(TAG, "Delete target ${delete.targetMessageId.take(8)} not found")
             return false
         }
+        if (targetMsg.conversationId != (envelope.groupMetadata?.groupId ?: envelope.conversationId)) return false
 
         // Rule 1: Only original sender may delete
         if (targetMsg.senderId != envelope.senderIdentity) {

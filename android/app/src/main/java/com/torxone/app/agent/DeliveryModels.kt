@@ -103,7 +103,13 @@ data class DeliveryItem(
     val updatedAt: Long = System.currentTimeMillis(),
 
     /** Whether this item expects an end-to-end delivery ACK from peer */
-    val expectsAck: Boolean = true
+    val expectsAck: Boolean = true,
+
+    /** Monotonic application sequence number for sequenced durable messages */
+    val applicationSequence: Long? = null,
+
+    /** Stable sequencing lane for all traffic belonging to one relationship, across queue rotation. */
+    val relationshipId: String = ""
 ) {
     /**
      * Cryptographic semantic accessor: this field holds the shared secret (`sendAuth`)
@@ -129,7 +135,9 @@ data class DeliveryItem(
             nextAttemptAt: Long = 0L,
             createdAt: Long = System.currentTimeMillis(),
             updatedAt: Long = System.currentTimeMillis(),
-            expectsAck: Boolean = true
+            expectsAck: Boolean = true,
+            applicationSequence: Long? = null,
+            relationshipId: String = ""
         ): DeliveryItem = DeliveryItem(
             deliveryId = deliveryId,
             logicalMessageId = logicalMessageId,
@@ -144,7 +152,9 @@ data class DeliveryItem(
             nextAttemptAt = nextAttemptAt,
             createdAt = createdAt,
             updatedAt = updatedAt,
-            expectsAck = expectsAck
+            expectsAck = expectsAck,
+            applicationSequence = applicationSequence,
+            relationshipId = relationshipId
         )
     }
 

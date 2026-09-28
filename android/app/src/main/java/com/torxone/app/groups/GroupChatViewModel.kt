@@ -36,7 +36,8 @@ class GroupChatViewModel(
     private val contactDao: ContactDao,
     private val conversationDao: ConversationDao,
     private val mediaDao: MediaDao? = null,
-    private val mediaService: MediaService? = null
+    private val mediaService: MediaService? = null,
+    private val localMessageStateDao: LocalMessageStateDao? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -84,12 +85,14 @@ class GroupChatViewModel(
             combine(
                 messageDao.observeByConversation(conversationId),
                 reactionDao.observeForConversation(conversationId),
-                contactDao.observeAll()
-            ) { messages, reactions, contacts ->
-                val contactsMap = contacts.associateBy { it.contactId }
+                contactDao.observeAll(),
+                localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList())
+            ) { messages, reactions, contacts, hiddenMessageIds ->
+                val hidden = hiddenMessageIds.toHashSet()
+                val contactsMap = contacts.associateBy { it.remoteIdentityId }
                 val reactionsByMessage = reactions.groupBy { it.messageId }
 
-                messages.map { msg ->
+                messages.filterNot { it.logicalMessageId in hidden }.map { msg ->
                     val senderName = if (msg.senderId == localIdentityId) {
                         "You"
                     } else {
@@ -229,8 +232,15 @@ class GroupChatViewModel(
 
     fun deleteForMe(messageId: String) {
         viewModelScope.launch {
-            // Local delete: updates message locally
-            messageDao.markDeleted(messageId, System.currentTimeMillis())
+            val message = messageDao.getById(messageId) ?: return@launch
+            localMessageStateDao?.upsert(
+                LocalMessageStateEntity(
+                    messageId = messageId,
+                    conversationId = message.conversationId,
+                    hiddenLocally = true,
+                    hiddenAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 
@@ -335,7 +345,7 @@ class GroupChatViewModel(
         }
 
         viewModelScope.launch {
-            val contacts = contactDao.getAll().associateBy { it.contactId }
+            val contacts = contactDao.getAll().associateBy { it.remoteIdentityId }
             val names = typingTimestamps.keys.map { contacts[it]?.displayName ?: it.take(8) }
 
             val text = when {

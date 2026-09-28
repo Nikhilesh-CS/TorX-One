@@ -37,6 +37,47 @@ class GroupHandler(
         return try {
             val payload = GroupProtocolCodec.decodeInvite(envelope.payload)
             val localIdentityId = localIdentityIdProvider() ?: return false
+            val metadata = envelope.groupMetadata ?: return false
+            if (metadata.groupId != payload.groupId || envelope.conversationId != payload.groupId) return false
+            if (payload.inviterIdentity != envelope.senderIdentity || payload.epoch <= 0L) return false
+            val senderSnapshot = payload.members.firstOrNull { it.identityId == envelope.senderIdentity } ?: return false
+            if (senderSnapshot.state != GroupMemberState.ACTIVE ||
+                (senderSnapshot.role != GroupMemberRole.OWNER && senderSnapshot.role != GroupMemberRole.ADMIN)
+            ) return false
+            if (payload.members.none { it.identityId == localIdentityId && it.state == GroupMemberState.ACTIVE }) return false
+
+            val existingGroup = groupDao.getById(payload.groupId)
+            val creating = envelope.messageType == com.torxone.app.protocol.MessageType.GROUP_CREATE
+            if (creating) {
+                if (existingGroup != null || payload.epoch != 1L || payload.creatorIdentity != envelope.senderIdentity ||
+                    senderSnapshot.role != GroupMemberRole.OWNER
+                ) return false
+            } else {
+                if (existingGroup == null) {
+                    // A peer without prior group state cannot authenticate an admin roster snapshot.
+                    // Until invitations carry an owner-signed authorization chain, only creator-issued
+                    // first invitations can bootstrap local group state.
+                    if (payload.creatorIdentity != envelope.senderIdentity || senderSnapshot.role != GroupMemberRole.OWNER) return false
+                } else {
+                    if (existingGroup.creatorIdentityId != payload.creatorIdentity ||
+                        payload.epoch != existingGroup.epoch + 1L ||
+                        payload.title != existingGroup.title || payload.avatarHash != existingGroup.avatarHash
+                    ) return false
+                    val sender = groupMemberDao.getMember(payload.groupId, envelope.senderIdentity) ?: return false
+                    if (sender.state != GroupMemberState.ACTIVE.name ||
+                        (GroupMemberRole.fromString(sender.role) != GroupMemberRole.OWNER &&
+                            GroupMemberRole.fromString(sender.role) != GroupMemberRole.ADMIN)
+                    ) return false
+                    val currentMembers = groupMemberDao.getMembers(payload.groupId).associateBy { it.memberIdentityId }
+                    val incomingMembers = payload.members.associateBy { it.identityId }
+                    if (currentMembers.any { (identity, member) ->
+                            val incoming = incomingMembers[identity]
+                            incoming == null || incoming.role.name != member.role || incoming.state.name != member.state
+                        }
+                    ) return false
+                    if (incomingMembers.keys - currentMembers.keys != setOf(localIdentityId)) return false
+                }
+            }
             val now = System.currentTimeMillis()
 
             Log.i(TAG, "[GROUP INVITE] Received invite to ${payload.title} (${payload.groupId.take(8)}) from ${envelope.senderIdentity.take(8)}")
@@ -64,7 +105,7 @@ class GroupHandler(
                 val (contactId, relationshipId) = when {
                     m.identityId == localIdentityId -> "self" to "self"
                     m.identityId == envelope.senderIdentity -> connection.relationshipId to connection.relationshipId
-                    else -> m.contactId.ifEmpty { m.identityId } to m.contactId.ifEmpty { m.identityId }
+                    else -> "" to ""
                 }
                 GroupMemberEntity(
                     groupId = payload.groupId,
@@ -79,9 +120,14 @@ class GroupHandler(
             }
 
             transactionRunner {
-                conversationDao.upsert(conversation)
-                groupDao.upsert(group)
-                groupMemberDao.upsertAll(memberEntities)
+                if (existingGroup == null) {
+                    conversationDao.upsert(conversation)
+                    groupDao.upsert(group)
+                    groupMemberDao.upsertAll(memberEntities)
+                } else {
+                    groupDao.updateEpoch(payload.groupId, payload.epoch, now)
+                    groupMemberDao.upsert(memberEntities.single { it.memberIdentityId == localIdentityId })
+                }
             }
 
             notificationManager?.handleIncomingTextMessage(
@@ -108,17 +154,47 @@ class GroupHandler(
     ): Boolean {
         return try {
             val payload = GroupProtocolCodec.decodeJoined(envelope.payload)
+            if (!matchesGroupBinding(envelope, payload.groupId)) return false
             val group = groupDao.getById(payload.groupId) ?: return false
 
-            // Phase 10: Authenticated sender must match actor identity (if broadcast by admin) or joined identity
-            val isAuthorized = if (!payload.actorIdentity.isNullOrBlank()) {
-                payload.actorIdentity == envelope.senderIdentity
-            } else {
-                payload.memberIdentity == envelope.senderIdentity
-            }
-            if (!isAuthorized) {
-                Log.w(TAG, "Rejecting member joined: envelope sender '${envelope.senderIdentity}' does not match actor '${payload.actorIdentity}' or member '${payload.memberIdentity}'")
+            if (payload.memberIdentity.isBlank() || payload.memberIdentity == ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+                Log.w(TAG, "Rejecting member joined: invalid member identity '${payload.memberIdentity}'")
                 return false
+            }
+
+            // Strict epoch progression: epoch must be current + 1
+            if (payload.epoch != group.epoch + 1L) {
+                Log.w(TAG, "Rejecting member joined: non-sequential epoch (current=${group.epoch}, received=${payload.epoch})")
+                return false
+            }
+
+            val isSelfJoin = payload.actorIdentity.isBlank() || payload.actorIdentity == payload.memberIdentity
+            if (isSelfJoin) {
+                // Self-join: sender MUST match member identity
+                if (envelope.senderIdentity != payload.memberIdentity) {
+                    Log.w(TAG, "Rejecting self-join: sender '${envelope.senderIdentity}' != member '${payload.memberIdentity}'")
+                    return false
+                }
+                val existing = groupMemberDao.getMember(payload.groupId, payload.memberIdentity)
+                if (existing == null || existing.state != GroupMemberState.INVITED.name) {
+                    Log.w(TAG, "Rejecting self-join: member is not invited (state='${existing?.state}')")
+                    return false
+                }
+            } else {
+                // Admin broadcast: sender MUST match actor identity
+                if (envelope.senderIdentity != payload.actorIdentity) {
+                    Log.w(TAG, "Rejecting admin broadcast: sender '${envelope.senderIdentity}' != actor '${payload.actorIdentity}'")
+                    return false
+                }
+                val isActorOwnerOrAdmin = (group.creatorIdentityId == payload.actorIdentity) || run {
+                    val actor = groupMemberDao.getMember(payload.groupId, payload.actorIdentity)
+                    actor != null && actor.state == GroupMemberState.ACTIVE.name &&
+                        (actor.role == GroupMemberRole.OWNER.name || actor.role == GroupMemberRole.ADMIN.name)
+                }
+                if (!isActorOwnerOrAdmin) {
+                    Log.w(TAG, "Rejecting member joined: actor '${payload.actorIdentity}' is not an active OWNER or ADMIN")
+                    return false
+                }
             }
 
             val now = System.currentTimeMillis()
@@ -126,8 +202,8 @@ class GroupHandler(
             val memberEntity = GroupMemberEntity(
                 groupId = payload.groupId,
                 memberIdentityId = payload.memberIdentity,
-                contactId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else payload.memberIdentity,
-                relationshipId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else payload.memberIdentity,
+                contactId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else "",
+                relationshipId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else "",
                 role = payload.role.name,
                 state = GroupMemberState.ACTIVE.name,
                 joinedEpoch = payload.epoch,
@@ -135,9 +211,7 @@ class GroupHandler(
             )
 
             transactionRunner {
-                if (payload.epoch > group.epoch) {
-                    groupDao.updateEpoch(payload.groupId, payload.epoch, now)
-                }
+                groupDao.updateEpoch(payload.groupId, payload.epoch, now)
                 groupMemberDao.upsert(memberEntity)
             }
 
@@ -158,6 +232,7 @@ class GroupHandler(
     ): Boolean {
         return try {
             val payload = GroupProtocolCodec.decodeRemove(envelope.payload)
+            if (!matchesGroupBinding(envelope, payload.groupId)) return false
             val group = groupDao.getById(payload.groupId) ?: return false
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
@@ -231,6 +306,7 @@ class GroupHandler(
     ): Boolean {
         return try {
             val payload = GroupProtocolCodec.decodeRoleChange(envelope.payload)
+            if (!matchesGroupBinding(envelope, payload.groupId)) return false
             val group = groupDao.getById(payload.groupId) ?: return false
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
@@ -275,6 +351,7 @@ class GroupHandler(
     ): Boolean {
         return try {
             val payload = GroupProtocolCodec.decodeNameChange(envelope.payload)
+            if (!matchesGroupBinding(envelope, payload.groupId)) return false
             val group = groupDao.getById(payload.groupId) ?: return false
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
@@ -322,6 +399,7 @@ class GroupHandler(
     ): Boolean {
         return try {
             val payload = GroupProtocolCodec.decodeAvatarChange(envelope.payload)
+            if (!matchesGroupBinding(envelope, payload.groupId)) return false
             val group = groupDao.getById(payload.groupId) ?: return false
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
@@ -359,4 +437,7 @@ class GroupHandler(
             false
         }
     }
+
+    private fun matchesGroupBinding(envelope: SecureEnvelope, payloadGroupId: String): Boolean =
+        envelope.groupMetadata?.groupId == payloadGroupId && envelope.conversationId == payloadGroupId
 }

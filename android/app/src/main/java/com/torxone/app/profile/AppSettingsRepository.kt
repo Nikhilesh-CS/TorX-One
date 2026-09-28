@@ -21,6 +21,11 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
 
 class AppSettingsRepository(context: Context) {
 
+    companion object {
+        // Background receivers fail closed until a foreground activity proves unlock.
+        @Volatile var appLockGate: suspend () -> Boolean = { false }
+    }
+
     private val store = context.settingsDataStore
 
     // ─── Profile Keys ────────────────────────────────────────────────
@@ -244,6 +249,9 @@ class AppSettingsRepository(context: Context) {
     val appLockEnabled: Flow<Boolean> = store.data.map { prefs ->
         prefs[SecurityKeys.APP_LOCK_ENABLED] ?: false
     }
+
+    suspend fun isAppLockedNow(): Boolean =
+        store.data.first()[SecurityKeys.APP_LOCK_ENABLED] == true && !appLockGate()
 
     val appLockTimeout: Flow<Long> = store.data.map { prefs ->
         prefs[SecurityKeys.APP_LOCK_TIMEOUT] ?: 0L

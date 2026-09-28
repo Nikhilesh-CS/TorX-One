@@ -19,6 +19,8 @@ data class MessageReaction(
     val operation: ReactionOperation
 ) {
     fun toByteArray(): ByteArray {
+        require(targetMessageId.isNotBlank() && targetMessageId.length <= ProtocolLimits.MAX_ID_LENGTH)
+        require(emoji.isNotBlank() && emoji.length <= 32)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeUTF(targetMessageId)
@@ -30,14 +32,13 @@ data class MessageReaction(
 
     companion object {
         fun fromByteArray(bytes: ByteArray): MessageReaction {
+            require(bytes.size <= 512)
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val targetId = dis.readUTF()
             val emoji = dis.readUTF()
-            val op = try {
-                ReactionOperation.valueOf(dis.readUTF())
-            } catch (_: Exception) {
-                ReactionOperation.ADD
-            }
+            val op = ReactionOperation.valueOf(dis.readUTF())
+            require(targetId.isNotBlank() && targetId.length <= ProtocolLimits.MAX_ID_LENGTH)
+            require(emoji.isNotBlank() && emoji.length <= 32 && dis.available() == 0)
             return MessageReaction(targetId, emoji, op)
         }
     }
@@ -65,11 +66,14 @@ data class MessageEdit(
 
     companion object {
         fun fromByteArray(bytes: ByteArray): MessageEdit {
+            require(bytes.size <= ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES)
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val targetId = dis.readUTF()
             val newText = dis.readUTF()
             val version = dis.readInt()
             val editedAt = dis.readLong()
+            require(targetId.isNotBlank() && targetId.length <= ProtocolLimits.MAX_ID_LENGTH)
+            require(newText.length <= ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES && version > 0 && editedAt > 0 && dis.available() == 0)
             return MessageEdit(targetId, newText, version, editedAt)
         }
     }
@@ -93,9 +97,11 @@ data class MessageDelete(
 
     companion object {
         fun fromByteArray(bytes: ByteArray): MessageDelete {
+            require(bytes.size <= 512)
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val targetId = dis.readUTF()
             val time = dis.readLong()
+            require(targetId.isNotBlank() && targetId.length <= ProtocolLimits.MAX_ID_LENGTH && time > 0 && dis.available() == 0)
             return MessageDelete(targetId, time)
         }
     }

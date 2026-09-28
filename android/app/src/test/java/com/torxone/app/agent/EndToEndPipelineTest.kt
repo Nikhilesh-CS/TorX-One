@@ -125,6 +125,9 @@ class EndToEndPipelineTest {
                 .filter { it.conversationId == conversationId && it.direction == MessageDirection.INCOMING && it.status != "READ" }
                 .maxByOrNull { it.createdAt }
         }
+        override suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity> =
+            getMessagesForConversationDesc(conversationId).filter { it.direction == MessageDirection.INCOMING && it.status != "READ" }
+
         override suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long) {
             messages[messageId]?.let { messages[messageId] = it.copy(body = newBody, editVersion = editVersion, editedAt = editedAt) }
         }
@@ -199,7 +202,7 @@ class EndToEndPipelineTest {
     }
 
     class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
-        override suspend fun getPending(now: Long): List<OutboxEntity> {
+        override suspend fun getPending(): List<OutboxEntity> {
             return store.getPendingItems().map {
                 OutboxEntity(
                     deliveryId = it.deliveryId,
@@ -266,6 +269,11 @@ class EndToEndPipelineTest {
         }
         override suspend fun updateState(connectionId: String, state: String) {
             connections[connectionId]?.let { connections[connectionId] = it.copy(state = state) }
+        }
+        override suspend fun updateStateByRelationship(relationshipId: String, state: String) {
+            connections.values.firstOrNull { it.relationshipId == relationshipId }?.let {
+                connections[it.connectionId] = it.copy(state = state)
+            }
         }
         override suspend fun updateSendSequence(relationshipId: String, sendSequence: Long) {
             val conn = connections.values.find { it.relationshipId == relationshipId }
@@ -564,7 +572,7 @@ class EndToEndPipelineTest {
         val now = System.currentTimeMillis()
 
         // 1. Alice creates and encrypts message
-        val seq = alice.connectionManager.incrementSendSequence(relationshipId)
+        val seq = alice.connectionManager.allocateSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = messageId,
@@ -642,7 +650,7 @@ class EndToEndPipelineTest {
 
         for (i in 1..20) {
             val msgId = "dup-msg-$i"
-            val seq = alice.connectionManager.incrementSendSequence(relationshipId)
+            val seq = alice.connectionManager.allocateSendSequence(relationshipId)
             val env = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = msgId,
@@ -697,7 +705,7 @@ class EndToEndPipelineTest {
         text: String
     ) {
         val now = System.currentTimeMillis()
-        val seq = sender.connectionManager.incrementSendSequence(relationshipId)
+        val seq = sender.connectionManager.allocateSendSequence(relationshipId)
         val envelope = SecureEnvelope(
             protocolVersion = 1,
             logicalMessageId = msgId,
@@ -1103,7 +1111,7 @@ class EndToEndPipelineTest {
             conversationId = "conv-ba",
             senderIdentity = bob.identity.identityId,
             recipientBinding = alice.identity.identityId,
-            directionSequence = newBobConnectionManager.incrementSendSequence(relationshipId),
+            directionSequence = newBobConnectionManager.allocateSendSequence(relationshipId),
             messageType = MessageType.TEXT,
             timestamp = now,
             payload = "Bob is back online!".toByteArray(Charsets.UTF_8)

@@ -90,6 +90,9 @@ class MessageActionsTest {
                 .maxByOrNull { it.createdAt }
         }
 
+        override suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity> =
+            getMessagesForConversationDesc(conversationId).filter { it.direction == MessageDirection.INCOMING && it.status != "READ" }
+
         override suspend fun updateBodyAndEdit(
             messageId: String,
             newBody: String,
@@ -279,7 +282,7 @@ class MessageActionsTest {
     }
 
     class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
-        override suspend fun getPending(now: Long): List<OutboxEntity> {
+        override suspend fun getPending(): List<OutboxEntity> {
             return store.getPendingItems().map {
                 OutboxEntity(
                     deliveryId = it.deliveryId,

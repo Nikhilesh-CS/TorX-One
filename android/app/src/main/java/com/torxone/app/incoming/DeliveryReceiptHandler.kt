@@ -12,7 +12,11 @@ class DeliveryReceiptHandler(
     private val messageDao: MessageDao,
     private val outboxDao: OutboxDao,
     private val agent: TorXAgent,
-    private val groupService: com.torxone.app.groups.GroupService? = null
+    private val groupService: com.torxone.app.groups.GroupService? = null,
+    private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null,
+    private val connectionDao: com.torxone.app.data.dao.ConnectionDao? = null,
+    private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null,
+    private val transactionRunner: (suspend (suspend () -> Unit) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "DeliveryReceiptHandler"
@@ -24,6 +28,21 @@ class DeliveryReceiptHandler(
         val envPrefix = envId?.take(8) ?: "none"
         Log.i(TAG, "[ACK] Received ACK for message=${ack.originalMessageId.take(8)} env=$envPrefix")
 
+        // Check if this ACK corresponds to an initiator bootstrap confirmation (P0-7)
+        if (bootstrapStateDao != null) {
+            val bootstrapState = bootstrapStateDao.getByInviteId(ack.originalMessageId)
+                ?: bootstrapStateDao.getByRelationshipId(envelope.conversationId)
+            if (bootstrapState != null && bootstrapState.isInitiator && bootstrapState.status != com.torxone.app.data.entity.BootstrapStatus.ACTIVE) {
+                Log.i(TAG, "[BOOTSTRAP CONFIRMED] Initiator received confirmation for invite=${bootstrapState.inviteId} rel=${bootstrapState.relationshipId}")
+                val runner = transactionRunner ?: { block -> block() }
+                runner {
+                    connectionDao?.updateStateByRelationship(bootstrapState.relationshipId, "ACTIVE")
+                    pairRelationshipDao?.updateState(bootstrapState.relationshipId, "ACTIVE")
+                    bootstrapStateDao.updateStatus(bootstrapState.relationshipId, com.torxone.app.data.entity.BootstrapStatus.ACTIVE)
+                }
+            }
+        }
+
         val isGroup = groupService?.isGroupMessage(ack.originalMessageId) ?: false
         if (!isGroup) {
             // 1. Mark 1:1 message as DELIVERED in Room
@@ -32,11 +51,14 @@ class DeliveryReceiptHandler(
             // 2. Remove exact outbox item
             if (!envId.isNullOrBlank()) {
                 outboxDao.removeByDeliveryId(envId)
+                agent.markDeliveryAcknowledged(envId, ack.originalMessageId)
             }
-            outboxDao.removeByMessageId(ack.originalMessageId)
-
-            // 3. Notify agent
-            agent.markDelivered(ack.originalMessageId)
+            if (!envId.isNullOrBlank()) {
+                agent.markDeliveryAcknowledged(envId, ack.originalMessageId)
+            } else {
+                outboxDao.removeByMessageId(ack.originalMessageId)
+                agent.markDelivered(ack.originalMessageId)
+            }
         } else {
             // Phase 13: Group message exact delivery ACK semantics
             // Remove ONLY this exact recipient's delivery from outbox

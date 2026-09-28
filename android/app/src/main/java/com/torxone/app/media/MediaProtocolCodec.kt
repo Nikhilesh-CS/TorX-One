@@ -9,6 +9,10 @@ import java.io.DataOutputStream
  * Deterministic binary serialization for media descriptors and chunk control packets.
  */
 object MediaProtocolCodec {
+    const val MAX_CHUNK_BYTES = 16 * 1024
+    const val MAX_CHUNK_COUNT = 65_536
+    const val MAX_MEDIA_BYTES = 1L shl 30
+    private const val MAX_CONTROL_ID_LENGTH = 128
 
     private const val DESCRIPTOR_MAGIC = 0x54584D44 // "TXMD"
     private const val CHUNK_MAGIC = 0x54584D43      // "TXMC"
@@ -20,6 +24,11 @@ object MediaProtocolCodec {
     // ─── MediaDescriptor ──────────────────────────────────────────────
 
     fun encodeDescriptor(d: MediaDescriptor): ByteArray {
+        require(d.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(d.fileSize in 1..MAX_MEDIA_BYTES && d.totalChunks in 1..MAX_CHUNK_COUNT)
+        require(d.chunkSize in 1..MAX_CHUNK_BYTES)
+        require(d.totalChunks.toLong() == (d.fileSize + 28L + d.chunkSize - 1) / d.chunkSize)
+        require(d.encryptedSha256.matches(Regex("[A-Fa-f0-9]{64}")))
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(DESCRIPTOR_MAGIC)
@@ -42,6 +51,7 @@ object MediaProtocolCodec {
     }
 
     fun decodeDescriptor(bytes: ByteArray): MediaDescriptor {
+        require(bytes.size <= 48 * 1024) { "Media descriptor too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == DESCRIPTOR_MAGIC) { "Invalid MediaDescriptor magic header" }
@@ -66,6 +76,15 @@ object MediaProtocolCodec {
         val h = dis.readInt()
         val height = if (h < 0) null else h
 
+        require(dis.available() == 0) { "Trailing bytes in media descriptor" }
+        require(mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid media ID" }
+        require(fileSize in 1..MAX_MEDIA_BYTES) { "Invalid media size" }
+        require(totalChunks in 1..MAX_CHUNK_COUNT && chunkSize in 1..MAX_CHUNK_BYTES) { "Invalid media chunk geometry" }
+        require(totalChunks.toLong() == (fileSize + 28L + chunkSize - 1) / chunkSize) { "Chunk count does not match media size" }
+        require(encryptedSha256.matches(Regex("[A-Fa-f0-9]{64}"))) { "Invalid media hash" }
+        require(java.util.Base64.getDecoder().decode(mediaKeyBase64).size == 32) { "Invalid media key length" }
+        require(fileName.isNotBlank() && fileName.length <= 255 && '/' !in fileName && '\\' !in fileName && fileName != "." && fileName != "..") { "Invalid media file name" }
+        require(mimeType.length <= 128) { "Invalid MIME type" }
         return MediaDescriptor(
             mediaId = mediaId,
             type = type,
@@ -87,6 +106,9 @@ object MediaProtocolCodec {
     // ─── MediaChunkPayload ────────────────────────────────────────────
 
     fun encodeChunk(chunk: MediaChunkPayload): ByteArray {
+        require(chunk.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(chunk.totalChunks in 1..MAX_CHUNK_COUNT && chunk.chunkIndex in 0 until chunk.totalChunks)
+        require(chunk.chunkData.size in 1..MAX_CHUNK_BYTES)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(CHUNK_MAGIC)
@@ -100,6 +122,7 @@ object MediaProtocolCodec {
     }
 
     fun decodeChunk(bytes: ByteArray): MediaChunkPayload {
+        require(bytes.size <= MAX_CHUNK_BYTES + 512) { "Media chunk too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == CHUNK_MAGIC) { "Invalid MediaChunk magic header" }
@@ -108,8 +131,12 @@ object MediaProtocolCodec {
         val chunkIndex = dis.readInt()
         val totalChunks = dis.readInt()
         val dataSize = dis.readInt()
+        require(mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid media ID" }
+        require(totalChunks in 1..MAX_CHUNK_COUNT && chunkIndex in 0 until totalChunks) { "Invalid chunk index/count" }
+        require(dataSize in 1..MAX_CHUNK_BYTES && dataSize == dis.available()) { "Invalid chunk data size" }
         val chunkData = ByteArray(dataSize)
         dis.readFully(chunkData)
+        require(dis.available() == 0) { "Trailing bytes in media chunk" }
 
         return MediaChunkPayload(
             mediaId = mediaId,
@@ -144,6 +171,9 @@ object MediaProtocolCodec {
     // ─── MediaResumeRequest ───────────────────────────────────────────
 
     fun encodeResumeRequest(req: MediaResumeRequest): ByteArray {
+        require(req.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(req.missingChunkIndices.size <= MAX_CHUNK_COUNT && req.missingChunkIndices.all { it >= 0 })
+        require(req.missingChunkIndices.distinct().size == req.missingChunkIndices.size)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(RESUME_MAGIC)
@@ -157,15 +187,19 @@ object MediaProtocolCodec {
     }
 
     fun decodeResumeRequest(bytes: ByteArray): MediaResumeRequest {
+        require(bytes.size <= MAX_CHUNK_COUNT * 4 + 256) { "Resume request too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == RESUME_MAGIC) { "Invalid MediaResumeRequest magic header" }
         val mediaId = dis.readUTF()
         val count = dis.readInt()
+        require(count in 0..MAX_CHUNK_COUNT && count <= dis.available() / 4) { "Invalid resume index count" }
         val indices = ArrayList<Int>(count)
         for (i in 0 until count) {
             indices.add(dis.readInt())
         }
+        require(dis.available() == 0 && mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid resume request" }
+        require(indices.all { it >= 0 } && indices.distinct().size == indices.size) { "Invalid resume indices" }
         return MediaResumeRequest(
             mediaId = mediaId,
             missingChunkIndices = indices

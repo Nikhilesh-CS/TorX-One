@@ -29,6 +29,7 @@ import com.torxone.app.data.entity.ConversationType
 import com.torxone.app.identity.TorXIdentity
 import com.torxone.app.media.RealVoiceNoteRecorder
 import com.torxone.app.profile.SettingsViewModel
+import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.ui.components.ContactInviteDialog
 import com.torxone.app.ui.permissions.PermissionHelper
 import com.torxone.app.ui.screens.*
@@ -91,6 +92,17 @@ fun TorXOneApp() {
     val resolved = onboardingComplete ?: return
 
     val appInitState by app.initState.collectAsState()
+    if (resolved && appInitState is TorXOneApplication.AppInitState.Failed) {
+        val error = (appInitState as TorXOneApplication.AppInitState.Failed).error
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("TorX One could not safely initialize.", style = MaterialTheme.typography.titleMedium)
+                Text(error.message ?: "Initialization failed. Your data has not been opened.")
+                Button(onClick = { (context as? android.app.Activity)?.recreate() }) { Text("Retry") }
+            }
+        }
+        return
+    }
     if (resolved && appInitState is TorXOneApplication.AppInitState.Initializing) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -160,6 +172,9 @@ fun TorXOneApp() {
     val fragmentActivity = context as? FragmentActivity
     val settingsState by settingsViewModel.uiState.collectAsState()
     var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
+    SideEffect {
+        AppSettingsRepository.appLockGate = { isAppUnlocked }
+    }
     var lockErrorMessage by remember { mutableStateOf<String?>(null) }
 
     // Screen Security: enforce FLAG_SECURE on window
@@ -343,12 +358,10 @@ fun TorXOneApp() {
             LandingScreen(
                 onComplete = { displayName ->
                     coroutineScope.launch {
-                        // Save profile to DataStore
+                        // Durably create the authoritative identity before marking onboarding complete.
+                        app.identityRepository.createAndPublishIdentity(displayName)
                         app.settingsRepository.updateProfile(displayName = displayName)
                         app.settingsRepository.completeOnboarding()
-
-                        // Create and publish authoritative cryptographic identity immediately
-                        app.identityRepository.createAndPublishIdentity(displayName)
 
                         screenStack = emptyList()
                         currentScreen = Screen.ConversationList

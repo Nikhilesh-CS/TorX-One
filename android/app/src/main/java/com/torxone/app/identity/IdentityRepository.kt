@@ -12,6 +12,7 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.withLock
 
 sealed interface IdentityState {
     data object NoIdentity : IdentityState
@@ -47,9 +48,11 @@ interface IdentityRepository {
 class KeystoreIdentityRepository(
     private val context: Context,
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
-    private val allowInsecureFallback: Boolean = false
+    private val allowInsecureFallback: Boolean = false,
+    val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector()
 ) : IdentityRepository {
 
+    private val identityMutex = kotlinx.coroutines.sync.Mutex()
     private val _identityState = MutableStateFlow<IdentityState>(IdentityState.NoIdentity)
     override val identityState: StateFlow<IdentityState> = _identityState.asStateFlow()
 
@@ -78,7 +81,23 @@ class KeystoreIdentityRepository(
         }
     }
 
-    override suspend fun createIdentity(displayName: String): TorXIdentity = withContext(Dispatchers.IO) {
+    override suspend fun createIdentity(displayName: String): TorXIdentity = identityMutex.withLock {
+        loadIdentityInternal() ?: createIdentityLocked(displayName)
+    }
+
+    override suspend fun createAndPublishIdentity(displayName: String): TorXIdentity = identityMutex.withLock {
+        loadIdentityInternal() ?: createIdentityLocked(displayName)
+    }
+
+    override suspend fun ensureIdentity(displayName: String): TorXIdentity = identityMutex.withLock {
+        loadIdentityInternal() ?: createIdentityLocked(displayName)
+    }
+
+    suspend fun resetAndRecreateIdentity(displayName: String): TorXIdentity = identityMutex.withLock {
+        createIdentityLocked(displayName)
+    }
+
+    private suspend fun createIdentityLocked(displayName: String): TorXIdentity = withContext(Dispatchers.IO) {
         _identityState.value = IdentityState.Loading
         val signingPair = IdentityCrypto.generateEd25519KeyPair()
         val encryptionPair = IdentityCrypto.generateX25519KeyPair()
@@ -99,15 +118,6 @@ class KeystoreIdentityRepository(
         identity
     }
 
-    override suspend fun createAndPublishIdentity(displayName: String): TorXIdentity {
-        return createIdentity(displayName)
-    }
-
-    override suspend fun ensureIdentity(displayName: String): TorXIdentity {
-        val existing = loadIdentity()
-        return existing ?: createAndPublishIdentity(displayName)
-    }
-
     override fun requireLocalIdentityId(): String {
         return when (val state = _identityState.value) {
             is IdentityState.Ready -> state.identity.identityId
@@ -118,7 +128,15 @@ class KeystoreIdentityRepository(
 
     override fun getIdentityState(): IdentityState = _identityState.value
 
-    override suspend fun loadIdentity(): TorXIdentity? = withContext(Dispatchers.IO) {
+    override suspend fun loadIdentity(): TorXIdentity? = identityMutex.withLock {
+        loadIdentityInternal()
+    }
+
+    override suspend fun createContactInvite(): ContactInviteV1 = identityMutex.withLock {
+        createContactInviteLocked()
+    }
+
+    private suspend fun loadIdentityInternal(): TorXIdentity? = withContext(Dispatchers.IO) {
         cachedIdentity?.let {
             if (_identityState.value !is IdentityState.Ready) {
                 _identityState.value = IdentityState.Ready(it)
@@ -167,8 +185,8 @@ class KeystoreIdentityRepository(
         IdentityCrypto.signEd25519(identity.signingPrivateKey, data)
     }
 
-    override suspend fun createContactInvite(): ContactInviteV1 = withContext(Dispatchers.Default) {
-        val identity = loadIdentity() ?: throw IllegalStateException("Identity not initialized")
+    private suspend fun createContactInviteLocked(): ContactInviteV1 = withContext(Dispatchers.Default) {
+        val identity = loadIdentityInternal() ?: throw IllegalStateException("Identity not initialized")
         val ephemeralBootstrapPair = IdentityCrypto.generateX25519KeyPair()
 
         val inviteId = UUID.randomUUID().toString()
@@ -194,9 +212,10 @@ class KeystoreIdentityRepository(
             com.torxone.app.data.entity.PendingInviteEntity(
                 inviteId = inviteId,
                 ephemeralPublicKey = ephemeralBootstrapPair.publicKey,
-                ephemeralPrivateKey = ephemeralBootstrapPair.privateKey,
+                ephemeralPrivateKey = keyProtector.wrap(ephemeralBootstrapPair.privateKey),
                 createdAt = now,
-                expiresAt = expiresAt
+                expiresAt = expiresAt,
+                cryptoFormatVersion = 1
             )
         )
 
@@ -217,11 +236,11 @@ class KeystoreIdentityRepository(
     override suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray? = withContext(Dispatchers.IO) {
         val invite = pendingInviteDao?.getById(inviteId) ?: return@withContext null
         if (System.currentTimeMillis() > invite.expiresAt) return@withContext null
-        invite.ephemeralPrivateKey
+        if (invite.cryptoFormatVersion == 0) invite.ephemeralPrivateKey else keyProtector.unwrap(invite.ephemeralPrivateKey)
     }
 
     private fun saveIdentity(identity: TorXIdentity) {
-        prefs.edit()
+        val committed = prefs.edit()
             .putString("identity_id", identity.identityId)
             .putString("display_name", identity.displayName)
             .putString("sign_pub", Base64.getEncoder().encodeToString(identity.signingPublicKey))
@@ -229,6 +248,9 @@ class KeystoreIdentityRepository(
             .putString("enc_pub", Base64.getEncoder().encodeToString(identity.encryptionPublicKey))
             .putString("enc_priv", Base64.getEncoder().encodeToString(identity.encryptionPrivateKey))
             .putLong("created_at", identity.createdAt)
-            .apply()
+            .commit()
+        if (!committed) {
+            throw SecurityException("Failed to durably commit identity keys to Keystore storage")
+        }
     }
 }

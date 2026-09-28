@@ -46,6 +46,12 @@ android {
         compose = true
     }
 
+    packaging {
+        resources {
+            pickFirsts += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
+
     sourceSets {
         getByName("test").assets.srcDir("$projectDir/schemas")
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
@@ -87,11 +93,12 @@ dependencies {
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
-    implementation("net.zetetic:android-database-sqlcipher:4.5.4")
+    implementation("net.zetetic:sqlcipher-android:4.10.0@aar")
+    implementation("androidx.sqlite:sqlite:2.7.0")
 
     // ── Security / Crypto ──
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("androidx.security:security-crypto:1.1.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85")
 
     // ── Nearby Connections ──
     implementation("com.google.android.gms:play-services-nearby:19.3.0")

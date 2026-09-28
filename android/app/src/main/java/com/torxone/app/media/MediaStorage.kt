@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.UUID
 
 /**
  * App-private storage authority for encrypted and decrypted media files.
@@ -38,7 +39,12 @@ class MediaStorage(
      * Allocates or gets the temporary encrypted file for assembling chunks of an incoming transfer.
      */
     fun getTempEncryptedFile(mediaId: String): File {
-        return File(tempTransfersDir, "$mediaId.enc")
+        return File(tempTransfersDir, "${canonicalMediaId(mediaId)}.enc")
+    }
+
+    private fun canonicalMediaId(mediaId: String): String {
+        require(mediaId.length in 32..36 && mediaId.matches(Regex("[A-Fa-f0-9-]{32,36}"))) { "Invalid media ID" }
+        return UUID.fromString(mediaId).toString()
     }
 
     /**
@@ -50,6 +56,9 @@ class MediaStorage(
         chunkSize: Int,
         chunkData: ByteArray
     ) {
+        require(chunkSize in 1..MediaProtocolCodec.MAX_CHUNK_BYTES)
+        require(chunkIndex in 0 until MediaProtocolCodec.MAX_CHUNK_COUNT)
+        require(chunkData.size in 1..chunkSize)
         val file = getTempEncryptedFile(mediaId)
         RandomAccessFile(file, "rw").use { raf ->
             val offset = chunkIndex.toLong() * chunkSize.toLong()
@@ -67,6 +76,9 @@ class MediaStorage(
         chunkSize: Int,
         totalBytes: Long
     ): ByteArray {
+        require(chunkSize in 1..MediaProtocolCodec.MAX_CHUNK_BYTES)
+        require(chunkIndex in 0 until MediaProtocolCodec.MAX_CHUNK_COUNT)
+        require(totalBytes in 1..MediaProtocolCodec.MAX_MEDIA_BYTES)
         val offset = chunkIndex.toLong() * chunkSize.toLong()
         val remaining = totalBytes - offset
         val actualChunkSize = Math.min(chunkSize.toLong(), remaining).toInt()
@@ -83,8 +95,9 @@ class MediaStorage(
      * Saves decrypted media bytes into app-private incoming directory.
      */
     fun saveIncomingFile(mediaId: String, fileName: String, data: ByteArray): File {
+        val canonicalId = canonicalMediaId(mediaId)
         val safeName = fileName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
-        val destination = File(incomingDir, "${mediaId}_$safeName")
+        val destination = File(incomingDir, "${canonicalId}_$safeName")
         destination.writeBytes(data)
         return destination
     }
@@ -93,7 +106,7 @@ class MediaStorage(
      * Saves outgoing encrypted file in temp or outgoing directory.
      */
     fun saveOutgoingEncryptedFile(mediaId: String, data: ByteArray): File {
-        val file = File(tempTransfersDir, "$mediaId.enc")
+        val file = getTempEncryptedFile(mediaId)
         file.writeBytes(data)
         return file
     }
@@ -146,7 +159,9 @@ class MediaStorage(
             val files = tempTransfersDir.listFiles() ?: return
             for (file in files) {
                 val mediaId = file.name.removeSuffix(".enc")
-                if (!activeMediaIds.contains(mediaId)) {
+                if (activeMediaIds.none { active ->
+                        runCatching { canonicalMediaId(active) }.getOrNull() == mediaId
+                    }) {
                     file.delete()
                 }
             }

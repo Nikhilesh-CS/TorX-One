@@ -16,6 +16,7 @@ import com.torxone.app.protocol.*
 import com.torxone.app.transport.TransportType
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 12-Stage Incoming Dispatcher pipeline.
@@ -66,6 +67,8 @@ class IncomingDispatcher(
     companion object {
         private const val TAG = "IncomingDispatcher"
     }
+
+    private val processingEnvelopeIds = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun dispatch(rawBytes: ByteArray, transportType: TransportType): Boolean {
         // Stage 1: Validate transport frame length
@@ -239,7 +242,7 @@ class IncomingDispatcher(
 
                     connectionManager.registerConnection(conn)
 
-                    sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorDisplayName)
+                    sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorIdentityId)
 
                     Log.i(TAG, "[BOOTSTRAP SUCCESS] Established bilateral relationship with ${bootstrapPayload.initiatorDisplayName}")
                     return true
@@ -251,17 +254,19 @@ class IncomingDispatcher(
         }
 
         // Stage 4: Authenticate outer capability via constant-time HMAC-SHA256
-        if (connection.recvAuth.isNotEmpty()) {
-            val expectedAuth = IdentityCrypto.computeQueueAuthenticator(
-                queueAuthSecret = connection.recvAuth,
-                envelopeId = opaqueEnvelope.envelopeId,
-                queueAddress = opaqueEnvelope.queueAddress,
-                ciphertext = opaqueEnvelope.opaqueCiphertext
-            )
-            if (!MessageDigest.isEqual(expectedAuth, opaqueEnvelope.queueAuthenticator)) {
-                Log.e(TAG, "[STAGE 4 FAIL] Outer queue HMAC authenticator verification failed")
-                return false
-            }
+        if (connection.recvAuth.size != 32 || opaqueEnvelope.queueAuthenticator.size != 32) {
+            Log.e(TAG, "[STAGE 4 FAIL CLOSED] Established connection or envelope has invalid queue-authenticator length")
+            return false
+        }
+        val expectedAuth = IdentityCrypto.computeQueueAuthenticator(
+            queueAuthSecret = connection.recvAuth,
+            envelopeId = opaqueEnvelope.envelopeId,
+            queueAddress = opaqueEnvelope.queueAddress,
+            ciphertext = opaqueEnvelope.opaqueCiphertext
+        )
+        if (!MessageDigest.isEqual(expectedAuth, opaqueEnvelope.queueAuthenticator)) {
+            Log.e(TAG, "[STAGE 4 FAIL] Outer queue HMAC authenticator verification failed")
+            return false
         }
 
         // Stage 5: Dedupe transport envelope
@@ -272,7 +277,6 @@ class IncomingDispatcher(
             sendAck(connection, existingProcessed.logicalMessageId, opaqueEnvelope.envelopeId)
             return true
         }
-
         // Stage 6: Deserialize ciphertext
         val localId = localIdentityIdProvider()
         if (localId.isNullOrBlank()) {
@@ -288,7 +292,11 @@ class IncomingDispatcher(
         }
         val aad = "torx-aad-v1:${connection.generation}:${opaqueEnvelope.queueAddress}".toByteArray(Charsets.UTF_8)
 
+        val processingKey = "${connection.relationshipId}:${opaqueEnvelope.envelopeId}"
+        if (!processingEnvelopeIds.add(processingKey)) return false
+
         var decryptedEnvelope: SecureEnvelope? = null
+        var requiresSequence = false
 
         // Stage 6 to 11: Decrypt & Atomic Commit Boundary
         try {
@@ -302,40 +310,38 @@ class IncomingDispatcher(
 
                 // Stage 8: Validate secure envelope
                 val now = System.currentTimeMillis()
-                val skew = Math.abs(now - secureEnvelope.timestamp)
-                if (skew > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS) {
+                val timestamp = secureEnvelope.timestamp
+                if (timestamp <= 0L || (timestamp < now && now - timestamp > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS) ||
+                    (timestamp > now && timestamp - now > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS)
+                ) {
+                    val skew = if (timestamp <= 0L) Long.MAX_VALUE else if (timestamp < now) now - timestamp else timestamp - now
                     throw IllegalStateException("Timestamp skew $skew exceeds allowed ${ProtocolLimits.MAX_TIMESTAMP_SKEW_MS}")
                 }
 
-                if (secureEnvelope.recipientBinding.isNotEmpty() && secureEnvelope.recipientBinding != localId) {
+                if (secureEnvelope.recipientBinding.isBlank() || secureEnvelope.recipientBinding != localId) {
                     throw IllegalStateException("Recipient binding mismatch: expected $localId, got ${secureEnvelope.recipientBinding}")
                 }
 
                 // Stage 8b: Sender-Authentication Invariant (Phase 2)
                 // Bind remote identity to authenticated relationship
-                if (contactDao != null) {
-                    val contact = contactDao.getByRelationshipId(connection.relationshipId)
-                    if (contact == null) {
-                        throw IllegalStateException("Sender-Authentication failure: No contact found for relationship ${connection.relationshipId}")
-                    }
-                    if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
-                        throw IllegalStateException("Sender-Authentication failure: Contact for relationship ${connection.relationshipId} has uninitialized/unknown remote identity")
-                    }
-                    if (secureEnvelope.senderIdentity.isBlank()) {
-                        throw IllegalStateException("Sender-Authentication failure: Envelope senderIdentity is blank")
-                    }
-                    if (secureEnvelope.senderIdentity != contact.remoteIdentityId) {
-                        throw IllegalStateException("Sender-Authentication failure: Envelope senderIdentity '${secureEnvelope.senderIdentity}' does not match bound relationship remoteIdentityId '${contact.remoteIdentityId}'")
-                    }
+                val contacts = contactDao
+                    ?: throw IllegalStateException("Sender-Authentication failure: contact identity binding is unavailable")
+                val contact = contacts.getByRelationshipId(connection.relationshipId)
+                    ?: throw IllegalStateException("Sender-Authentication failure: No contact found for relationship ${connection.relationshipId}")
+                if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
+                    throw IllegalStateException("Sender-Authentication failure: Contact identity is not initialized")
+                }
+                if (secureEnvelope.senderIdentity.isBlank() || secureEnvelope.senderIdentity != contact.remoteIdentityId) {
+                    throw IllegalStateException("Sender-Authentication failure: envelope sender does not match authenticated relationship")
                 }
 
                 // Stage 8c: Validate directional sequence requirements (read current sequence, validate incoming > current, DO NOT mutate memory or DB yet)
-                val requiresSequence = secureEnvelope.messageType.requiresApplicationSequence()
+                requiresSequence = secureEnvelope.messageType.requiresApplicationSequence()
                 if (requiresSequence) {
                     if (secureEnvelope.directionSequence <= 0) {
                         throw IllegalStateException("Message type ${secureEnvelope.messageType} requires positive directional sequence, got ${secureEnvelope.directionSequence}")
                     }
-                    val accepted = connectionManager.validateRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                    val accepted = connectionManager.reserveRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
                     if (!accepted) {
                         throw IllegalStateException("Non-monotonic directional sequence: received ${secureEnvelope.directionSequence}, current ${connection.recvSequence}")
                     }
@@ -345,6 +351,9 @@ class IncomingDispatcher(
                 if (secureEnvelope.groupMetadata != null) {
                     val gMeta = secureEnvelope.groupMetadata
                     if (groupDao != null && groupMemberDao != null) {
+                        if (gMeta.groupId.isBlank() || secureEnvelope.conversationId != gMeta.groupId) {
+                            throw IllegalStateException("Group envelope metadata does not match its conversation binding")
+                        }
                         // Only validate membership for non-invite messages
                         if (secureEnvelope.messageType != MessageType.GROUP_CREATE &&
                             secureEnvelope.messageType != MessageType.GROUP_MEMBER_INVITE
@@ -390,51 +399,51 @@ class IncomingDispatcher(
                             typingHandler?.handleTypingEvent(connection, secureEnvelope)
                         }
                         MessageType.REACTION -> {
-                            reactionHandler?.handleReaction(secureEnvelope)
+                            requireHandlerSuccess(reactionHandler?.handleReaction(secureEnvelope), "REACTION")
                         }
                         MessageType.EDIT -> {
-                            editHandler?.handleEdit(secureEnvelope)
+                            requireHandlerSuccess(editHandler?.handleEdit(secureEnvelope), "EDIT")
                         }
                         MessageType.DELETE -> {
-                            deleteHandler?.handleDelete(secureEnvelope)
+                            requireHandlerSuccess(deleteHandler?.handleDelete(secureEnvelope), "DELETE")
                         }
                         MessageType.IMAGE,
                         MessageType.VIDEO,
                         MessageType.AUDIO,
                         MessageType.FILE,
                         MessageType.VOICE_NOTE -> {
-                            mediaHandler?.handleMediaDescriptor(connection, secureEnvelope)
+                            requireHandlerSuccess(mediaHandler?.handleMediaDescriptor(connection, secureEnvelope), "MEDIA_DESCRIPTOR")
                         }
                         MessageType.FILE_PROGRESS -> {
-                            mediaHandler?.handleMediaChunk(connection, secureEnvelope)
+                            requireHandlerSuccess(mediaHandler?.handleMediaChunk(connection, secureEnvelope), "MEDIA_CHUNK")
                         }
                         MessageType.FILE_COMPLETE -> {
-                            mediaHandler?.handleMediaComplete(connection, secureEnvelope)
+                            requireHandlerSuccess(mediaHandler?.handleMediaComplete(connection, secureEnvelope), "MEDIA_COMPLETE")
                         }
                         MessageType.FILE_RESUME -> {
-                            mediaHandler?.handleMediaResume(connection, secureEnvelope)
+                            requireHandlerSuccess(mediaHandler?.handleMediaResume(connection, secureEnvelope), "MEDIA_RESUME")
                         }
                         MessageType.FILE_CANCEL -> {
-                            mediaHandler?.handleMediaCancel(secureEnvelope)
+                            requireHandlerSuccess(mediaHandler?.handleMediaCancel(connection, secureEnvelope), "MEDIA_CANCEL")
                         }
                         MessageType.GROUP_CREATE,
                         MessageType.GROUP_MEMBER_INVITE -> {
-                            groupHandler?.handleGroupCreateOrInvite(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleGroupCreateOrInvite(connection, secureEnvelope), "GROUP_INVITE")
                         }
                         MessageType.GROUP_MEMBER_ACCEPT -> {
-                            groupHandler?.handleMemberJoined(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleMemberJoined(connection, secureEnvelope), "GROUP_MEMBER_ACCEPT")
                         }
                         MessageType.GROUP_MEMBER_REMOVE -> {
-                            groupHandler?.handleMemberRemove(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleMemberRemove(connection, secureEnvelope), "GROUP_MEMBER_REMOVE")
                         }
                         MessageType.GROUP_ROLE_CHANGE -> {
-                            groupHandler?.handleRoleChange(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleRoleChange(connection, secureEnvelope), "GROUP_ROLE_CHANGE")
                         }
                         MessageType.GROUP_NAME_CHANGE -> {
-                            groupHandler?.handleNameChange(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleNameChange(connection, secureEnvelope), "GROUP_NAME_CHANGE")
                         }
                         MessageType.GROUP_AVATAR_CHANGE -> {
-                            groupHandler?.handleAvatarChange(connection, secureEnvelope)
+                            requireHandlerSuccess(groupHandler?.handleAvatarChange(connection, secureEnvelope), "GROUP_AVATAR_CHANGE")
                         }
                         MessageType.CALL_OFFER,
                         MessageType.CALL_RINGING,
@@ -444,13 +453,15 @@ class IncomingDispatcher(
                         MessageType.CALL_END,
                         MessageType.CALL_DECLINE,
                         MessageType.CALL_BUSY -> {
-                            callHandler?.handleCallSignal(connection, secureEnvelope)
+                            if (callHandler == null) throw IllegalStateException("Call handler unavailable")
+                            callHandler.handleCallSignal(connection, secureEnvelope)
                         }
                         MessageType.PROFILE_UPDATE -> {
+                            if (contactDao == null || conversationDao == null) throw IllegalStateException("Profile update dependencies unavailable")
                             handleProfileUpdate(connection, secureEnvelope)
                         }
                         else -> {
-                            Log.w(TAG, "Unhandled message type ${secureEnvelope.messageType}")
+                            throw IllegalStateException("Unsupported message type ${secureEnvelope.messageType}")
                         }
                     }
 
@@ -464,16 +475,17 @@ class IncomingDispatcher(
                     )
                 }
 
-                // Stage 11b: Only after transaction succeeds, update in-memory Connection state
-                if (requiresSequence) {
-                    connectionManager.commitRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
-                }
-
                 decryptedEnvelope = secureEnvelope
             }
+            if (requiresSequence) {
+                connectionManager.commitRecvSequence(connection.relationshipId, decryptedEnvelope!!.directionSequence)
+            }
         } catch (e: Exception) {
+            connectionManager.releaseRecvSequenceReservation(connection.relationshipId)
             Log.e(TAG, "[STAGE 6-11 FAIL] Decryption or atomic commit failed: ${e.message}")
             return false
+        } finally {
+            processingEnvelopeIds.remove(processingKey)
         }
 
         // Stage 12: If TEXT or Media descriptor, send secure authenticated ACK
@@ -495,9 +507,13 @@ class IncomingDispatcher(
         connection: Connection,
         originalMessageId: String,
         originalEnvelopeId: String,
-        recipientBinding: String = ""
+        recipientBinding: String? = null
     ) {
         try {
+            val boundRecipient = recipientBinding
+                ?: contactDao?.getByRelationshipId(connection.relationshipId)?.remoteIdentityId
+                ?: throw IllegalStateException("Cannot send an established ACK without a verified remote identity binding")
+            require(boundRecipient.isNotBlank() && boundRecipient != com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN)
             val ack = DeliveryAck(
                 originalMessageId = originalMessageId,
                 originalEnvelopeId = originalEnvelopeId,
@@ -508,7 +524,7 @@ class IncomingDispatcher(
                 logicalMessageId = UUID.randomUUID().toString(),
                 conversationId = "",
                 senderIdentity = localIdentityIdProvider() ?: "",
-                recipientBinding = recipientBinding,
+                recipientBinding = boundRecipient,
                 messageType = MessageType.DELIVERY_ACK,
                 payload = ack.toByteArray()
             )
@@ -553,5 +569,11 @@ class IncomingDispatcher(
             conversationDao?.upsert(conv.copy(title = newDisplayName))
         }
         Log.i(TAG, "[PROFILE_UPDATE] Updated contact ${contact.contactId.take(8)} displayName to '$newDisplayName'")
+    }
+
+    private fun requireHandlerSuccess(result: Boolean?, handler: String) {
+        if (result != true) {
+            throw IllegalStateException("$handler handler did not apply the envelope; receive transaction must be retried")
+        }
     }
 }

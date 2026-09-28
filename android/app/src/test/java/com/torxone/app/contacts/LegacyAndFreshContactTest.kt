@@ -223,7 +223,7 @@ class LegacyAndFreshContactTest {
 
     class FakeOutboxDao : OutboxDao {
         val items = ConcurrentHashMap<String, OutboxEntity>()
-        override suspend fun getPending(now: Long): List<OutboxEntity> = items.values.toList()
+        override suspend fun getPending(): List<OutboxEntity> = items.values.toList()
         override suspend fun insert(item: OutboxEntity) { items[item.deliveryId] = item }
         override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
             items[deliveryId]?.let { items[deliveryId] = it.copy(status = status, updatedAt = now) }

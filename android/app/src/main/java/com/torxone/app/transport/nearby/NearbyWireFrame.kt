@@ -140,7 +140,7 @@ sealed class NearbyWireFrame {
 
         const val MAX_HELLO_FEATURES = 32
         const val MAX_FEATURE_STRING_LEN = 128
-        const val MAX_PAYLOAD_SIZE = 1_048_576
+        const val MAX_PAYLOAD_SIZE = MAX_DIRECT_FRAME_SIZE
         const val MIN_CHALLENGE_SIZE = 16
         const val MAX_CHALLENGE_SIZE = 64
         const val MIN_PROOF_SIZE = 16
@@ -201,17 +201,17 @@ sealed class NearbyWireFrame {
                             }
                             CTRL_PING -> Control.Ping
                             CTRL_PONG -> Control.Pong
-                            else -> Data(bytes)
+                            else -> throw IllegalArgumentException("Unknown control frame type: $ctrlType")
                         }
                     }
-                    else -> Data(bytes)
+                    else -> throw IllegalArgumentException("Unknown frame type: $frameType")
                 }
                 if (result !is Data || bytes[0] == FRAME_DATA) {
                     require(dis.available() == 0) { "Trailing unparsed bytes in wire frame" }
                 }
                 result
-            } catch (_: Exception) {
-                Data(bytes)
+            } catch (e: Exception) {
+                throw IllegalArgumentException("Malformed Nearby wire frame", e)
             }
         }
     }

@@ -32,7 +32,7 @@ import com.torxone.app.calls.CallHistoryDao
         ConsumedInviteEntity::class,
         BootstrapStateEntity::class
     ],
-    version = 9,
+    version = 11,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -113,6 +113,25 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `outbox` ADD COLUMN `application_sequence` INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE `sessions` ADD COLUMN `crypto_format_version` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `skipped_message_keys` ADD COLUMN `crypto_format_version` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `pair_relationships` ADD COLUMN `crypto_format_version` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `connections` ADD COLUMN `crypto_format_version` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `pending_invites` ADD COLUMN `crypto_format_version` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `outbox` ADD COLUMN `relationship_id` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("UPDATE `outbox` SET `relationship_id` = COALESCE((SELECT `relationship_id` FROM `connections` WHERE `connections`.`connection_id` = `outbox`.`connection_id`), '') WHERE `application_sequence` IS NOT NULL")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_outbox_relationship_id_application_sequence` ON `outbox` (`relationship_id`, `application_sequence`)")
+            }
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider? = null
@@ -130,13 +149,14 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
 
             val provider = passphraseProvider ?: DatabasePassphraseProvider(context.applicationContext)
             try {
                 val passphrase = provider.getOrCreatePassphrase()
                 migratePlaintextIfNeeded(context.applicationContext, passphrase)
-                val factory = net.sqlcipher.database.SupportFactory(passphrase)
+                System.loadLibrary("sqlcipher")
+                val factory = net.zetetic.database.sqlcipher.SupportOpenHelperFactory(passphrase)
                 builder.openHelperFactory(factory)
             } catch (e: Exception) {
                 if (provider.allowInsecureFallback) {
@@ -167,28 +187,76 @@ abstract class TorXDatabase : RoomDatabase() {
             if (header.contentEquals(expectedPlainHeader)) {
                 android.util.Log.i("TorXDatabase", "Detected legacy plaintext SQLite database. Migrating to SQLCipher...")
                 try {
-                    net.sqlcipher.database.SQLiteDatabase.loadLibs(context)
+                    System.loadLibrary("sqlcipher")
                     val tempEncryptedFile = java.io.File(dbFile.parentFile, "torxone_encrypted.db")
                     if (tempEncryptedFile.exists()) tempEncryptedFile.delete()
 
-                    val plaintextDb = net.sqlcipher.database.SQLiteDatabase.openOrCreateDatabase(dbFile, "", null)
                     val hexKey = passphrase.joinToString("") { "%02x".format(it) }
-                    plaintextDb.rawExecSQL("ATTACH DATABASE '${tempEncryptedFile.absolutePath}' AS encrypted KEY \"x'$hexKey'\";")
-                    plaintextDb.rawExecSQL("SELECT sqlcipher_export('encrypted');")
-                    plaintextDb.rawExecSQL("DETACH DATABASE encrypted;")
-                    plaintextDb.close()
-
-                    val backupFile = java.io.File(dbFile.parentFile, "torxone.db.plain.bak")
-                    if (backupFile.exists()) backupFile.delete()
-                    if (dbFile.renameTo(backupFile)) {
-                        if (!tempEncryptedFile.renameTo(dbFile)) {
-                            backupFile.renameTo(dbFile)
-                            throw java.io.IOException("Failed to rename encrypted database to target")
+                    net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(
+                        dbFile, ByteArray(0), null, null, null
+                    ).use { plaintextDb ->
+                        val checkpoint = plaintextDb.rawQuery("PRAGMA wal_checkpoint(TRUNCATE);", null)
+                        try {
+                            if (!checkpoint.moveToFirst() || checkpoint.getInt(0) != 0) {
+                                throw java.io.IOException("Could not checkpoint legacy database WAL before encryption")
+                            }
+                        } finally {
+                            checkpoint.close()
                         }
+                        plaintextDb.execSQL("ATTACH DATABASE '${tempEncryptedFile.absolutePath}' AS encrypted KEY \"x'$hexKey'\";")
+                        plaintextDb.rawQuery("SELECT sqlcipher_export('encrypted');", null).use { it.moveToFirst() }
+                        plaintextDb.execSQL("DETACH DATABASE encrypted;")
                     }
+
+                    // Reopen encrypted temp DB using the intended key and verify
+                    val encryptedDb = net.zetetic.database.sqlcipher.SQLiteDatabase.openOrCreateDatabase(
+                        tempEncryptedFile, passphrase, null, null, null
+                    )
+                    try {
+                        val cursor = encryptedDb.rawQuery("PRAGMA integrity_check;", null)
+                        var integrityOk = false
+                        if (cursor.moveToFirst()) {
+                            val res = cursor.getString(0)
+                            integrityOk = res.equals("ok", ignoreCase = true)
+                        }
+                        cursor.close()
+                        if (!integrityOk) {
+                            throw SecurityException("SQLCipher exported database failed PRAGMA integrity_check")
+                        }
+                        val versionCursor = encryptedDb.rawQuery("PRAGMA user_version;", null)
+                        var userVersion = -1
+                        if (versionCursor.moveToFirst()) {
+                            userVersion = versionCursor.getInt(0)
+                        }
+                        versionCursor.close()
+                        if (userVersion <= 0) {
+                            throw SecurityException("Invalid user_version in migrated database")
+                        }
+                    } finally {
+                        encryptedDb.close()
+                    }
+
+                    // Sidecar handling
+                    val walFile = java.io.File(dbFile.parentFile, "torxone.db-wal")
+                    val shmFile = java.io.File(dbFile.parentFile, "torxone.db-shm")
+                    val journalFile = java.io.File(dbFile.parentFile, "torxone.db-journal")
+
+                    java.io.FileOutputStream(tempEncryptedFile, true).use { it.fd.sync() }
+                    // Replace atomically after verification. Keeping a plaintext backup would
+                    // leave a second, unencrypted copy of all account data on the device.
+                    java.nio.file.Files.move(
+                        tempEncryptedFile.toPath(),
+                        dbFile.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
+                    if (walFile.exists() && !walFile.delete()) throw java.io.IOException("Failed to remove legacy WAL sidecar")
+                    if (shmFile.exists() && !shmFile.delete()) throw java.io.IOException("Failed to remove legacy SHM sidecar")
+                    if (journalFile.exists() && !journalFile.delete()) throw java.io.IOException("Failed to remove legacy journal sidecar")
                     android.util.Log.i("TorXDatabase", "Plaintext SQLite database successfully migrated to encrypted SQLCipher.")
                 } catch (e: Exception) {
                     android.util.Log.e("TorXDatabase", "Failed to migrate plaintext database to SQLCipher: ${e.message}", e)
+                    throw SecurityException("Database encryption migration failed closed to prevent data compromise or corruption", e)
                 }
             }
         }
@@ -232,9 +300,12 @@ class DatabasePassphraseProvider(
         }
 
         val newPassphrase = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
-        prefs.edit()
+        val committed = prefs.edit()
             .putString("db_passphrase", java.util.Base64.getEncoder().encodeToString(newPassphrase))
-            .apply()
+            .commit()
+        if (!committed) {
+            throw SecurityException("Failed to durably commit database encryption passphrase to Keystore-backed storage")
+        }
         return newPassphrase
     }
 }

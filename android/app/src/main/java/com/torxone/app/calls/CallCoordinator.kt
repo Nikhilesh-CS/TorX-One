@@ -80,6 +80,12 @@ class CallCoordinator(
             }
         } else {
             Log.e(TAG, "Cannot create answer: missing remote SDP offer for ${session.callId}")
+            scope.launch { callManager.onCallFailed(session.callId, "Remote SDP offer is unavailable") }
+            webRtcClient.closePeerConnection(session.callId)
+            audioRouteManager.stopCallAudio()
+            callNotificationManager.cancelIncomingNotification()
+            TorXCallService.stop(context)
+            return
         }
         scope.launch {
             val contact = contactDao.getByRelationshipId(session.relationshipId)

@@ -186,7 +186,7 @@ data class ContactEntity(
  */
 @Entity(
     tableName = "outbox",
-    indices = [Index("status"), Index("logical_message_id")]
+    indices = [Index("status"), Index("logical_message_id"), Index(value = ["relationship_id", "application_sequence"])]
 )
 data class OutboxEntity(
     @PrimaryKey
@@ -234,7 +234,13 @@ data class OutboxEntity(
     val updatedAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "expects_ack")
-    val expectsAck: Boolean = true
+    val expectsAck: Boolean = true,
+
+    @ColumnInfo(name = "application_sequence")
+    val applicationSequence: Long? = null,
+
+    @ColumnInfo(name = "relationship_id", defaultValue = "''")
+    val relationshipId: String = ""
 ) {
     /**
      * Cryptographic semantic accessor: this field holds the shared secret (`sendAuth`)
@@ -302,7 +308,10 @@ data class PairRelationshipEntity(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "verified_at")
-    val verifiedAt: Long? = null
+    val verifiedAt: Long? = null,
+
+    @ColumnInfo(name = "crypto_format_version")
+    val cryptoFormatVersion: Int = 1
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -357,7 +366,10 @@ data class ConnectionDbEntity(
     val recvSequence: Long = 0L,
 
     @ColumnInfo(name = "created_at")
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "crypto_format_version")
+    val cryptoFormatVersion: Int = 1
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -414,7 +426,10 @@ data class SessionDbEntity(
     val state: String = "ACTIVE",
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "crypto_format_version")
+    val cryptoFormatVersion: Int = 1
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -452,7 +467,10 @@ data class SkippedKeyEntity(
     val messageKey: ByteArray,
 
     @ColumnInfo(name = "created_at")
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "crypto_format_version")
+    val cryptoFormatVersion: Int = 1
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -490,7 +508,10 @@ data class PendingInviteEntity(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "expires_at")
-    val expiresAt: Long
+    val expiresAt: Long,
+
+    @ColumnInfo(name = "crypto_format_version")
+    val cryptoFormatVersion: Int = 1
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -712,10 +733,13 @@ data class ConsumedInviteEntity(
 enum class BootstrapStatus {
     PENDING,
     LOCAL_ESTABLISHED,
+    CRYPTO_READY,
     BOOTSTRAP_QUEUED,
     REMOTE_CONFIRMED,
     ACTIVE,
-    FAILED
+    FAILED,
+    FAILED_RECOVERABLE,
+    FAILED_TERMINAL
 }
 
 @Entity(tableName = "bootstrap_states")
@@ -742,5 +766,3 @@ data class BootstrapStateEntity(
     @ColumnInfo(name = "error_message")
     val errorMessage: String? = null
 )
-
-

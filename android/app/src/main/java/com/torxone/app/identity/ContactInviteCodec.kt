@@ -33,6 +33,11 @@ object ContactInviteCodec {
         createdAt: Long,
         expiresAt: Long
     ): ByteArray {
+        require(protocolVersion == 1)
+        require(inviteId.length in 1..128 && identityId.length in 1..128)
+        require(displayName.length <= MAX_DISPLAY_NAME_LENGTH) { "Display name is not canonical" }
+        require(signingPublicKey.size == 32 && encryptionPublicKey.size == 32 && bootstrapEphemeralPublicKey.size == 32)
+        require(createdAt > 0 && expiresAt > createdAt && expiresAt - createdAt <= 30L * 24 * 60 * 60 * 1000)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
 
@@ -40,7 +45,7 @@ object ContactInviteCodec {
         dos.writeShort(protocolVersion)
         dos.writeUTF(inviteId)
         dos.writeUTF(identityId)
-        dos.writeUTF(displayName.take(MAX_DISPLAY_NAME_LENGTH))
+        dos.writeUTF(displayName)
         
         dos.writeShort(signingPublicKey.size)
         dos.write(signingPublicKey)
@@ -91,6 +96,7 @@ object ContactInviteCodec {
         if (bytes.size > MAX_INVITE_BYTES) {
             throw IllegalArgumentException("Invite payload exceeds maximum size")
         }
+        require(bytes.size >= 100) { "Invite payload is truncated" }
 
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
@@ -102,16 +108,21 @@ object ContactInviteCodec {
         val inviteId = dis.readUTF()
         val identityId = dis.readUTF()
         val displayName = dis.readUTF()
+        require(inviteId.length in 1..128 && identityId.length in 1..128)
+        require(displayName.length <= MAX_DISPLAY_NAME_LENGTH)
 
         val signKeyLen = dis.readShort().toInt()
+        require(signKeyLen == 32)
         val signingKey = ByteArray(signKeyLen)
         dis.readFully(signingKey)
 
         val encKeyLen = dis.readShort().toInt()
+        require(encKeyLen == 32)
         val encryptionKey = ByteArray(encKeyLen)
         dis.readFully(encryptionKey)
 
         val ephKeyLen = dis.readShort().toInt()
+        require(ephKeyLen == 32)
         val ephemeralKey = ByteArray(ephKeyLen)
         dis.readFully(ephemeralKey)
 
@@ -119,8 +130,11 @@ object ContactInviteCodec {
         val expiresAt = dis.readLong()
 
         val sigLen = dis.readShort().toInt()
+        require(sigLen == 64)
         val signature = ByteArray(sigLen)
         dis.readFully(signature)
+        require(dis.available() == 0) { "Trailing bytes in invite payload" }
+        require(createdAt > 0 && expiresAt > createdAt && expiresAt - createdAt <= 30L * 24 * 60 * 60 * 1000)
 
         return ContactInviteV1(
             protocolVersion = protocolVersion,
@@ -177,6 +191,12 @@ object ContactInviteCodec {
         if (invite.protocolVersion != 1) {
             return InviteValidationResult.Invalid(InviteValidationError.UNSUPPORTED_PROTOCOL)
         }
+
+        if (invite.displayName.length > MAX_DISPLAY_NAME_LENGTH ||
+            invite.inviteId.length !in 1..128 || invite.identityId.length !in 1..128 ||
+            invite.createdAt <= 0 || invite.expiresAt <= invite.createdAt ||
+            invite.expiresAt - invite.createdAt > 30L * 24 * 60 * 60 * 1000
+        ) return InviteValidationResult.Invalid(InviteValidationError.MALFORMED)
 
         if (invite.identitySigningPublicKey.size != 32 ||
             invite.identityEncryptionPublicKey.size != 32 ||

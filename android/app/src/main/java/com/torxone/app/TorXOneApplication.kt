@@ -145,11 +145,15 @@ class TorXOneApplication : Application() {
                 when (state) {
                     is com.torxone.app.identity.IdentityState.Ready -> {
                         cachedLocalIdentityId = state.identity.identityId
-                        _initState.value = AppInitState.Ready(state.identity.identityId)
+                        if (_initState.value is AppInitState.Initializing) {
+                            _initState.value = AppInitState.Ready(state.identity.identityId)
+                        }
                     }
                     is com.torxone.app.identity.IdentityState.NoIdentity -> {
                         cachedLocalIdentityId = null
-                        _initState.value = AppInitState.Ready(null)
+                        if (_initState.value is AppInitState.Initializing) {
+                            _initState.value = AppInitState.Ready(null)
+                        }
                     }
                     is com.torxone.app.identity.IdentityState.Failed -> {
                         _initState.value = AppInitState.Failed(state.error)
@@ -163,7 +167,9 @@ class TorXOneApplication : Application() {
 
         // 3. Crypto / Session
         val keyProtector = AndroidKeystoreKeyProtector()
-        sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao(), keyProtector)
+        sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao(), keyProtector) { block ->
+            database.withTransaction { block() }
+        }
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 
         // 4. Connection Manager & Active Conversation Tracker
@@ -219,6 +225,17 @@ class TorXOneApplication : Application() {
             notificationManager = notificationManager
         )
 
+        // One sequencing lock authority is shared by chat, groups, and media.
+        // Feature-local coordinators can race and commit the same relationship sequence.
+        val relationshipSendCoordinator = com.torxone.app.connection.RelationshipSendCoordinator(
+            database = database,
+            connectionManager = connectionManager,
+            sessionStore = sessionStore,
+            sessionCrypto = sessionCrypto,
+            connectionDao = database.connectionDao(),
+            agent = agent
+        )
+
         // 7b. Media Service & Handler
         mediaService = com.torxone.app.media.MediaService(
             context = this,
@@ -233,7 +250,9 @@ class TorXOneApplication : Application() {
             localIdentityIdProvider = { getLocalIdentityId() },
             appSettingsRepository = settingsRepository,
             transactionRunner = { block -> database.withTransaction { block() } },
-            contactDao = database.contactDao()
+            contactDao = database.contactDao(),
+            relationshipSendCoordinator = relationshipSendCoordinator,
+            sessionStore = sessionStore
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -254,7 +273,9 @@ class TorXOneApplication : Application() {
             sessionCrypto = sessionCrypto,
             agent = agent,
             localIdentityIdProvider = { getLocalIdentityId() },
-            transactionRunner = { block -> database.withTransaction { block() } }
+            transactionRunner = { block -> database.withTransaction { block() } },
+            relationshipSendCoordinator = relationshipSendCoordinator,
+            sessionStore = sessionStore
         )
         val groupHandler = com.torxone.app.incoming.GroupHandler(
             groupDao = database.groupDao(),
@@ -292,7 +313,7 @@ class TorXOneApplication : Application() {
             callNotificationManager = callNotificationManager,
             contactDao = database.contactDao()
         )
-        val callHandler = com.torxone.app.calls.CallHandler(callManager)
+        val callHandler = com.torxone.app.calls.CallHandler(callManager, database.contactDao())
 
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
@@ -307,7 +328,11 @@ class TorXOneApplication : Application() {
             messageDao = database.messageDao(),
             outboxDao = database.outboxDao(),
             agent = agent,
-            groupService = groupService
+            groupService = groupService,
+            bootstrapStateDao = database.bootstrapStateDao(),
+            connectionDao = database.connectionDao(),
+            pairRelationshipDao = database.pairRelationshipDao(),
+            transactionRunner = { block -> database.withTransaction { block() } }
         )
         val incomingDispatcher = IncomingDispatcher(
             connectionManager = connectionManager,
@@ -365,7 +390,8 @@ class TorXOneApplication : Application() {
             notificationManager = notificationManager,
             appSettingsRepository = settingsRepository,
             sessionStore = sessionStore,
-            mediaStorage = com.torxone.app.media.MediaStorage(this)
+            mediaStorage = com.torxone.app.media.MediaStorage(this),
+            relationshipSendCoordinator = relationshipSendCoordinator
         )
 
         // 10. Explicit asynchronous application initialization
@@ -385,14 +411,58 @@ class TorXOneApplication : Application() {
                     nearbyTransport.start()
                 }
 
-                // Recover any interrupted media transfers & sweep orphan temp files
+                // Recover any interrupted media transfers, fan-outs, and incomplete bootstraps
                 mediaService.recoverPendingTransfersOnStartup()
+                groupService.recoverPendingFanout()
+                recoverIncompleteBootstraps()
 
                 _initState.value = AppInitState.Ready(cachedLocalIdentityId)
             } catch (e: Throwable) {
                 android.util.Log.e("TorXOneApplication", "Async app initialization failed", e)
                 _initState.value = AppInitState.Failed(e)
             }
+        }
+    }
+
+    private suspend fun recoverIncompleteBootstraps() {
+        try {
+            val incomplete = database.bootstrapStateDao().getIncompleteBootstraps()
+            for (state in incomplete) {
+                when (state.status) {
+                    com.torxone.app.data.entity.BootstrapStatus.LOCAL_ESTABLISHED -> {
+                        val session = sessionStore.loadSession(state.relationshipId)
+                        if (session != null) {
+                            database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY)
+                        } else {
+                            database.bootstrapStateDao().updateStatus(
+                                state.relationshipId,
+                                com.torxone.app.data.entity.BootstrapStatus.FAILED_RECOVERABLE,
+                                error = "Ratchet uninitialized before crash"
+                            )
+                        }
+                    }
+                    com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY -> {
+                        val outbox = database.outboxDao().getPending()
+                        val hasItem = outbox.any { it.queueAddress == "invite-${state.inviteId}" }
+                        if (hasItem) {
+                            database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED)
+                        }
+                    }
+                    com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED -> {
+                        agent.wake()
+                    }
+                    com.torxone.app.data.entity.BootstrapStatus.REMOTE_CONFIRMED -> {
+                        database.withTransaction {
+                            database.connectionDao().updateStateByRelationship(state.relationshipId, "ACTIVE")
+                            database.pairRelationshipDao().updateState(state.relationshipId, "ACTIVE")
+                            database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.ACTIVE)
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("TorXOneApplication", "Error during bootstrap restart recovery: ${e.message}", e)
         }
     }
 
@@ -415,7 +485,9 @@ class TorXOneApplication : Application() {
                         nextAttemptAt = item.nextAttemptAt,
                         createdAt = item.createdAt,
                         updatedAt = item.updatedAt,
-                        expectsAck = item.expectsAck
+                        expectsAck = item.expectsAck,
+                        applicationSequence = item.applicationSequence,
+                        relationshipId = item.relationshipId
                     )
                 )
             }
@@ -436,7 +508,9 @@ class TorXOneApplication : Application() {
                         nextAttemptAt = entity.nextAttemptAt,
                         createdAt = entity.createdAt,
                         updatedAt = entity.updatedAt,
-                        expectsAck = entity.expectsAck
+                        expectsAck = entity.expectsAck,
+                        applicationSequence = entity.applicationSequence,
+                        relationshipId = entity.relationshipId
                     )
                 }
             }

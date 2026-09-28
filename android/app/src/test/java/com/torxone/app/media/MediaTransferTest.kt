@@ -133,6 +133,27 @@ class MediaTransferTest {
             }
         }
 
+        override suspend fun recordChunkIfMissing(
+            transferId: String,
+            chunkIndex: Int,
+            chunkBytes: Long,
+            status: String,
+            updatedAt: Long
+        ): Int {
+            val transfer = transfers[transferId] ?: return 0
+            val completed = transfer.chunkBitmask.split(',').filter { it.isNotBlank() }.mapNotNull { it.toIntOrNull() }
+            if (chunkIndex in completed) return 0
+            val updatedChunks = completed + chunkIndex
+            transfers[transferId] = transfer.copy(
+                completedChunks = updatedChunks.size,
+                chunkBitmask = updatedChunks.joinToString(","),
+                bytesTransferred = minOf(transfer.totalBytes, transfer.bytesTransferred + chunkBytes),
+                status = status,
+                updatedAt = updatedAt
+            )
+            return 1
+        }
+
         override suspend fun updateStatus(transferId: String, status: String, updatedAt: Long) {
             transfers[transferId]?.let {
                 transfers[transferId] = it.copy(status = status, updatedAt = updatedAt)
@@ -191,6 +212,9 @@ class MediaTransferTest {
         override suspend fun markOutgoingReadUpTo(conversationId: String, upToCreatedAt: Long, status: String, readAt: Long) {}
         override suspend fun markAllIncomingRead(conversationId: String, status: String, readAt: Long) {}
         override suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity? = null
+        override suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity> =
+            getMessagesForConversationDesc(conversationId).filter { it.direction == MessageDirection.INCOMING && it.status != "READ" }
+
         override suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long) {}
         override suspend fun markDeleted(messageId: String, deletedAt: Long) {
             messages[messageId]?.let { messages[messageId] = it.copy(body = null, deletedAt = deletedAt) }
@@ -232,8 +256,8 @@ class MediaTransferTest {
         private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, OutboxEntity>()
 
-        override suspend fun getPending(now: Long): List<OutboxEntity> {
-            val nowTime = if (now != 0L) now else System.currentTimeMillis()
+        override suspend fun getPending(): List<OutboxEntity> {
+            val nowTime = System.currentTimeMillis()
             return items.values
                 .filter {
                     ((it.status == "QUEUED" || it.status == "RETRY_WAIT") ||

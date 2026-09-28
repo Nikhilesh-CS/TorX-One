@@ -108,6 +108,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ' ORDER BY created_at DESC LIMIT 1")
     suspend fun getLatestUnreadIncoming(conversationId: String): MessageEntity?
 
+    @Query("SELECT * FROM messages WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ' ORDER BY created_at DESC")
+    suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity>
+
     @Query("UPDATE messages SET body = :newBody, edit_version = :editVersion, edited_at = :editedAt WHERE logical_message_id = :messageId")
     suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long)
 
@@ -144,8 +147,8 @@ interface ContactDao {
 
 @Dao
 interface OutboxDao {
-    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') AND next_attempt_at <= :now ORDER BY created_at ASC, priority DESC")
-    suspend fun getPending(now: Long = System.currentTimeMillis()): List<OutboxEntity>
+    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') ORDER BY CASE WHEN application_sequence IS NOT NULL THEN 0 ELSE 1 END, application_sequence ASC, created_at ASC, priority DESC")
+    suspend fun getPending(): List<OutboxEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: OutboxEntity)
@@ -215,6 +218,9 @@ interface ConnectionDao {
 
     @Query("UPDATE connections SET state = :state WHERE connection_id = :connectionId")
     suspend fun updateState(connectionId: String, state: String)
+
+    @Query("UPDATE connections SET state = :state WHERE relationship_id = :relationshipId")
+    suspend fun updateStateByRelationship(relationshipId: String, state: String)
 
     @Query("UPDATE connections SET send_sequence = CASE WHEN send_sequence < :sendSequence THEN :sendSequence ELSE send_sequence END WHERE relationship_id = :relationshipId")
     suspend fun updateSendSequence(relationshipId: String, sendSequence: Long)
@@ -385,6 +391,15 @@ interface MediaTransferDao {
         updatedAt: Long = System.currentTimeMillis()
     )
 
+    @Query("UPDATE media_transfers SET completed_chunks = completed_chunks + 1, chunk_bitmask = CASE WHEN chunk_bitmask = '' THEN CAST(:chunkIndex AS TEXT) ELSE chunk_bitmask || ',' || CAST(:chunkIndex AS TEXT) END, bytes_transferred = MIN(total_bytes, bytes_transferred + :chunkBytes), status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId AND instr(',' || chunk_bitmask || ',', ',' || CAST(:chunkIndex AS TEXT) || ',') = 0")
+    suspend fun recordChunkIfMissing(
+        transferId: String,
+        chunkIndex: Int,
+        chunkBytes: Long,
+        status: String = "ACTIVE",
+        updatedAt: Long = System.currentTimeMillis()
+    ): Int
+
     @Query("UPDATE media_transfers SET status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId")
     suspend fun updateStatus(
         transferId: String,
@@ -419,7 +434,10 @@ interface BootstrapStateDao {
     @Query("SELECT * FROM bootstrap_states WHERE relationship_id = :relationshipId")
     suspend fun getByRelationshipId(relationshipId: String): BootstrapStateEntity?
 
-    @Query("SELECT * FROM bootstrap_states WHERE status != 'ACTIVE' AND status != 'FAILED'")
+    @Query("SELECT * FROM bootstrap_states WHERE invite_id = :inviteId")
+    suspend fun getByInviteId(inviteId: String): BootstrapStateEntity?
+
+    @Query("SELECT * FROM bootstrap_states WHERE status NOT IN ('ACTIVE', 'FAILED', 'FAILED_TERMINAL')")
     suspend fun getIncompleteBootstraps(): List<BootstrapStateEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

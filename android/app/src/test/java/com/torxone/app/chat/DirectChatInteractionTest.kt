@@ -91,6 +91,9 @@ class DirectChatInteractionTest {
                 .maxByOrNull { it.createdAt }
         }
 
+        override suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity> =
+            getMessagesForConversationDesc(conversationId).filter { it.direction == MessageDirection.INCOMING && it.status != "READ" }
+
         override suspend fun updateBodyAndEdit(
             messageId: String,
             newBody: String,
@@ -395,7 +398,7 @@ class DirectChatInteractionTest {
         val handler = DeliveryReceiptHandler(
             messageDao = messageDao,
             outboxDao = object : OutboxDao {
-                override suspend fun getPending(now: Long): List<OutboxEntity> = emptyList()
+                override suspend fun getPending(): List<OutboxEntity> = emptyList()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
@@ -678,7 +681,7 @@ class DirectChatInteractionTest {
             },
             chatReceiver = ChatReceiver(msgDaoAlice, convDaoAlice, trackerAlice),
             deliveryReceiptHandler = DeliveryReceiptHandler(msgDaoAlice, object : OutboxDao {
-                override suspend fun getPending(now: Long) = emptyList<OutboxEntity>()
+                override suspend fun getPending() = emptyList<OutboxEntity>()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
@@ -704,7 +707,7 @@ class DirectChatInteractionTest {
             },
             chatReceiver = ChatReceiver(msgDaoBob, convDaoBob, trackerBob),
             deliveryReceiptHandler = DeliveryReceiptHandler(msgDaoBob, object : OutboxDao {
-                override suspend fun getPending(now: Long) = emptyList<OutboxEntity>()
+                override suspend fun getPending() = emptyList<OutboxEntity>()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
                 override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}

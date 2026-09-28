@@ -163,7 +163,8 @@ enum class MessageType {
 /**
  * Policy defining whether a message type requires an application-level directional sequence.
  * User-visible durable messages require a strictly positive sequence.
- * Internal transfer/control frames are sequence-exempt.
+ * Media/control frames that advance a durable ratchet are sequenced too; only ephemeral
+ * presence, typing, and receipts are exempt.
  */
 fun MessageType.requiresApplicationSequence(): Boolean = when (this) {
     MessageType.TEXT,
@@ -185,7 +186,11 @@ fun MessageType.requiresApplicationSequence(): Boolean = when (this) {
     MessageType.GROUP_ROLE_CHANGE,
     MessageType.GROUP_NAME_CHANGE,
     MessageType.GROUP_AVATAR_CHANGE,
-    MessageType.GROUP_KEY_ROTATE -> true
+    MessageType.GROUP_KEY_ROTATE,
+    MessageType.FILE_PROGRESS,
+    MessageType.FILE_COMPLETE,
+    MessageType.FILE_RESUME,
+    MessageType.FILE_CANCEL -> true
 
     MessageType.DELIVERY_ACK,
     MessageType.READ_RECEIPT,
@@ -203,13 +208,8 @@ fun MessageType.requiresApplicationSequence(): Boolean = when (this) {
     MessageType.CALL_BUSY,
     MessageType.FILE_OFFER,
     MessageType.FILE_ACCEPT,
-    MessageType.FILE_PROGRESS,
-    MessageType.FILE_COMPLETE,
-    MessageType.FILE_RESUME,
-    MessageType.FILE_CANCEL,
     MessageType.PROFILE_UPDATE,
     MessageType.CONNECTION_ROTATE,
     MessageType.QUEUE_ROTATE,
     MessageType.PRESENCE_UPDATE -> false
 }
-

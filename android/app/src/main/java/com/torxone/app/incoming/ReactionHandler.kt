@@ -16,18 +16,23 @@ class ReactionHandler(
         private const val TAG = "ReactionHandler"
     }
 
-    suspend fun handleReaction(envelope: SecureEnvelope) {
+    suspend fun handleReaction(envelope: SecureEnvelope): Boolean {
         val reaction = try {
             MessageReaction.fromByteArray(envelope.payload)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to decode MessageReaction: ${e.message}")
-            return
+            return false
         }
 
         val targetMsg = messageDao.getById(reaction.targetMessageId)
         if (targetMsg == null) {
             Log.w(TAG, "Target message ${reaction.targetMessageId.take(8)} for reaction not found")
-            return
+            return false
+        }
+
+        if (targetMsg.conversationId != (envelope.groupMetadata?.groupId ?: envelope.conversationId)) {
+            Log.w(TAG, "Reaction target belongs to a different authenticated conversation")
+            return false
         }
 
         val conversationId = targetMsg.conversationId
@@ -55,5 +60,6 @@ class ReactionHandler(
                 )
             }
         }
+        return true
     }
 }

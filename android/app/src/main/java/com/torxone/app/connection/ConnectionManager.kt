@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ConnectionManager(
     var connectionDao: ConnectionDao? = null,
+    private val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
     private val scope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 ) {
 
@@ -38,6 +39,16 @@ class ConnectionManager(
         this.connectionDao = dao
         val activeEntities = dao.getAllActive()
         for (entity in activeEntities) {
+            val sendAuth = if (entity.cryptoFormatVersion == 1) {
+                keyProtector.unwrap(entity.sendAuth)
+            } else {
+                entity.sendAuth
+            }
+            val recvAuth = if (entity.cryptoFormatVersion == 1) {
+                keyProtector.unwrap(entity.recvAuth)
+            } else {
+                entity.recvAuth
+            }
             registerConnection(
                 Connection(
                     connectionId = entity.connectionId,
@@ -45,8 +56,8 @@ class ConnectionManager(
                     generation = entity.generation,
                     sendQueueId = entity.sendQueueId,
                     recvQueueId = entity.recvQueueId,
-                    sendAuth = entity.sendAuth,
-                    recvAuth = entity.recvAuth,
+                    sendAuth = sendAuth,
+                    recvAuth = recvAuth,
                     sendSequence = entity.sendSequence,
                     recvSequence = entity.recvSequence
                 )
@@ -55,12 +66,14 @@ class ConnectionManager(
     }
 
     private val sendSequenceLocks = ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    private val recvSequenceReservations = ConcurrentHashMap<String, Long>()
 
     /**
      * Durably and atomically allocate the next send sequence counter for a relationship.
      * Guaranteed to persist the allocated sequence before returning, ensuring no sequence rewind on crash.
      */
-    suspend fun allocateSendSequence(relationshipId: String): Long {
+    @Deprecated("All sequenced sends must use RelationshipSendCoordinator")
+    internal suspend fun allocateSendSequence(relationshipId: String): Long {
         val mutex = sendSequenceLocks.computeIfAbsent(relationshipId) { kotlinx.coroutines.sync.Mutex() }
         return mutex.withLock {
             val dbSeq = connectionDao?.getByRelationshipId(relationshipId)?.sendSequence ?: 0L
@@ -103,22 +116,6 @@ class ConnectionManager(
         }
     }
 
-    @Deprecated("Use RelationshipSendCoordinator.sendSequenced for atomic sequence allocation and encryption")
-    suspend fun incrementSendSequence(relationshipId: String): Long {
-        var nextSeq = 0L
-        connectionsByRelationship.compute(relationshipId) { _, existing ->
-            if (existing == null) return@compute null
-            nextSeq = existing.sendSequence + 1
-            val updated = existing.copy(sendSequence = nextSeq)
-            connectionsByRecvQueue[updated.recvQueueId] = updated
-            connectionsBySendQueue[updated.sendQueueId] = updated
-            updated
-        } ?: return 0L
-        _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-        connectionDao?.updateSendSequence(relationshipId, nextSeq)
-        return nextSeq
-    }
-
     /**
      * Phase 1 of atomic receive sequence advancement:
      * Validates that the incoming sequence is strictly greater than the current receive sequence.
@@ -126,7 +123,21 @@ class ConnectionManager(
      */
     fun validateRecvSequence(relationshipId: String, sequence: Long): Boolean {
         val conn = connectionsByRelationship[relationshipId] ?: return false
-        return sequence > conn.recvSequence
+        return sequence > maxOf(conn.recvSequence, recvSequenceReservations[relationshipId] ?: 0L)
+    }
+
+    /** Reserve the lane synchronously before decrypt/dispatch enters the per-session actor. */
+    @Synchronized
+    fun reserveRecvSequence(relationshipId: String, sequence: Long): Boolean {
+        if (recvSequenceReservations.containsKey(relationshipId)) return false
+        if (!validateRecvSequence(relationshipId, sequence)) return false
+        recvSequenceReservations[relationshipId] = sequence
+        return true
+    }
+
+    @Synchronized
+    fun releaseRecvSequenceReservation(relationshipId: String) {
+        recvSequenceReservations.remove(relationshipId)
     }
 
     /**
@@ -148,6 +159,7 @@ class ConnectionManager(
         if (changed) {
             _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
         }
+        recvSequenceReservations.remove(relationshipId, sequence)
     }
 
     /**
@@ -155,16 +167,10 @@ class ConnectionManager(
      * is strictly greater than the current value. Returns false if not accepted
      * (non-monotonic / replay).
      */
-    fun tryAdvanceRecvSequence(relationshipId: String, sequence: Long): Boolean {
-        if (!validateRecvSequence(relationshipId, sequence)) return false
-        commitRecvSequence(relationshipId, sequence)
-        return true
-    }
-
     /**
      * Atomically updates and persists both directional sequence counters.
      */
-    suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long) {
+    internal suspend fun updateSequence(relationshipId: String, sendSequence: Long, recvSequence: Long) {
         connectionsByRelationship.compute(relationshipId) { _, existing ->
             if (existing == null) return@compute null
             val updated = existing.copy(sendSequence = sendSequence, recvSequence = recvSequence)
@@ -174,25 +180,6 @@ class ConnectionManager(
         }
         _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
         connectionDao?.updateSequence(relationshipId, sendSequence, recvSequence)
-    }
-
-    fun updateRecvSequence(relationshipId: String, sequence: Long) {
-        var changed = false
-        connectionsByRelationship.compute(relationshipId) { _, existing ->
-            if (existing == null) return@compute null
-            if (sequence <= existing.recvSequence) return@compute existing
-            changed = true
-            val updated = existing.copy(recvSequence = sequence)
-            connectionsByRecvQueue[updated.recvQueueId] = updated
-            connectionsBySendQueue[updated.sendQueueId] = updated
-            updated
-        }
-        if (changed) {
-            _activeConnectionsFlow.value = HashMap(connectionsByRelationship)
-            scope.launch {
-                connectionDao?.updateRecvSequence(relationshipId, sequence)
-            }
-        }
     }
 
     fun getConnectionByRelationship(relationshipId: String): Connection? {

@@ -11,6 +11,7 @@ import com.torxone.app.incoming.IncomingTransportHub
 import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.transport.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,6 +76,8 @@ class NearbyTransport(
     private val pendingTransfers = ConcurrentHashMap<Long, CompletableDeferred<TransportResult>>()
     private val payloadIdToEndpoint = ConcurrentHashMap<Long, String>()
     private val endpointSemaphores = ConcurrentHashMap<String, Semaphore>()
+    private val inboundChannels = ConcurrentHashMap<String, Channel<ByteArray>>()
+    private val inboundJobs = ConcurrentHashMap<String, Job>()
 
     private val localChallenges = ConcurrentHashMap<String, ByteArray>()
     private val remoteChallenges = ConcurrentHashMap<String, ByteArray>()
@@ -124,8 +127,19 @@ class NearbyTransport(
             when (frame) {
                 is NearbyWireFrame.Data -> {
                     Log.d(TAG, "[RX DATA] Received ${frame.payload.size} data bytes from endpoint $endpointId")
-                    scope.launch {
-                        incomingTransportHub.onRawFrameReceived(frame.payload, TransportType.NEARBY)
+                    val channel = inboundChannels.computeIfAbsent(endpointId) {
+                        Channel<ByteArray>(capacity = 64).also { inbound ->
+                            inboundJobs[endpointId] = scope.launch {
+                                for (rawFrame in inbound) {
+                                    incomingTransportHub.onRawFrameReceived(rawFrame, TransportType.NEARBY)
+                                }
+                            }
+                        }
+                    }
+                    if (channel.trySend(frame.payload).isFailure) {
+                        Log.w(TAG, "[RX BACKPRESSURE] Inbound queue saturated for $endpointId; disconnecting to preserve wire order")
+                        connectionsAdapter.disconnectFromEndpoint(endpointId)
+                        cleanupEndpoint(endpointId)
                     }
                 }
                 is NearbyWireFrame.Control.Hello -> {
@@ -181,18 +195,37 @@ class NearbyTransport(
 
     fun registerPendingInvite(inviteId: String) {
         pendingInviteIds.add(inviteId)
+        refreshHelloCapabilities()
     }
 
     fun unregisterPendingInvite(inviteId: String) {
         pendingInviteIds.remove(inviteId)
+        refreshHelloCapabilities()
     }
 
     fun registerScannedInvite(inviteId: String) {
         scannedInviteIds.add(inviteId)
+        refreshHelloCapabilities()
     }
 
     fun unregisterScannedInvite(inviteId: String) {
         scannedInviteIds.remove(inviteId)
+        refreshHelloCapabilities()
+    }
+
+    private fun refreshHelloCapabilities() {
+        for (endpointId in directRouteTable.getAllEndpoints()) {
+            val challenge = ByteArray(16).apply { secureRandom.nextBytes(this) }
+            localChallenges[endpointId] = challenge
+            endpointHandshakeStates[endpointId] = EndpointHandshakeState.CONNECTED
+            sendControlMessage(endpointId, NearbyWireFrame.Control.Hello(
+                protocolVersion = NEARBY_PROTOCOL_VERSION,
+                peerTieBreaker = localTieBreaker,
+                supportedFeatures = buildHelloFeatures(challenge),
+                maxFrameSize = MAX_DIRECT_FRAME_SIZE,
+                challenge = challenge
+            ))
+        }
     }
 
     fun bindInviteEndpoint(inviteId: String, endpointId: String) {
@@ -213,19 +246,23 @@ class NearbyTransport(
         return hash.take(8).joinToString("") { "%02x".format(it) }
     }
 
-    private fun buildHelloFeatures(): List<String> {
+    private fun computeSecretHint(secret: ByteArray, label: String, challenge: ByteArray): String =
+        IdentityCrypto.hmacSha256(secret, "torx-$label-hint-v2:".toByteArray(Charsets.UTF_8) + challenge)
+            .take(16).joinToString("") { "%02x".format(it) }
+
+    private fun buildHelloFeatures(challenge: ByteArray): List<String> {
         val features = mutableListOf("direct-chat-v1", "fast-ack-v1")
         val activeConnections = connectionManager?.getAllActiveConnections() ?: emptyList()
         for (conn in activeConnections) {
-            features.add("rel-hint:${computeRelHint(conn.relationshipId)}")
+            if (conn.sendAuth.size == 32) features.add("rel-hint:${computeSecretHint(conn.sendAuth, "rel", challenge)}")
         }
         for (invId in pendingInviteIds) {
-            features.add("invite-hint:${computeInviteHint(invId)}")
+            features.add("invite-hint:${computeSecretHint(invId.toByteArray(Charsets.UTF_8), "invite", challenge)}")
         }
         for (invId in scannedInviteIds) {
-            features.add("invite-hint:${computeInviteHint(invId)}")
+            features.add("invite-hint:${computeSecretHint(invId.toByteArray(Charsets.UTF_8), "invite", challenge)}")
         }
-        return features
+        return features.take(32)
     }
 
     val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
@@ -254,7 +291,7 @@ class NearbyTransport(
                 val hello = NearbyWireFrame.Control.Hello(
                     protocolVersion = NEARBY_PROTOCOL_VERSION,
                     peerTieBreaker = localTieBreaker,
-                    supportedFeatures = buildHelloFeatures(),
+                    supportedFeatures = buildHelloFeatures(challenge),
                     maxFrameSize = MAX_DIRECT_FRAME_SIZE,
                     challenge = challenge
                 )
@@ -305,6 +342,14 @@ class NearbyTransport(
 
     private fun handleHelloReceived(endpointId: String, hello: NearbyWireFrame.Control.Hello) {
         Log.d(TAG, "[HANDSHAKE] Received HELLO from $endpointId (v=${hello.protocolVersion}, maxFrame=${hello.maxFrameSize})")
+        if (hello.protocolVersion != NEARBY_PROTOCOL_VERSION || hello.challenge.size != 16 ||
+            hello.maxFrameSize !in 1..MAX_DIRECT_FRAME_SIZE
+        ) {
+            Log.w(TAG, "[HANDSHAKE REJECT] Unsupported or invalid HELLO from $endpointId")
+            connectionsAdapter.disconnectFromEndpoint(endpointId)
+            cleanupEndpoint(endpointId)
+            return
+        }
         remoteChallenges[endpointId] = hello.challenge
         endpointHandshakeStates[endpointId] = EndpointHandshakeState.HELLO_EXCHANGED
 
@@ -315,7 +360,7 @@ class NearbyTransport(
             val myHello = NearbyWireFrame.Control.Hello(
                 protocolVersion = NEARBY_PROTOCOL_VERSION,
                 peerTieBreaker = localTieBreaker,
-                supportedFeatures = buildHelloFeatures(),
+                supportedFeatures = buildHelloFeatures(challenge),
                 maxFrameSize = MAX_DIRECT_FRAME_SIZE,
                 challenge = challenge
             )
@@ -326,8 +371,8 @@ class NearbyTransport(
         val remoteInviteHints = hello.supportedFeatures.filter { it.startsWith("invite-hint:") }.map { it.removePrefix("invite-hint:") }.toSet()
         val allLocalInvites = pendingInviteIds + scannedInviteIds
         for (invId in allLocalInvites) {
-            val hint = computeInviteHint(invId)
-            if (hint in remoteInviteHints || invId in remoteInviteHints) {
+            val hint = computeSecretHint(invId.toByteArray(Charsets.UTF_8), "invite", hello.challenge)
+            if (hint in remoteInviteHints) {
                 bindInviteEndpoint(invId, endpointId)
             }
         }
@@ -339,8 +384,7 @@ class NearbyTransport(
 
         val matchingConnections = if (remoteRelHints.isNotEmpty()) {
             activeConnections.filter { conn ->
-                val hint = computeRelHint(conn.relationshipId)
-                hint in remoteRelHints || conn.relationshipId in remoteRelHints || remoteRelHints.any { r -> conn.relationshipId.startsWith(r) }
+                conn.recvAuth.size == 32 && computeSecretHint(conn.recvAuth, "rel", hello.challenge) in remoteRelHints
             }
         } else {
             val boundRel = directRouteTable.getRelationshipForEndpoint(endpointId)
@@ -454,6 +498,8 @@ class NearbyTransport(
     }
 
     private fun cleanupEndpoint(endpointId: String) {
+        inboundChannels.remove(endpointId)?.close()
+        inboundJobs.remove(endpointId)?.cancel()
         directRouteTable.removeEndpoint(endpointId)
         localChallenges.remove(endpointId)
         remoteChallenges.remove(endpointId)
@@ -477,7 +523,10 @@ class NearbyTransport(
         updateAvailability()
     }
 
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
+
     fun start() {
+        if (!started.compareAndSet(false, true)) return
         Log.i(TAG, "Starting Nearby advertising and discovery (tieBreaker=${localTieBreaker.toString(16)})")
         _healthState.value = TransportHealthState.DISCOVERING
         connectionsAdapter.startAdvertising(localEndpointName, SERVICE_ID, connectionLifecycleCallback)
@@ -487,6 +536,7 @@ class NearbyTransport(
     }
 
     fun stop() {
+        if (!started.compareAndSet(true, false)) return
         Log.i(TAG, "Stopping Nearby transport")
         heartbeatJob?.cancel()
         connectionsAdapter.stopAdvertising()
@@ -495,6 +545,10 @@ class NearbyTransport(
         directRouteTable.clear()
         pendingTransfers.clear()
         payloadIdToEndpoint.clear()
+        inboundChannels.values.forEach { it.close() }
+        inboundChannels.clear()
+        inboundJobs.values.forEach { it.cancel() }
+        inboundJobs.clear()
         localChallenges.clear()
         remoteChallenges.clear()
         endpointSemaphores.clear()
