@@ -12,6 +12,15 @@ import java.util.concurrent.ConcurrentHashMap
 
 class AtRestKeyProtectorTest {
 
+    @Test
+    fun recognizesStrongBoxFailureReportedThroughProviderCause() {
+        val error = java.security.ProviderException(
+            "Keystore operation failed",
+            IllegalStateException("No StrongBox available")
+        )
+        assertTrue(AndroidKeystoreKeyProtector.isStrongBoxUnavailable(error))
+    }
+
     private val masterKey = ByteArray(32) { (it + 1).toByte() }
     private val secureRandom = SecureRandom()
 

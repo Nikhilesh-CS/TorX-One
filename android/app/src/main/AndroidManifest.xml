@@ -21,6 +21,8 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <!-- Wi-Fi Direct -->
     <!-- (ACCESS_WIFI_STATE and CHANGE_WIFI_STATE declared above) -->
@@ -46,8 +48,8 @@
     <application
         android:name=".TorXOneApplication"
         android:allowBackup="false"
-        android:icon="@drawable/ic_launcher"
-        android:roundIcon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="TorX One"
         android:supportsRtl="true"
         android:theme="@style/Theme.TorXOne"

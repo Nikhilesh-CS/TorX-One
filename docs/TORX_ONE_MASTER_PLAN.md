@@ -500,6 +500,8 @@ This is how TorX becomes genuinely offline-first.
 
 # PHASE 10 — Long-Range LoRa Transport
 
+**Status: 🚧 STARTED — phone/radio protocol, authenticated BLE recognition, automatic trusted-device connection, LoRa transport adapter, and firmware parser foundation implemented. Physical board firmware and kilometre-scale validation remain.**
+
 Prototype external long-range TorX hardware.
 
 Initial design:
@@ -560,6 +562,8 @@ Phone B
 
 # PHASE 11 — Wi-Fi HaLow
 
+**Status: 🚧 STARTED — authenticated gateway protocol, Android discovery contract, high-bandwidth transport framing, and hardware topology documented. Physical gateway daemon and field validation remain.**
+
 Research Wi-Fi HaLow for higher-bandwidth long-range connections.
 
 Purpose:
@@ -593,6 +597,8 @@ while LoRa handles:
 
 # PHASE 12 — TorX Gateways
 
+**Status: 🚧 STARTED — global gateway submission protocol, bounded routing directory, replay/expiry controls, and authenticated local HaLow uplink integration implemented. Gateway daemon and two-site Tor validation remain.**
+
 Connect offline TorX networks to global routes.
 
 ```text
@@ -625,6 +631,8 @@ That is the realistic interpretation of worldwide communication without requirin
 ---
 
 # PHASE 13 — Group Messaging V2
+
+**Status: ✅ DESIGN COMPLETE — RFC 9420 MLS selected, alternatives and threat model documented, pairwise V1 bounded to 64 members, downgrade policy and fail-closed production migration gate implemented. Production MLS activation remains blocked until the explicit security and interoperability evidence passes.**
 
 Current pairwise group fan-out works for smaller groups but does not scale indefinitely.
 
@@ -677,6 +685,8 @@ Do not replace mature cryptography simply because something newer exists.
 
 # PHASE 15 — Scalability Engineering
 
+**Status: ✅ ENGINEERING TOOLING COMPLETE — deterministic 2,048-node simulation, large dataset projection, measurable routing/loss/overhead results, and fail-closed scale gates are implemented. Physical Android battery, thermal, low-RAM, and encrypted-database certification remains a release-device gate.**
+
 Prove scalability instead of claiming it.
 
 Test:
@@ -722,6 +732,8 @@ Measure:
 ---
 
 # PHASE 16 — Product Design and Branding
+
+**Status: ✅ COMPLETE — text-free TorX routing/privacy mark, adaptive and monochrome Android icons, notification and splash assets, website/QR/GitHub branding, stable palettes, typography, spacing, corners, motion, semantic states, and accessibility guidance are implemented.**
 
 Finalize the complete TorX identity.
 
@@ -1129,25 +1141,25 @@ Phase 5 — Android modernization       ✅
 
 Phase 6 — Security storage V2         ✅
 
-Phase 7 — Media V2                    ⏳
+Phase 7 — Media V2                    ✅
 
-Phase 8 — Multi-hop mesh              ⏳
+Phase 8 — Multi-hop mesh              ✅
 
-Phase 9 — Store-carry-forward         ⏳
+Phase 9 — Store-carry-forward         ✅
 
-Phase 10 — LoRa                       ⏳
+Phase 10 — LoRa                       🚧
 
-Phase 11 — Wi-Fi HaLow                ⏳
+Phase 11 — Wi-Fi HaLow                🚧
 
-Phase 12 — Global gateways            ⏳
+Phase 12 — Global gateways            🚧
 
-Phase 13 — Group V2                   ⏳
+Phase 13 — Group V2                   ✅
 
 Phase 14 — Post-quantum               ⏳
 
-Phase 15 — Scalability                ⏳
+Phase 15 — Scalability                ✅
 
-Phase 16 — Branding/UI                ⏳
+Phase 16 — Branding/UI                ✅
 
 Phase 17 — Documentation              ⏳
 

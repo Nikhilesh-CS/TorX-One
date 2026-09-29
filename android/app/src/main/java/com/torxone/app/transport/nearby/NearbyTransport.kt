@@ -136,7 +136,14 @@ class NearbyTransport(
                         Channel<ByteArray>(capacity = 64).also { inbound ->
                             inboundJobs[endpointId] = scope.launch {
                                 for (rawFrame in inbound) {
-                                    incomingTransportHub.onRawFrameReceived(rawFrame, TransportType.NEARBY)
+                                    val relationshipId = directRouteTable.getRelationshipForEndpoint(endpointId)
+                                    if (relationshipId != null) {
+                                        incomingTransportHub.onRawFrameReceivedFromAuthenticatedPeer(
+                                            rawFrame, TransportType.NEARBY, relationshipId
+                                        )
+                                    } else {
+                                        incomingTransportHub.onRawFrameReceived(rawFrame, TransportType.NEARBY)
+                                    }
                                 }
                             }
                         }

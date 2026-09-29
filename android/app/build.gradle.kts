@@ -81,6 +81,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.fragment:fragment-ktx:1.9.1")
     implementation("androidx.navigation:navigation-compose:2.9.8")
 
     // ── Room (encrypted DB via SQLCipher) ──
@@ -100,6 +101,7 @@ dependencies {
 
     // ── Embedded Tor runtime ──
     implementation(files("libs/tor-android-0.4.8.12.aar"))
+    implementation("info.guardianproject:jtorctl:0.4.5.7")
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
     // ── Coroutines ──

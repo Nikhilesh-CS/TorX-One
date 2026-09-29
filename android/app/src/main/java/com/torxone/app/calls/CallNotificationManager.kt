@@ -120,14 +120,14 @@ class CallNotificationManager(private val context: Context) {
         )
 
         val publicVersion = NotificationCompat.Builder(context, CHANNEL_INCOMING)
-            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle("Incoming TorX call")
             .setContentText("Secure $typeLabel call")
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
         val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
-            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle("Incoming TorX $typeLabel call")
             .setContentText(callerName)
             .setSubText("End-to-end secured")
@@ -184,7 +184,7 @@ class CallNotificationManager(private val context: Context) {
         }
 
         return NotificationCompat.Builder(context, CHANNEL_ACTIVE)
-            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle("Ongoing call with $peerName")
             .setContentText(subtitle)
             .setPriority(NotificationCompat.PRIORITY_LOW)

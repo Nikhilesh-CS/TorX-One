@@ -28,7 +28,7 @@ class TransportRouter {
         val candidates = if (fake != null) {
             listOf(fake)
         } else {
-            listOf(TransportType.NEARBY, TransportType.TOR, TransportType.WIFI_DIRECT, TransportType.RELAY)
+            listOf(TransportType.NEARBY, TransportType.WIFI_HALOW, TransportType.GATEWAY, TransportType.TOR, TransportType.WIFI_DIRECT, TransportType.LORA, TransportType.RELAY)
                 .mapNotNull(transports::get)
                 .filter { (it as? AddressableTransport)?.canRoute(destination) ?: true }
         }

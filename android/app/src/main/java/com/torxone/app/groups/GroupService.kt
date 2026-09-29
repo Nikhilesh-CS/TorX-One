@@ -38,6 +38,8 @@ class GroupService(
 ) {
     companion object {
         private const val TAG = "GroupService"
+        /** Pairwise V1 is deliberately bounded; larger groups require the MLS V2 release gate. */
+        const val MAX_PAIRWISE_GROUP_MEMBERS = 64
     }
 
     private val sendCoordinator: RelationshipSendCoordinator by lazy {
@@ -71,6 +73,9 @@ class GroupService(
 
         require(initialMembers.map { it.remoteIdentityId }.distinct().size == initialMembers.size) {
             "Group member identities must be unique"
+        }
+        require(initialMembers.size + 1 <= MAX_PAIRWISE_GROUP_MEMBERS) {
+            "Pairwise groups support at most $MAX_PAIRWISE_GROUP_MEMBERS members; MLS V2 is required above this limit"
         }
         initialMembers.forEach { contact ->
             require(contact.relationshipId.isNotBlank() &&
@@ -594,6 +599,10 @@ class GroupService(
         if (contact.relationshipId.isBlank() ||
             connectionManager.getConnectionByRelationship(contact.relationshipId) == null) {
             Log.w(TAG, "Cannot add contact without an active pairwise relationship")
+            return false
+        }
+        if (groupMemberDao.getActiveMembers(groupId).size >= MAX_PAIRWISE_GROUP_MEMBERS) {
+            Log.w(TAG, "Pairwise group member limit reached; MLS V2 migration is required")
             return false
         }
 

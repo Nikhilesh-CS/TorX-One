@@ -6,6 +6,9 @@ enum class TransportType {
     NEARBY,
     TOR,
     RELAY,
+    LORA,
+    WIFI_HALOW,
+    GATEWAY,
     WIFI_DIRECT,
     FAKE
 }

@@ -79,7 +79,7 @@ class NotificationCoordinator(
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle(senderName)
             .setContentText(messageText)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

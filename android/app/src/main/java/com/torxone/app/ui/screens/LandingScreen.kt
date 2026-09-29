@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -91,37 +92,17 @@ fun LandingScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Logo area
-            val infiniteTransition = rememberInfiniteTransition(label = "logo_pulse")
-            val pulseScale by infiniteTransition.animateFloat(
-                initialValue = 1f,
-                targetValue = 1.08f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(2000, easing = EaseInOutCubic),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "pulse"
-            )
-
             Box(
                 modifier = Modifier
-                    .size(80.dp)
-                    .scale(pulseScale)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.tertiary
-                            )
-                        )
-                    ),
+                    .size(88.dp)
+                    .clip(RoundedCornerShape(26.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "TX",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
+                Icon(
+                    painter = painterResource(com.torxone.app.R.drawable.ic_torx_mark),
+                    contentDescription = "TorX One routing mark",
+                    tint = Color.Unspecified,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 

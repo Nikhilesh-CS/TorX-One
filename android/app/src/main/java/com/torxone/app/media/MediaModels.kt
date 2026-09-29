@@ -97,6 +97,11 @@ data class MediaChunkAck(
     val chunkIndex: Int
 )
 
+/** Receiver authorization to open the dedicated media stream. */
+data class MediaAcceptPayload(
+    val mediaId: String
+)
+
 /**
  * Request to resume transfer by asking only for missing chunks.
  */

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-labelledby="title desc">
+  <title id="title">TorX One mark</title><desc id="desc">Four protected routes converge on a private center.</desc>
+  <rect width="108" height="108" rx="24" fill="#07140F"/>
+  <g fill="#35E58D"><path d="M54 20 68 34l-7 7-7-7-7 7-7-7Z"/><path d="m88 54-14 14-7-7 7-7-7-7 7-7Z"/><path d="M54 88 40 74l7-7 7 7 7-7 7 7Z"/><path d="M20 54 34 40l7 7-7 7 7 7-7 7Z"/></g>
+  <path fill="#B8A7FF" d="m54 35 19 19-19 19-19-19Z"/><path fill="#07140F" d="m54 44 10 10-10 10-10-10Z"/><path fill="#35E58D" d="m54 49 5 5-5 5-5-5Z"/>
+</svg>

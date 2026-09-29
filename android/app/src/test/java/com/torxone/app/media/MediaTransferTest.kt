@@ -436,7 +436,7 @@ class MediaTransferTest {
         var incomingHub: IncomingTransportHub? = null
     }
 
-    private suspend fun setupPair(): Pair<TestNode, TestNode> {
+    private suspend fun setupPair(dedicatedMedia: Boolean = false): Pair<TestNode, TestNode> {
         val alice = TestNode("alice")
         val bob = TestNode("bob")
 
@@ -509,7 +509,8 @@ class MediaTransferTest {
             localIdentityIdProvider = { alice.identityId },
             mediaStorage = alice.mediaStorage,
             relationshipSendCoordinator = aliceSendCoordinator,
-            sessionStore = alice.sessionStore
+            sessionStore = alice.sessionStore,
+            dedicatedMediaTransport = if (dedicatedMedia) RoutedDedicatedMediaTransport(alice.router) else null
         )
 
         bob.mediaService = MediaService(
@@ -524,7 +525,8 @@ class MediaTransferTest {
             localIdentityIdProvider = { bob.identityId },
             mediaStorage = bob.mediaStorage,
             relationshipSendCoordinator = bobSendCoordinator,
-            sessionStore = bob.sessionStore
+            sessionStore = bob.sessionStore,
+            dedicatedMediaTransport = if (dedicatedMedia) RoutedDedicatedMediaTransport(bob.router) else null
         )
 
         alice.chatService = ChatService(
@@ -585,8 +587,14 @@ class MediaTransferTest {
             mediaHandler = bobMediaHandler
         )
 
-        alice.incomingHub = IncomingTransportHub(aliceDispatcher)
-        bob.incomingHub = IncomingTransportHub(bobDispatcher)
+        alice.incomingHub = IncomingTransportHub(
+            aliceDispatcher,
+            if (dedicatedMedia) alice.mediaService!!::handleDedicatedMediaFrame else null
+        )
+        bob.incomingHub = IncomingTransportHub(
+            bobDispatcher,
+            if (dedicatedMedia) bob.mediaService!!::handleDedicatedMediaFrame else null
+        )
 
         alice.router.registerTransport(DirectLoopbackTransport(bob.incomingHub!!))
         bob.router.registerTransport(DirectLoopbackTransport(alice.incomingHub!!))
@@ -638,6 +646,36 @@ class MediaTransferTest {
         val bobSavedBytes = bobSavedFile.readBytes()
 
         assertArrayEquals("Decrypted media on receiver must match original sender bytes", imageBytes, bobSavedBytes)
+
+        alice.agent.stop()
+        bob.agent.stop()
+    }
+
+    @Test
+    fun testDedicatedMediaOfferAcceptAndAuthenticatedStream() = runBlocking {
+        val (alice, bob) = setupPair(dedicatedMedia = true)
+        val payload = ByteArray(700 * 1024) { (it * 17).toByte() }
+
+        alice.mediaService!!.sendMedia(
+            conversationId = "conv_alice_bob",
+            relationshipId = "rel_alice_bob",
+            localIdentityId = alice.identityId,
+            recipientId = bob.identityId,
+            type = MediaType.DOCUMENT,
+            fileName = "phase7.bin",
+            mimeType = "application/octet-stream",
+            rawBytes = payload
+        )
+
+        withTimeout(20_000) {
+            while (bob.mediaDao.mediaMap.values.none { it.fileName == "phase7.bin" && it.status == MediaStatus.COMPLETE.name }) {
+                delay(20)
+            }
+        }
+        val received = bob.mediaDao.mediaMap.values.first { it.fileName == "phase7.bin" }
+        val transfer = bob.mediaTransferDao.getByMediaId(received.mediaId)!!
+        assertEquals(3, transfer.totalChunks)
+        assertArrayEquals(payload, File(received.localPath!!).readBytes())
 
         alice.agent.stop()
         bob.agent.stop()

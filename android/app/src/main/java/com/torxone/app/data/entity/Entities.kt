@@ -766,3 +766,32 @@ data class BootstrapStateEntity(
     @ColumnInfo(name = "error_message")
     val errorMessage: String? = null
 )
+
+@Entity(
+    tableName = "relay_packets",
+    indices = [Index("destination_node_id"), Index("source_node_id"), Index(value = ["status", "next_attempt_at", "priority"])]
+)
+data class RelayPacketEntity(
+    @PrimaryKey @ColumnInfo(name = "packet_id") val packetId: String,
+    @ColumnInfo(name = "source_node_id") val sourceNodeId: String,
+    @ColumnInfo(name = "destination_node_id") val destinationNodeId: String,
+    @ColumnInfo(name = "ingress_peer_node_id") val ingressPeerNodeId: String,
+    @ColumnInfo(name = "encoded_packet", typeAffinity = ColumnInfo.BLOB) val encodedPacket: ByteArray,
+    @ColumnInfo(name = "packet_bytes") val packetBytes: Long,
+    @ColumnInfo(name = "priority") val priority: Int,
+    @ColumnInfo(name = "remaining_ttl") val remainingTtl: Int,
+    @ColumnInfo(name = "status") val status: String = "QUEUED",
+    @ColumnInfo(name = "attempt_count") val attemptCount: Int = 0,
+    @ColumnInfo(name = "next_attempt_at") val nextAttemptAt: Long,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "expires_at") val expiresAt: Long,
+    @ColumnInfo(name = "last_error") val lastError: String? = null,
+    @ColumnInfo(name = "last_next_hop_node_id") val lastNextHopNodeId: String? = null
+)
+
+@Entity(tableName = "relay_receipts")
+data class RelayReceiptEntity(
+    @PrimaryKey @ColumnInfo(name = "packet_id") val packetId: String,
+    @ColumnInfo(name = "delivered_at") val deliveredAt: Long,
+    @ColumnInfo(name = "expires_at") val expiresAt: Long
+)

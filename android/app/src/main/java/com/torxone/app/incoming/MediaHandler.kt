@@ -72,6 +72,13 @@ class MediaHandler(
         return mediaService.handleIncomingChunk(connection, envelope)
     }
 
+    suspend fun handleMediaAccept(connection: Connection, envelope: SecureEnvelope): Boolean {
+        val accept = try {
+            MediaProtocolCodec.decodeAccept(envelope.payload)
+        } catch (_: Exception) { return false }
+        return mediaService.handleIncomingAccept(connection, envelope, accept)
+    }
+
     /**
      * Handles media transfer cancellation (FILE_CANCEL).
      */

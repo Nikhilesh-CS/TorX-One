@@ -30,9 +30,11 @@ import com.torxone.app.calls.CallHistoryDao
         GroupMessageDeliveryEntity::class,
         CallHistoryEntity::class,
         ConsumedInviteEntity::class,
-        BootstrapStateEntity::class
+        BootstrapStateEntity::class,
+        RelayPacketEntity::class,
+        RelayReceiptEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -56,6 +58,7 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun callHistoryDao(): CallHistoryDao
     abstract fun consumedInviteDao(): ConsumedInviteDao
     abstract fun bootstrapStateDao(): BootstrapStateDao
+    abstract fun relayQueueDao(): RelayQueueDao
 
     companion object {
         @Volatile
@@ -132,6 +135,33 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_11_12 = object : androidx.room.migration.Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `relay_packets` (
+                        `packet_id` TEXT NOT NULL, `source_node_id` TEXT NOT NULL,
+                        `destination_node_id` TEXT NOT NULL, `ingress_peer_node_id` TEXT NOT NULL,
+                        `encoded_packet` BLOB NOT NULL, `packet_bytes` INTEGER NOT NULL,
+                        `priority` INTEGER NOT NULL, `remaining_ttl` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL, `attempt_count` INTEGER NOT NULL,
+                        `next_attempt_at` INTEGER NOT NULL, `created_at` INTEGER NOT NULL,
+                        `expires_at` INTEGER NOT NULL, `last_error` TEXT,
+                        `last_next_hop_node_id` TEXT,
+                        PRIMARY KEY(`packet_id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_relay_packets_destination_node_id` ON `relay_packets` (`destination_node_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_relay_packets_source_node_id` ON `relay_packets` (`source_node_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_relay_packets_status_next_attempt_at_priority` ON `relay_packets` (`status`, `next_attempt_at`, `priority`)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `relay_receipts` (
+                        `packet_id` TEXT NOT NULL, `delivered_at` INTEGER NOT NULL,
+                        `expires_at` INTEGER NOT NULL, PRIMARY KEY(`packet_id`)
+                    )
+                """.trimIndent())
+            }
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider
@@ -149,7 +179,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
 
             val provider = passphraseProvider
             try {

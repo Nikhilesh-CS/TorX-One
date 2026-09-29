@@ -82,7 +82,7 @@ class TorXCoreService : Service() {
 
     private fun buildForegroundNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle("TorX One Active")
             .setContentText("Direct peer mesh running")
             .setPriority(NotificationCompat.PRIORITY_LOW)

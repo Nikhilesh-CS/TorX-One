@@ -237,6 +237,10 @@ fun TorXOneApp() {
     ) { results ->
         if (results.values.all { it }) {
             app.nearbyTransport.start()
+            coroutineScope.launch {
+                runCatching { app.torXRadioManager.start() }
+                    .onFailure { android.util.Log.w("MainActivity", "TorX Radio discovery unavailable", it) }
+            }
         }
     }
 
@@ -795,6 +799,8 @@ fun TorXOneApp() {
 
         is Screen.Settings -> {
             val currentSettingsState by settingsViewModel.uiState.collectAsState()
+            val radioState by app.torXRadioManager.state.collectAsState()
+            val haLowState by app.haLowGatewayManager.state.collectAsState()
 
             SettingsScreen(
                 displayName = currentSettingsState.displayName,
@@ -810,6 +816,8 @@ fun TorXOneApp() {
                 screenSecurityEnabled = currentSettingsState.screenSecurityEnabled,
                 autoConnectNearby = currentSettingsState.autoConnectNearby,
                 lowBandwidthMode = currentSettingsState.lowBandwidthMode,
+                radioState = radioState,
+                haLowState = haLowState,
                 themeMode = currentSettingsState.themeMode,
                 dynamicColorsEnabled = currentSettingsState.dynamicColorsEnabled,
                 autoDownloadMedia = currentSettingsState.autoDownloadMedia,
@@ -831,6 +839,22 @@ fun TorXOneApp() {
                     settingsViewModel.setSecurity(field, value)
                 },
                 onConnectionChange = { field, value -> settingsViewModel.setConnection(field, value) },
+                onPairRadio = {
+                    coroutineScope.launch {
+                        runCatching { app.torXRadioManager.approvePairing() }
+                            .onFailure {
+                                android.widget.Toast.makeText(context, it.message ?: "Radio pairing failed", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                    }
+                },
+                onPairHaLow = {
+                    coroutineScope.launch {
+                        runCatching { app.haLowGatewayManager.approvePairing() }
+                            .onFailure {
+                                android.widget.Toast.makeText(context, it.message ?: "HaLow pairing failed", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                    }
+                },
                 onAppearanceChange = { field, value -> settingsViewModel.setAppearance(field, value) },
                 onDataChange = { field, value -> settingsViewModel.setData(field, value) }
             )

@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.torxone.app.transport.lora.RadioConnectionState
+import com.torxone.app.transport.halow.HaLowConnectionState
 
 /**
  * Settings screen — full control center for the app.
@@ -49,6 +51,8 @@ fun SettingsScreen(
     // Connection
     autoConnectNearby: Boolean,
     lowBandwidthMode: Boolean,
+    radioState: RadioConnectionState,
+    haLowState: HaLowConnectionState,
     // Appearance
     themeMode: String,
     dynamicColorsEnabled: Boolean,
@@ -61,6 +65,8 @@ fun SettingsScreen(
     onNotificationChange: (field: String, value: Any) -> Unit,
     onSecurityChange: (field: String, value: Boolean) -> Unit,
     onConnectionChange: (field: String, value: Boolean) -> Unit,
+    onPairRadio: () -> Unit,
+    onPairHaLow: () -> Unit,
     onAppearanceChange: (field: String, value: Any) -> Unit,
     onDataChange: (field: String, value: Boolean) -> Unit,
     onAboutClick: () -> Unit = {}
@@ -253,6 +259,9 @@ fun SettingsScreen(
                 onCheckedChange = { onConnectionChange("lowBandwidth", it) }
             )
 
+            TorXRadioRow(radioState = radioState, onPairRadio = onPairRadio)
+            HaLowGatewayRow(haLowState = haLowState, onPairHaLow = onPairHaLow)
+
             SettingsDivider()
 
             // ─── Appearance ──────────────────────────────────────────
@@ -321,6 +330,59 @@ fun SettingsScreen(
             }
 
             Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun TorXRadioRow(radioState: RadioConnectionState, onPairRadio: () -> Unit) {
+    val (title, subtitle) = when (radioState) {
+        RadioConnectionState.Idle -> "TorX Radio" to "Radio discovery is stopped"
+        RadioConnectionState.Scanning -> "TorX Radio" to "Looking for TorX hardware…"
+        is RadioConnectionState.Recognized -> "TorX Radio found" to (radioState.candidate.displayName ?: radioState.candidate.stableId)
+        is RadioConnectionState.Connecting -> "Connecting to TorX Radio" to (radioState.candidate.displayName ?: radioState.candidate.stableId)
+        is RadioConnectionState.NeedsPairing -> "Pair TorX Radio" to "${radioState.capabilities.deviceId} · ${radioState.capabilities.board} · ${radioState.capabilities.region}"
+        is RadioConnectionState.Ready -> "TorX Radio connected" to "${radioState.capabilities.deviceId} · ${radioState.capabilities.radioChip} · ${radioState.capabilities.region}"
+        is RadioConnectionState.Failed -> "TorX Radio unavailable" to radioState.reason
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.CellTower, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        }
+        if (radioState is RadioConnectionState.NeedsPairing) {
+            Button(onClick = onPairRadio) { Text("Pair") }
+        }
+    }
+}
+
+@Composable
+private fun HaLowGatewayRow(haLowState: HaLowConnectionState, onPairHaLow: () -> Unit) {
+    val (title, subtitle) = when (haLowState) {
+        HaLowConnectionState.Idle -> "Wi-Fi HaLow gateway" to "Gateway discovery is stopped"
+        HaLowConnectionState.Discovering -> "Wi-Fi HaLow gateway" to "Looking for TorX gateways…"
+        is HaLowConnectionState.Connecting -> "Connecting to HaLow gateway" to haLowState.candidate.serviceName
+        is HaLowConnectionState.NeedsPairing -> "Pair HaLow gateway" to "${haLowState.capabilities.gatewayId} · ${haLowState.capabilities.chipset} · ${haLowState.capabilities.region}"
+        is HaLowConnectionState.Ready -> "HaLow gateway connected" to "${haLowState.capabilities.gatewayId} · ${haLowState.capabilities.chipset} · ${haLowState.capabilities.region}"
+        is HaLowConnectionState.Failed -> "HaLow gateway unavailable" to haLowState.reason
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Filled.Router, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+        }
+        if (haLowState is HaLowConnectionState.NeedsPairing) {
+            Button(onClick = onPairHaLow) { Text("Pair") }
         }
     }
 }

@@ -457,6 +457,9 @@ class IncomingDispatcher(
                         MessageType.FILE_PROGRESS -> {
                             requireHandlerSuccess(mediaHandler?.handleMediaChunk(connection, secureEnvelope), "MEDIA_CHUNK")
                         }
+                        MessageType.FILE_ACCEPT -> {
+                            requireHandlerSuccess(mediaHandler?.handleMediaAccept(connection, secureEnvelope), "MEDIA_ACCEPT")
+                        }
                         MessageType.FILE_COMPLETE -> {
                             requireHandlerSuccess(mediaHandler?.handleMediaComplete(connection, secureEnvelope), "MEDIA_COMPLETE")
                         }

@@ -30,6 +30,7 @@ class AesGcmKeyProtector(
         const val GCM_IV_LENGTH = 12
         const val GCM_TAG_LENGTH_BITS = 128
         private val secureRandom = SecureRandom()
+
     }
 
     init {
@@ -86,6 +87,18 @@ class AndroidKeystoreKeyProtector(
         const val GCM_IV_LENGTH = 12
         const val GCM_TAG_LENGTH_BITS = 128
         private val secureRandom = SecureRandom()
+
+        internal fun isStrongBoxUnavailable(error: Throwable): Boolean {
+            var current: Throwable? = error
+            while (current != null) {
+                if (current.javaClass.simpleName == "StrongBoxUnavailableException" ||
+                    current.message?.contains("No StrongBox available", ignoreCase = true) == true ||
+                    current.message?.contains("StrongBox unavailable", ignoreCase = true) == true
+                ) return true
+                current = current.cause
+            }
+            return false
+        }
     }
 
     private val secretKey: java.security.Key by lazy {
@@ -96,27 +109,33 @@ class AndroidKeystoreKeyProtector(
         try {
             val keyStore = java.security.KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             if (!keyStore.containsAlias(alias)) {
-                val keyGenerator = javax.crypto.KeyGenerator.getInstance(
-                    android.security.keystore.KeyProperties.KEY_ALGORITHM_AES,
-                    ANDROID_KEYSTORE
-                )
-                val builder = android.security.keystore.KeyGenParameterSpec.Builder(
-                    alias,
-                    android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
-                )
-                    .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
-                    .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setKeySize(256)
+                fun generate(strongBox: Boolean) {
+                    val keyGenerator = javax.crypto.KeyGenerator.getInstance(
+                        android.security.keystore.KeyProperties.KEY_ALGORITHM_AES,
+                        ANDROID_KEYSTORE
+                    )
+                    val builder = android.security.keystore.KeyGenParameterSpec.Builder(
+                        alias,
+                        android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
+                    )
+                        .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        builder.setIsStrongBoxBacked(strongBox)
+                    }
+                    keyGenerator.init(builder.build())
+                    // Some providers report StrongBox absence only here, after init succeeds.
+                    keyGenerator.generateKey()
+                }
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                     try {
-                        keyGenerator.init(builder.setIsStrongBoxBacked(true).build())
-                    } catch (_: android.security.keystore.StrongBoxUnavailableException) {
-                        keyGenerator.init(builder.setIsStrongBoxBacked(false).build())
+                        generate(strongBox = true)
+                    } catch (error: Exception) {
+                        if (!isStrongBoxUnavailable(error)) throw error
+                        generate(strongBox = false)
                     }
-                } else {
-                    keyGenerator.init(builder.build())
-                }
-                keyGenerator.generateKey()
+                } else generate(strongBox = false)
             }
             return keyStore.getKey(alias, null)
                 ?: throw IllegalStateException("KeyStore key could not be retrieved for alias: $alias")

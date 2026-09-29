@@ -271,7 +271,7 @@ class TorXNotificationManager(
             val displayText = latestFormattedContent?.text ?: "New message"
 
             val publicNotification = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
                 .setContentTitle(if (privacyMode == NotificationPrivacyMode.HIDDEN) "TorX One" else contactTitle)
                 .setContentText("New message")
                 .setContentIntent(openPendingIntent)
@@ -286,7 +286,7 @@ class TorXNotificationManager(
 
             val notificationId = NotificationPolicy.getNotificationId(conversationId)
             val notification = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
                 .setContentTitle(displayTitle)
                 .setContentText(displayText)
                 .setStyle(messagingStyle)

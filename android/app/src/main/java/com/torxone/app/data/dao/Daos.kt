@@ -421,6 +421,51 @@ interface MediaTransferDao {
 }
 
 @Dao
+interface RelayQueueDao {
+    @Query("SELECT * FROM relay_packets WHERE packet_id = :packetId")
+    suspend fun getPacket(packetId: String): RelayPacketEntity?
+
+    @Query("SELECT COUNT(*) FROM relay_packets")
+    suspend fun packetCount(): Int
+
+    @Query("SELECT COALESCE(SUM(packet_bytes), 0) FROM relay_packets")
+    suspend fun totalBytes(): Long
+
+    @Query("SELECT COUNT(*) FROM relay_packets WHERE source_node_id = :sourceNodeId")
+    suspend fun sourcePacketCount(sourceNodeId: String): Int
+
+    @Query("SELECT COALESCE(SUM(packet_bytes), 0) FROM relay_packets WHERE source_node_id = :sourceNodeId")
+    suspend fun sourceBytes(sourceNodeId: String): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPacket(packet: RelayPacketEntity): Long
+
+    @Query("SELECT * FROM relay_packets WHERE status = 'QUEUED' AND next_attempt_at <= :now AND expires_at > :now ORDER BY priority DESC, created_at ASC LIMIT :limit")
+    suspend fun getDue(now: Long, limit: Int): List<RelayPacketEntity>
+
+    @Query("UPDATE relay_packets SET status = :status, attempt_count = :attemptCount, next_attempt_at = :nextAttemptAt, last_error = :lastError, last_next_hop_node_id = :lastNextHopNodeId WHERE packet_id = :packetId")
+    suspend fun updateAttempt(packetId: String, status: String, attemptCount: Int, nextAttemptAt: Long, lastError: String?, lastNextHopNodeId: String?)
+
+    @Query("DELETE FROM relay_packets WHERE packet_id = :packetId")
+    suspend fun deletePacket(packetId: String)
+
+    @Query("DELETE FROM relay_packets WHERE expires_at <= :now")
+    suspend fun deleteExpiredPackets(now: Long): Int
+
+    @Query("DELETE FROM relay_packets WHERE packet_id IN (SELECT packet_id FROM relay_packets ORDER BY priority ASC, created_at ASC LIMIT 1)")
+    suspend fun evictLowestPriority(): Int
+
+    @Query("SELECT * FROM relay_receipts WHERE packet_id = :packetId AND expires_at > :now")
+    suspend fun getReceipt(packetId: String, now: Long): RelayReceiptEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReceipt(receipt: RelayReceiptEntity)
+
+    @Query("DELETE FROM relay_receipts WHERE expires_at <= :now")
+    suspend fun deleteExpiredReceipts(now: Long): Int
+}
+
+@Dao
 interface ConsumedInviteDao {
     @Query("SELECT invite_id FROM consumed_invites")
     suspend fun getAllConsumedInviteIds(): List<String>

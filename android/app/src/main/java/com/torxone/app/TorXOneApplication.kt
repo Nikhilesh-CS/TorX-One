@@ -70,6 +70,13 @@ class TorXOneApplication : Application() {
     lateinit var transportRouter: TransportRouter
         private set
 
+    lateinit var torXRadioManager: com.torxone.app.transport.lora.TorXRadioManager
+        private set
+    lateinit var haLowGatewayManager: com.torxone.app.transport.halow.HaLowGatewayManager
+        private set
+    lateinit var globalGatewayRoutes: com.torxone.app.transport.gateway.GatewayRouteDirectory
+        private set
+
     lateinit var sessionStore: RoomSessionStore
         private set
 
@@ -224,6 +231,33 @@ class TorXOneApplication : Application() {
 
         // 5. Transport Router
         transportRouter = TransportRouter()
+        val radioTrustStore = com.torxone.app.transport.lora.TorXRadioTrustStore(this)
+        torXRadioManager = com.torxone.app.transport.lora.TorXRadioManager(
+            scope = applicationScope,
+            discovery = com.torxone.app.transport.lora.BleTorXRadioDiscovery(this),
+            linkFactory = com.torxone.app.transport.lora.TorXRadioLinkFactory {
+                com.torxone.app.transport.lora.BleTorXRadioLink(this)
+            },
+            isTrustedIdentity = radioTrustStore::isTrusted,
+            trustIdentity = radioTrustStore::trust
+        )
+        transportRouter.registerTransport(com.torxone.app.transport.lora.LoRaTransport(torXRadioManager))
+        val haLowTrustStore = com.torxone.app.transport.halow.HaLowGatewayTrustStore(this)
+        haLowGatewayManager = com.torxone.app.transport.halow.HaLowGatewayManager(
+            scope = applicationScope,
+            discovery = com.torxone.app.transport.halow.AndroidHaLowGatewayDiscovery(this),
+            linkFactory = com.torxone.app.transport.halow.HaLowGatewayLinkFactory {
+                com.torxone.app.transport.halow.TcpHaLowGatewayLink()
+            },
+            isTrusted = haLowTrustStore::isTrusted,
+            saveTrust = haLowTrustStore::trust
+        )
+        transportRouter.registerTransport(com.torxone.app.transport.halow.HaLowTransport(haLowGatewayManager))
+        globalGatewayRoutes = com.torxone.app.transport.gateway.GatewayRouteDirectory()
+        transportRouter.registerTransport(com.torxone.app.transport.gateway.GlobalGatewayTransport(
+            localGateway = haLowGatewayManager,
+            routes = globalGatewayRoutes
+        ))
 
         // 6. TorXAgent
         agent = TorXAgent(
@@ -287,7 +321,8 @@ class TorXOneApplication : Application() {
             transactionRunner = { block -> database.withTransaction { block() } },
             contactDao = database.contactDao(),
             relationshipSendCoordinator = relationshipSendCoordinator,
-            sessionStore = sessionStore
+            sessionStore = sessionStore,
+            dedicatedMediaTransport = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter)
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -402,7 +437,29 @@ class TorXOneApplication : Application() {
             pairRelationshipDao = database.pairRelationshipDao(),
             keyProtector = keyProtector
         )
-        incomingTransportHub = IncomingTransportHub(incomingDispatcher)
+        incomingTransportHub = IncomingTransportHub(
+            dispatcher = incomingDispatcher,
+            dedicatedMediaFrameHandler = mediaService::handleDedicatedMediaFrame
+        )
+        applicationScope.launch {
+            torXRadioManager.incomingFrames.collect { frame ->
+                val payload = runCatching {
+                    com.torxone.app.transport.lora.LoRaTransport.decodeReceivedPacket(frame).second
+                }.getOrNull() ?: return@collect
+                incomingTransportHub.onRawFrameReceived(payload, com.torxone.app.transport.TransportType.LORA)
+            }
+        }
+        applicationScope.launch {
+            haLowGatewayManager.incomingFrames.collect { bytes ->
+                val frame = runCatching { com.torxone.app.transport.halow.HaLowGatewayProtocol.decode(bytes) }.getOrNull()
+                    ?: return@collect
+                if (frame.kind != com.torxone.app.transport.halow.HaLowGatewayProtocol.Kind.RECEIVED_PACKET) return@collect
+                val payload = runCatching {
+                    com.torxone.app.transport.halow.HaLowGatewayProtocol.decodeRoutedPayload(frame.payload).second
+                }.getOrNull() ?: return@collect
+                incomingTransportHub.onRawFrameReceived(payload, com.torxone.app.transport.TransportType.WIFI_HALOW)
+            }
+        }
 
         // 9. Tor transport: opaque TorX ciphertext over an embedded v3 onion service.
         torRouteManager = TorRouteManager(this)
@@ -425,6 +482,151 @@ class TorXOneApplication : Application() {
             appSettingsRepository = settingsRepository
         )
         transportRouter.registerTransport(nearbyTransport)
+
+        // 9c. Offline multi-hop mesh. Nearby remains the authenticated hop link;
+        // mesh packets carry opaque TorX ciphertext and select one next hop.
+        val meshPeers = com.torxone.app.transport.mesh.MeshPeerDirectory()
+        val meshRoutes = com.torxone.app.transport.mesh.MeshRoutingTable()
+        val meshRelayPolicy = com.torxone.app.transport.mesh.MeshRelayPolicy(relayEnabled = true)
+        val durableRelayStore = com.torxone.app.transport.mesh.DurableRelayStore(
+            database.relayQueueDao(), meshRelayPolicy
+        )
+        val knownMeshSigningKeys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+        val meshNodeByQueue = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val meshDiscovery = com.torxone.app.transport.mesh.MeshRouteDiscovery(
+            routingTable = meshRoutes,
+            peerDirectory = meshPeers,
+            publicKeyForNode = { knownMeshSigningKeys[it] }
+        )
+        suspend fun sendMeshToPeer(peer: com.torxone.app.transport.mesh.MeshPeer, bytes: ByteArray): Boolean =
+            nearbyTransport.send(
+                com.torxone.app.transport.TransportDestination(peer.sendQueueAddress), bytes
+            ) is com.torxone.app.transport.TransportResult.Accepted
+
+        val meshNetwork = com.torxone.app.transport.mesh.MeshNetworkLayer(
+            localNodeId = "identity-pending",
+            localNodeIdProvider = { getLocalIdentityId() ?: "identity-pending" },
+            routingTable = meshRoutes,
+            duplicateCache = com.torxone.app.transport.mesh.MeshDuplicateCache(),
+            relayPolicy = meshRelayPolicy,
+            deliverLocal = { payload -> incomingDispatcher.dispatch(payload, com.torxone.app.transport.TransportType.RELAY) },
+            sendToNextHop = { nodeId, packet ->
+                meshPeers.get(nodeId)?.let { sendMeshToPeer(it, packet) } ?: false
+            },
+            durableRelayStore = durableRelayStore,
+            sendCustodyAck = { nodeId, ack ->
+                meshPeers.get(nodeId)?.let { sendMeshToPeer(it, ack) } ?: false
+            }
+        )
+        val meshTransport = com.torxone.app.transport.mesh.MeshTransport(
+            localNodeIdProvider = { getLocalIdentityId() },
+            routingTable = meshRoutes,
+            peerDirectory = meshPeers,
+            peerLink = com.torxone.app.transport.mesh.MeshPeerLink { peer, packet -> sendMeshToPeer(peer, packet) },
+            nodeIdForAddress = { meshNodeByQueue[it] }
+        )
+        transportRouter.registerTransport(meshTransport)
+
+        incomingTransportHub.meshFrameHandler = { bytes, _, relationshipId ->
+            if (relationshipId == null) {
+                false
+            } else {
+                val contact = database.contactDao().getByRelationshipId(relationshipId)
+                val peerNodeId = contact?.remoteIdentityId?.takeIf { contact.isRemoteIdentityKnown }
+                if (peerNodeId == null) {
+                    false
+                } else if (com.torxone.app.transport.mesh.MeshCustodyAckCodec.isAck(bytes)) {
+                    meshNetwork.receiveCustodyAck(peerNodeId, bytes)
+                } else if (com.torxone.app.transport.mesh.MeshPacketCodec.isMeshPacket(bytes)) {
+                    meshNetwork.receive(peerNodeId, bytes) !is com.torxone.app.transport.mesh.MeshReceiveResult.Rejected
+                } else {
+                    val announcement = runCatching {
+                        com.torxone.app.transport.mesh.MeshRouteAnnouncementCodec.decode(bytes)
+                    }.getOrNull()
+                    val accepted = announcement?.let { meshDiscovery.receive(peerNodeId, it) } ?: false
+                    if (accepted) {
+                        val acceptedAnnouncement = requireNotNull(announcement)
+                        val propagated = acceptedAnnouncement.copy(
+                            advertisedHopCount = acceptedAnnouncement.advertisedHopCount + 1
+                        )
+                        if (propagated.advertisedHopCount < com.torxone.app.transport.mesh.MeshPacketCodec.MAX_TTL) {
+                            val encoded = com.torxone.app.transport.mesh.MeshRouteAnnouncementCodec.encode(propagated)
+                            meshPeers.all().filter { it.nodeId != peerNodeId }.forEach { sendMeshToPeer(it, encoded) }
+                        }
+                        meshNetwork.retryStored()
+                    }
+                    accepted
+                }
+            }
+        }
+
+        directRouteTable.addRouteListener { relationshipId, state, _ ->
+            applicationScope.launch {
+                val contact = database.contactDao().getByRelationshipId(relationshipId) ?: return@launch
+                val nodeId = contact.remoteIdentityId.takeIf { contact.isRemoteIdentityKnown } ?: return@launch
+                if (state == com.torxone.app.transport.nearby.RouteState.READY) {
+                    val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return@launch
+                    knownMeshSigningKeys[nodeId] = contact.signingPublicKey.copyOf()
+                    meshNodeByQueue[connection.sendQueueId] = nodeId
+                    val peer = com.torxone.app.transport.mesh.MeshPeer(
+                        nodeId, relationshipId, connection.sendQueueId, contact.signingPublicKey, relayAllowed = true
+                    )
+                    meshPeers.authenticated(peer)
+                    meshRelayPolicy.allow(nodeId)
+                    val now = System.currentTimeMillis()
+                    meshRoutes.installAuthenticated(
+                        com.torxone.app.transport.mesh.MeshRoute(nodeId, nodeId, 1, now, now + 120_000, nodeId)
+                    )
+                    meshNetwork.retryStored()
+                    val identity = identityRepository.loadIdentity() ?: return@launch
+                    val announcement = meshDiscovery.createLocalAnnouncement(
+                        identity.identityId, now, now + 120_000, identity.signingPrivateKey
+                    )
+                    sendMeshToPeer(peer, com.torxone.app.transport.mesh.MeshRouteAnnouncementCodec.encode(announcement))
+                } else if (state == com.torxone.app.transport.nearby.RouteState.DISCONNECTED) {
+                    meshPeers.disconnected(nodeId)
+                    meshRelayPolicy.revoke(nodeId)
+                    meshRoutes.removePeer(nodeId)
+                }
+            }
+        }
+
+        applicationScope.launch {
+            // Populate trust and queue bindings for known contacts, including a
+            // destination currently reachable only through mesh relays.
+            database.contactDao().getAll().forEach { contact ->
+                if (contact.isRemoteIdentityKnown) {
+                    knownMeshSigningKeys[contact.remoteIdentityId] = contact.signingPublicKey.copyOf()
+                    connectionManager.getConnectionByRelationship(contact.relationshipId)?.let { connection ->
+                        meshNodeByQueue[connection.sendQueueId] = contact.remoteIdentityId
+                    }
+                }
+            }
+            while (isActive) {
+                delay(60_000)
+                val identity = identityRepository.loadIdentity() ?: continue
+                val now = System.currentTimeMillis()
+                val localAnnouncement = meshDiscovery.createLocalAnnouncement(
+                    identity.identityId, now, now + 120_000, identity.signingPrivateKey
+                )
+                val encoded = com.torxone.app.transport.mesh.MeshRouteAnnouncementCodec.encode(localAnnouncement)
+                meshPeers.all().forEach { peer ->
+                    meshRoutes.installAuthenticated(
+                        com.torxone.app.transport.mesh.MeshRoute(
+                            peer.nodeId, peer.nodeId, 1, now, now + 120_000, peer.nodeId
+                        )
+                    )
+                    sendMeshToPeer(peer, encoded)
+                }
+            }
+        }
+        applicationScope.launch {
+            while (isActive) {
+                delay(15_000)
+                durableRelayStore.prune()
+                meshNetwork.retryStored()
+            }
+        }
 
         // 9. Chat Feature Service
         chatService = ChatService(
@@ -483,7 +685,11 @@ class TorXOneApplication : Application() {
                     )
                 ) {
                     nearbyTransport.start()
+                    runCatching { torXRadioManager.start() }
+                        .onFailure { android.util.Log.w("TorXOneApplication", "TorX Radio discovery unavailable", it) }
                 }
+                runCatching { haLowGatewayManager.start() }
+                    .onFailure { android.util.Log.w("TorXOneApplication", "TorX HaLow discovery unavailable", it) }
 
                 // Recover any interrupted media transfers, fan-outs, and incomplete bootstraps
                 mediaService.recoverPendingTransfersOnStartup()

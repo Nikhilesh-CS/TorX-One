@@ -9,7 +9,7 @@ import java.io.DataOutputStream
  * Deterministic binary serialization for media descriptors and chunk control packets.
  */
 object MediaProtocolCodec {
-    const val MAX_CHUNK_BYTES = 16 * 1024
+    const val MAX_CHUNK_BYTES = DedicatedMediaFrameCodec.MAX_PLAINTEXT_CHUNK_BYTES
     const val MAX_CHUNK_COUNT = 65_536
     const val MAX_MEDIA_BYTES = 1L shl 30
     private const val MAX_CONTROL_ID_LENGTH = 128
@@ -20,6 +20,7 @@ object MediaProtocolCodec {
     private const val RESUME_MAGIC = 0x54584D52     // "TXMR"
     private const val CANCEL_MAGIC = 0x54584D58     // "TXMX"
     private const val COMPLETE_MAGIC = 0x54584350   // "TXCP"
+    private const val ACCEPT_MAGIC = 0x54584D59     // "TXMY"
 
     // ─── MediaDescriptor ──────────────────────────────────────────────
 
@@ -144,6 +145,29 @@ object MediaProtocolCodec {
             totalChunks = totalChunks,
             chunkData = chunkData
         )
+    }
+
+    // ─── MediaChunkAck ────────────────────────────────────────────────
+
+    fun encodeAccept(accept: MediaAcceptPayload): ByteArray {
+        require(accept.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        return ByteArrayOutputStream().use { output ->
+            DataOutputStream(output).use { data ->
+                data.writeInt(ACCEPT_MAGIC)
+                data.writeUTF(accept.mediaId)
+            }
+            output.toByteArray()
+        }
+    }
+
+    fun decodeAccept(bytes: ByteArray): MediaAcceptPayload {
+        require(bytes.size <= 2048) { "Media accept payload too large" }
+        return DataInputStream(ByteArrayInputStream(bytes)).use { data ->
+            require(data.readInt() == ACCEPT_MAGIC) { "Invalid MediaAccept magic header" }
+            val mediaId = data.readUTF()
+            require(data.available() == 0 && mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+            MediaAcceptPayload(mediaId)
+        }
     }
 
     // ─── MediaChunkAck ────────────────────────────────────────────────
