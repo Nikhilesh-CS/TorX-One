@@ -49,7 +49,7 @@ class KeystoreIdentityRepository(
     private val context: Context,
     private val pendingInviteDao: com.torxone.app.data.dao.PendingInviteDao? = null,
     private val allowInsecureFallback: Boolean = false,
-    val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector()
+    val keyProtector: com.torxone.app.security.SecurityRepository
 ) : IdentityRepository {
 
     private val identityMutex = kotlinx.coroutines.sync.Mutex()
@@ -153,16 +153,25 @@ class KeystoreIdentityRepository(
             }
             val name = prefs.getString("display_name", "") ?: ""
             val signPub = prefs.getString("sign_pub", null)?.let { Base64.getDecoder().decode(it) }
-            val signPriv = prefs.getString("sign_priv", null)?.let { Base64.getDecoder().decode(it) }
+            val privateKeyFormat = prefs.getInt("identity_crypto_format", com.torxone.app.security.VersionedSecurityRepository.FORMAT_V1_RAW)
+            val storedSignPriv = prefs.getString("sign_priv", null)?.let { Base64.getDecoder().decode(it) }
             val encPub = prefs.getString("enc_pub", null)?.let { Base64.getDecoder().decode(it) }
-            val encPriv = prefs.getString("enc_priv", null)?.let { Base64.getDecoder().decode(it) }
+            val storedEncPriv = prefs.getString("enc_priv", null)?.let { Base64.getDecoder().decode(it) }
             val createdAt = prefs.getLong("created_at", System.currentTimeMillis())
 
-            if (signPub == null || signPriv == null || encPub == null || encPriv == null) {
+            if (signPub == null || storedSignPriv == null || encPub == null || storedEncPriv == null) {
                 _identityState.value = IdentityState.NoIdentity
                 return@withContext null
             }
 
+            val signPriv = keyProtector.reveal(
+                com.torxone.app.security.ProtectedSecret(privateKeyFormat, storedSignPriv),
+                com.torxone.app.security.SecretPurpose.IDENTITY_SIGNING
+            )
+            val encPriv = keyProtector.reveal(
+                com.torxone.app.security.ProtectedSecret(privateKeyFormat, storedEncPriv),
+                com.torxone.app.security.SecretPurpose.IDENTITY_ENCRYPTION
+            )
             val identity = TorXIdentity(
                 identityId = id,
                 signingPublicKey = signPub,
@@ -172,6 +181,7 @@ class KeystoreIdentityRepository(
                 displayName = name,
                 createdAt = createdAt
             )
+            if (privateKeyFormat != keyProtector.currentCryptoFormatVersion) saveIdentity(identity)
             cachedIdentity = identity
             _identityState.value = IdentityState.Ready(identity)
             identity
@@ -212,10 +222,13 @@ class KeystoreIdentityRepository(
             com.torxone.app.data.entity.PendingInviteEntity(
                 inviteId = inviteId,
                 ephemeralPublicKey = ephemeralBootstrapPair.publicKey,
-                ephemeralPrivateKey = keyProtector.wrap(ephemeralBootstrapPair.privateKey),
+                ephemeralPrivateKey = keyProtector.protect(
+                    ephemeralBootstrapPair.privateKey,
+                    com.torxone.app.security.SecretPurpose.PENDING_INVITE
+                ).bytes,
                 createdAt = now,
                 expiresAt = expiresAt,
-                cryptoFormatVersion = 1
+                cryptoFormatVersion = 3
             )
         )
 
@@ -236,17 +249,72 @@ class KeystoreIdentityRepository(
     override suspend fun getPendingInviteEphemeralPrivateKey(inviteId: String): ByteArray? = withContext(Dispatchers.IO) {
         val invite = pendingInviteDao?.getById(inviteId) ?: return@withContext null
         if (System.currentTimeMillis() > invite.expiresAt) return@withContext null
-        if (invite.cryptoFormatVersion == 0) invite.ephemeralPrivateKey else keyProtector.unwrap(invite.ephemeralPrivateKey)
+        when (invite.cryptoFormatVersion) {
+            0 -> invite.ephemeralPrivateKey
+            1 -> {
+                // Faulty v1 builds could mark raw 32-byte X25519 keys as wrapped.
+                if (invite.ephemeralPrivateKey.size == 32) {
+                    pendingInviteDao.insert(invite.copy(
+                        ephemeralPrivateKey = keyProtector.protect(
+                            invite.ephemeralPrivateKey,
+                            com.torxone.app.security.SecretPurpose.PENDING_INVITE
+                        ).bytes,
+                        cryptoFormatVersion = 3
+                    ))
+                    invite.ephemeralPrivateKey
+                } else {
+                    val raw = keyProtector.reveal(
+                        com.torxone.app.security.ProtectedSecret(2, invite.ephemeralPrivateKey),
+                        com.torxone.app.security.SecretPurpose.PENDING_INVITE
+                    )
+                    val migrated = keyProtector.protect(raw, com.torxone.app.security.SecretPurpose.PENDING_INVITE)
+                    pendingInviteDao.insert(invite.copy(ephemeralPrivateKey = migrated.bytes, cryptoFormatVersion = migrated.cryptoFormatVersion))
+                    raw
+                }
+            }
+            2 -> {
+                val raw = keyProtector.reveal(
+                    com.torxone.app.security.ProtectedSecret(2, invite.ephemeralPrivateKey),
+                    com.torxone.app.security.SecretPurpose.PENDING_INVITE
+                )
+                val migrated = keyProtector.protect(raw, com.torxone.app.security.SecretPurpose.PENDING_INVITE)
+                pendingInviteDao.insert(invite.copy(ephemeralPrivateKey = migrated.bytes, cryptoFormatVersion = migrated.cryptoFormatVersion))
+                raw
+            }
+            3 -> try {
+                keyProtector.reveal(
+                    com.torxone.app.security.ProtectedSecret(3, invite.ephemeralPrivateKey),
+                    com.torxone.app.security.SecretPurpose.PENDING_INVITE
+                )
+            } catch (purposeMismatch: SecurityException) {
+                // Compatibility for short-lived Phase 6 development builds that wrote
+                // V3 pending-invite keys through the generic KeyProtector adapter.
+                val raw = keyProtector.unwrap(invite.ephemeralPrivateKey)
+                val migrated = keyProtector.protect(raw, com.torxone.app.security.SecretPurpose.PENDING_INVITE)
+                pendingInviteDao.insert(invite.copy(ephemeralPrivateKey = migrated.bytes, cryptoFormatVersion = migrated.cryptoFormatVersion))
+                raw
+            }
+            else -> throw SecurityException("Unsupported pending-invite key format ${invite.cryptoFormatVersion}")
+        }
     }
 
     private fun saveIdentity(identity: TorXIdentity) {
+        val protectedSigningKey = keyProtector.protect(
+            identity.signingPrivateKey,
+            com.torxone.app.security.SecretPurpose.IDENTITY_SIGNING
+        )
+        val protectedEncryptionKey = keyProtector.protect(
+            identity.encryptionPrivateKey,
+            com.torxone.app.security.SecretPurpose.IDENTITY_ENCRYPTION
+        )
         val committed = prefs.edit()
             .putString("identity_id", identity.identityId)
             .putString("display_name", identity.displayName)
             .putString("sign_pub", Base64.getEncoder().encodeToString(identity.signingPublicKey))
-            .putString("sign_priv", Base64.getEncoder().encodeToString(identity.signingPrivateKey))
+            .putString("sign_priv", Base64.getEncoder().encodeToString(protectedSigningKey.bytes))
             .putString("enc_pub", Base64.getEncoder().encodeToString(identity.encryptionPublicKey))
-            .putString("enc_priv", Base64.getEncoder().encodeToString(identity.encryptionPrivateKey))
+            .putString("enc_priv", Base64.getEncoder().encodeToString(protectedEncryptionKey.bytes))
+            .putInt("identity_crypto_format", keyProtector.currentCryptoFormatVersion)
             .putLong("created_at", identity.createdAt)
             .commit()
         if (!committed) {

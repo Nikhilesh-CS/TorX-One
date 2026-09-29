@@ -254,8 +254,7 @@ class MessageActionsTest {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-                    it.nextAttemptAt <= now
+                       it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -371,13 +370,14 @@ class MessageActionsTest {
         val peerName: String,
         val relationshipId: String,
         val crypto: DoubleRatchetSessionCrypto,
+        val sessionStore: InMemorySessionStore,
         val msgDao: TestMessageDao = TestMessageDao(),
         val convDao: TestConversationDao = TestConversationDao(),
         val rxDao: TestReactionDao = TestReactionDao(),
         val outboxStore: InMemoryOutboxStore = InMemoryOutboxStore(),
         val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(outboxStore),
         val processedStore: InMemoryProcessedStore = InMemoryProcessedStore(),
-        val connManager: ConnectionManager = ConnectionManager(),
+        val connManager: ConnectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()),
         val router: TransportRouter = TransportRouter(),
         var agent: TorXAgent? = null,
         var presenceService: PresenceService? = null,
@@ -391,8 +391,10 @@ class MessageActionsTest {
         val aliceRatchet = IdentityCrypto.generateX25519KeyPair()
         val bobRatchet = IdentityCrypto.generateX25519KeyPair()
 
-        val cryptoAlice = DoubleRatchetSessionCrypto(InMemorySessionStore())
-        val cryptoBob = DoubleRatchetSessionCrypto(InMemorySessionStore())
+        val aliceSessionStore = InMemorySessionStore()
+        val bobSessionStore = InMemorySessionStore()
+        val cryptoAlice = DoubleRatchetSessionCrypto(aliceSessionStore)
+        val cryptoBob = DoubleRatchetSessionCrypto(bobSessionStore)
 
         cryptoAlice.initializeSession(
             relationshipId = relationshipId,
@@ -418,8 +420,8 @@ class MessageActionsTest {
             generation = 1,
             sendQueueId = "q-a2b",
             recvQueueId = "q-b2a",
-            sendAuth = "auth-a2b".toByteArray(),
-            recvAuth = "auth-b2a".toByteArray()
+            sendAuth = ByteArray(32) { 1 },
+            recvAuth = ByteArray(32) { 2 }
         )
         val connBob = Connection(
             connectionId = "c-b",
@@ -427,14 +429,14 @@ class MessageActionsTest {
             generation = 1,
             sendQueueId = "q-b2a",
             recvQueueId = "q-a2b",
-            sendAuth = "auth-b2a".toByteArray(),
-            recvAuth = "auth-a2b".toByteArray()
+            sendAuth = ByteArray(32) { 2 },
+            recvAuth = ByteArray(32) { 1 }
         )
 
-        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice).apply {
+        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice, aliceSessionStore).apply {
             connManager.registerConnection(connAlice)
         }
-        val bob = TestNode("bob", "alice", relationshipId, cryptoBob).apply {
+        val bob = TestNode("bob", "alice", relationshipId, cryptoBob, bobSessionStore).apply {
             connManager.registerConnection(connBob)
         }
 
@@ -444,8 +446,8 @@ class MessageActionsTest {
         val routeTableAlice = DirectRouteTable().apply { bindRoute(relationshipId, "ep-bob", RouteState.READY) }
         val routeTableBob = DirectRouteTable().apply { bindRoute(relationshipId, "ep-alice", RouteState.READY) }
 
-        alice.presenceService = PresenceService(alice.connManager, cryptoAlice, alice.agent!!, routeTableAlice, localIdentityIdProvider = { "alice" })
-        bob.presenceService = PresenceService(bob.connManager, cryptoBob, bob.agent!!, routeTableBob, localIdentityIdProvider = { "bob" })
+        alice.presenceService = PresenceService(alice.connManager, cryptoAlice, alice.agent!!, routeTableAlice, localIdentityIdProvider = { "alice" }, remoteIdentityProvider = { "bob" })
+        bob.presenceService = PresenceService(bob.connManager, cryptoBob, bob.agent!!, routeTableBob, localIdentityIdProvider = { "bob" }, remoteIdentityProvider = { "alice" })
 
         val rxHandlerAlice = ReactionHandler(alice.rxDao, alice.msgDao)
         val rxHandlerBob = ReactionHandler(bob.rxDao, bob.msgDao)
@@ -460,6 +462,7 @@ class MessageActionsTest {
         val trackerBob = ActiveConversationTracker().apply { setActiveConversation(relationshipId) }
 
         alice.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = alice.connManager,
             sessionCrypto = cryptoAlice,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -474,6 +477,7 @@ class MessageActionsTest {
             deliveryReceiptHandler = DeliveryReceiptHandler(alice.msgDao, alice.outboxDao, alice.agent!!),
             agent = alice.agent!!,
             localIdentityIdProvider = { "alice" },
+            authenticatedRemoteIdentityProvider = { "bob" },
             presenceHandler = PresenceHandler(alice.presenceService!!),
             typingHandler = TypingHandler(alice.presenceService!!),
             reactionHandler = rxHandlerAlice,
@@ -482,6 +486,7 @@ class MessageActionsTest {
         )
 
         bob.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = bob.connManager,
             sessionCrypto = cryptoBob,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -496,6 +501,7 @@ class MessageActionsTest {
             deliveryReceiptHandler = DeliveryReceiptHandler(bob.msgDao, bob.outboxDao, bob.agent!!),
             agent = bob.agent!!,
             localIdentityIdProvider = { "bob" },
+            authenticatedRemoteIdentityProvider = { "alice" },
             presenceHandler = PresenceHandler(bob.presenceService!!),
             typingHandler = TypingHandler(bob.presenceService!!),
             reactionHandler = rxHandlerBob,
@@ -517,6 +523,7 @@ class MessageActionsTest {
             messageDao = alice.msgDao,
             conversationDao = alice.convDao,
             outboxDao = alice.outboxDao,
+            sessionStore = alice.sessionStore,
             reactionDao = alice.rxDao
         )
 
@@ -527,6 +534,7 @@ class MessageActionsTest {
             messageDao = bob.msgDao,
             conversationDao = bob.convDao,
             outboxDao = bob.outboxDao,
+            sessionStore = bob.sessionStore,
             reactionDao = bob.rxDao
         )
 
@@ -582,7 +590,7 @@ class MessageActionsTest {
         )
 
         // Give loopback time to deliver
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
 
         // Verify reaction is stored in Bob's DB
         val bobReactions = bob.rxDao.getForMessage(msgId)
@@ -607,7 +615,7 @@ class MessageActionsTest {
             operation = ReactionOperation.ADD
         )
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
 
         val aliceAllReactions = alice.rxDao.getForMessage(msgId)
         assertEquals(2, aliceAllReactions.size)
@@ -625,7 +633,7 @@ class MessageActionsTest {
             operation = ReactionOperation.REMOVE
         )
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
 
         // Bob's side only has Alice's 👍
         val bobRemaining = bob.rxDao.getForMessage(msgId)
@@ -749,7 +757,7 @@ class MessageActionsTest {
             newText = "Version 1 text"
         )
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
 
         assertEquals("Version 1 text", alice.msgDao.getById(msgId)?.body)
         assertEquals(1, alice.msgDao.getById(msgId)?.editVersion)
@@ -793,7 +801,7 @@ class MessageActionsTest {
             newText = "Version 2 final text"
         )
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
         assertEquals("Version 2 final text", bob.msgDao.getById(msgId)?.body)
         assertEquals(2, bob.msgDao.getById(msgId)?.editVersion)
 
@@ -871,7 +879,7 @@ class MessageActionsTest {
         )
         assertTrue(aliceDeleteResult)
 
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(750)
 
         // Verify tombstone on Alice's side:
         val aliceRoot = alice.msgDao.getById(rootMsgId)

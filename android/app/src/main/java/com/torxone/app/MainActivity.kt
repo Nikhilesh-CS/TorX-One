@@ -97,7 +97,7 @@ fun TorXOneApp() {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("TorX One could not safely initialize.", style = MaterialTheme.typography.titleMedium)
-                Text(error.message ?: "Initialization failed. Your data has not been opened.")
+                Text("TorX One couldn't securely open local data. Error code: INIT-DB-01")
                 Button(onClick = { (context as? android.app.Activity)?.recreate() }) { Text("Retry") }
             }
         }
@@ -143,7 +143,10 @@ fun TorXOneApp() {
             sessionCrypto = app.sessionCrypto,
             connectionManager = app.connectionManager,
             agent = app.agent,
-            nearbyTransport = app.nearbyTransport
+            nearbyTransport = app.nearbyTransport,
+            torRouteManager = app.torRouteManager,
+            localOnionAddress = { app.onionEndpointManager.onionAddress() },
+            keyProtector = app.keyProtector
         )
     }
 

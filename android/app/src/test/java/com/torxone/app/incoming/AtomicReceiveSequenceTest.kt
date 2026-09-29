@@ -18,7 +18,7 @@ class AtomicReceiveSequenceTest {
     @Before
     fun setUp() {
         connectionDao = FakeConnectionDao()
-        connectionManager = ConnectionManager(connectionDao = connectionDao)
+        connectionManager = ConnectionManager(connectionDao = connectionDao, keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
     }
 
     @Test

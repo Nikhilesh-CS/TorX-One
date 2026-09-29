@@ -288,13 +288,13 @@ class CallStateMachineTest {
     }
 
     @Test
-    fun `enableVideo changes type to VIDEO and enables camera`() = runTest {
+    fun `enableVideo does not fake an unsupported voice to video renegotiation`() = runTest {
         callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)
         assertEquals(CallType.VOICE, callManager.activeCall.value!!.type)
 
         callManager.enableVideo()
-        assertEquals(CallType.VIDEO, callManager.activeCall.value!!.type)
-        assertTrue(callManager.activeCall.value!!.isCameraOn)
+        assertEquals(CallType.VOICE, callManager.activeCall.value!!.type)
+        assertFalse(callManager.activeCall.value!!.isCameraOn)
     }
 
     @Test

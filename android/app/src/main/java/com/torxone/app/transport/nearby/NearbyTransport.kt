@@ -43,7 +43,7 @@ class NearbyTransport(
     adapter: NearbyConnectionsAdapter? = null,
     val directRouteTable: DirectRouteTable = DirectRouteTable(),
     private val appSettingsRepository: AppSettingsRepository? = null
-) : Transport {
+) : Transport, AddressableTransport {
 
     companion object {
         private const val TAG = "NearbyTransport"
@@ -72,6 +72,11 @@ class NearbyTransport(
 
     private val _availability = MutableStateFlow<TransportAvailability>(TransportAvailability.Unavailable("Not started"))
     override fun availability(): Flow<TransportAvailability> = _availability.asStateFlow()
+
+    override fun canRoute(destination: TransportDestination): Boolean {
+        val endpoint = directRouteTable.getEndpointForQueue(destination.address) ?: return false
+        return destination.address.startsWith("invite-") || directRouteTable.isEndpointReady(endpoint)
+    }
 
     private val pendingTransfers = ConcurrentHashMap<Long, CompletableDeferred<TransportResult>>()
     private val payloadIdToEndpoint = ConcurrentHashMap<Long, String>()
@@ -217,6 +222,7 @@ class NearbyTransport(
         for (endpointId in directRouteTable.getAllEndpoints()) {
             val challenge = ByteArray(16).apply { secureRandom.nextBytes(this) }
             localChallenges[endpointId] = challenge
+            directRouteTable.markAuthenticating(endpointId)
             endpointHandshakeStates[endpointId] = EndpointHandshakeState.CONNECTED
             sendControlMessage(endpointId, NearbyWireFrame.Control.Hello(
                 protocolVersion = NEARBY_PROTOCOL_VERSION,
@@ -262,7 +268,11 @@ class NearbyTransport(
         for (invId in scannedInviteIds) {
             features.add("invite-hint:${computeSecretHint(invId.toByteArray(Charsets.UTF_8), "invite", challenge)}")
         }
-        return features.take(32)
+        return features.distinct().sorted().also {
+            require(it.size <= NearbyWireFrame.MAX_HELLO_FEATURES) {
+                "Too many Nearby authentication candidates; refusing a partial HELLO"
+            }
+        }
     }
 
     val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
@@ -351,6 +361,7 @@ class NearbyTransport(
             return
         }
         remoteChallenges[endpointId] = hello.challenge
+        directRouteTable.markAuthenticating(endpointId)
         endpointHandshakeStates[endpointId] = EndpointHandshakeState.HELLO_EXCHANGED
 
         // If this node hasn't sent its challenge yet, send HELLO

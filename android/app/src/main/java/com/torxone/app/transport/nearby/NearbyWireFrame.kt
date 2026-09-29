@@ -138,7 +138,10 @@ sealed class NearbyWireFrame {
         const val CTRL_PING: Byte = 0x04
         const val CTRL_PONG: Byte = 0x05
 
-        const val MAX_HELLO_FEATURES = 32
+        // Relationship and invite proofs are authentication candidates, not optional
+        // presentation features. Keep a bounded wire limit but large enough that a
+        // normal account never silently loses older peers.
+        const val MAX_HELLO_FEATURES = 4096
         const val MAX_FEATURE_STRING_LEN = 128
         const val MAX_PAYLOAD_SIZE = MAX_DIRECT_FRAME_SIZE
         const val MIN_CHALLENGE_SIZE = 16

@@ -68,8 +68,12 @@ class MediaService(
     }
 
     private val sendCoordinator: RelationshipSendCoordinator by lazy {
-        relationshipSendCoordinator ?: throw IllegalStateException(
-            "MediaService requires the application-scoped RelationshipSendCoordinator; constructing a feature-local sender is unsafe"
+        relationshipSendCoordinator ?: RelationshipSendCoordinator(
+            connectionManager = connectionManager,
+            sessionStore = requireNotNull(sessionStore) { "MediaService requires SessionStore when no coordinator is injected" },
+            sessionCrypto = sessionCrypto,
+            agent = agent,
+            transactionRunner = transactionRunner
         )
     }
 
@@ -434,33 +438,44 @@ class MediaService(
                     // Populate senderIdentity, recipientBinding, and conversationId for authentication.
                     val connection = connectionManager.getConnectionByRelationship(relationshipId)
                     if (connection != null) {
-                        val chunkEnvelope = SecureEnvelope(
-                            logicalMessageId = UUID.randomUUID().toString(),
-                            conversationId = conversationId,
-                            senderIdentity = localIdentityId,
-                            recipientBinding = recipientId,
-                            messageType = MessageType.FILE_PROGRESS,
-                            timestamp = System.currentTimeMillis(),
-                            payload = rawChunkBytes,
-                            directionSequence = 0L
-                        )
-                        val chunkEnvBytes = ProtocolCodec.encodeSecureEnvelope(chunkEnvelope)
-                        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-                        val encryptedChunk = sessionCrypto.encrypt(relationshipId, chunkEnvBytes, aad)
-
-                        val chunkItem = DeliveryItem(
-                            deliveryId = UUID.randomUUID().toString(),
-                            logicalMessageId = chunkEnvelope.logicalMessageId,
-                            conversationId = conversationId,
-                            connectionId = connection.connectionId,
-                            queueAddress = connection.sendQueueId,
-                            ciphertext = encryptedChunk.serialize(),
-                            queueAuthenticator = connection.sendAuth,
-                            status = DeliveryStatus.QUEUED,
-                            priority = DeliveryPriority.LOW,
-                            expectsAck = false
-                        )
-                        agent.enqueue(chunkItem)
+                        sendCoordinator.sendSequenced(
+                            relationshipId = relationshipId,
+                            connection = connection,
+                            buildEnvelope = { sequence ->
+                                SecureEnvelope(
+                                    logicalMessageId = UUID.randomUUID().toString(),
+                                    conversationId = conversationId,
+                                    senderIdentity = localIdentityId,
+                                    recipientBinding = recipientId,
+                                    messageType = MessageType.FILE_PROGRESS,
+                                    timestamp = System.currentTimeMillis(),
+                                    payload = rawChunkBytes,
+                                    directionSequence = sequence
+                                )
+                            }
+                        ) { sequence, envelope, ciphertext ->
+                            val now = System.currentTimeMillis()
+                            requireNotNull(outboxDao) { "MediaService requires OutboxDao for durable chunk delivery" }
+                                .insert(
+                                    OutboxEntity(
+                                        deliveryId = UUID.randomUUID().toString(),
+                                        logicalMessageId = envelope.logicalMessageId,
+                                        conversationId = conversationId,
+                                        connectionId = connection.connectionId,
+                                        queueAddress = connection.sendQueueId,
+                                        ciphertext = ciphertext,
+                                        queueAuthenticator = connection.sendAuth,
+                                        status = DeliveryStatus.QUEUED.name,
+                                        priority = DeliveryPriority.LOW,
+                                        nextAttemptAt = now,
+                                        createdAt = now,
+                                        updatedAt = now,
+                                        expectsAck = true,
+                                        applicationSequence = sequence,
+                                        relationshipId = relationshipId
+                                    )
+                                )
+                        }
                     }
 
                     bitmaskSet.add(chunkIndex)
@@ -675,7 +690,9 @@ class MediaService(
         val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return false
         if (transfer.relationshipId != connection.relationshipId ||
             transfer.direction != TransferDirection.DOWNLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId ?: resolveLocalConversationId(connection.relationshipId)) ||
+            transfer.conversationId != (envelope.groupMetadata?.groupId
+                ?: resolveLocalConversationId(connection.relationshipId)
+                ?: envelope.conversationId) ||
             chunk.totalChunks != transfer.totalChunks || chunk.chunkIndex !in 0 until transfer.totalChunks ||
             chunk.chunkData.size > transfer.chunkSize || transfer.chunkSize !in 1..MediaProtocolCodec.MAX_CHUNK_BYTES
         ) return false
@@ -794,32 +811,44 @@ class MediaService(
         val completeBytes = MediaProtocolCodec.encodeComplete(completePayload)
         val senderId = localIdentityIdProvider?.invoke() ?: ""
         try {
-            val envelope = SecureEnvelope(
-                logicalMessageId = UUID.randomUUID().toString(),
-                conversationId = media.conversationId,
-                senderIdentity = senderId,
-                recipientBinding = recipientBinding,
-                messageType = MessageType.FILE_COMPLETE,
-                timestamp = System.currentTimeMillis(),
-                payload = completeBytes
-            )
-            val envBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-            val encrypted = sessionCrypto.encrypt(relationshipId, envBytes, aad)
-
-            val deliveryItem = DeliveryItem(
-                deliveryId = UUID.randomUUID().toString(),
-                logicalMessageId = envelope.logicalMessageId,
-                conversationId = media.conversationId,
-                connectionId = connection.connectionId,
-                queueAddress = connection.sendQueueId,
-                ciphertext = encrypted.serialize(),
-                queueAuthenticator = connection.sendAuth,
-                status = DeliveryStatus.QUEUED,
-                priority = DeliveryPriority.HIGH,
-                expectsAck = false
-            )
-            agent.enqueue(deliveryItem)
+            sendCoordinator.sendSequenced(
+                relationshipId = relationshipId,
+                connection = connection,
+                buildEnvelope = { sequence ->
+                    SecureEnvelope(
+                        logicalMessageId = UUID.randomUUID().toString(),
+                        conversationId = media.conversationId,
+                        senderIdentity = senderId,
+                        recipientBinding = recipientBinding,
+                        messageType = MessageType.FILE_COMPLETE,
+                        timestamp = System.currentTimeMillis(),
+                        payload = completeBytes,
+                        directionSequence = sequence
+                    )
+                }
+            ) { sequence, envelope, ciphertext ->
+                val now = System.currentTimeMillis()
+                requireNotNull(outboxDao) { "MediaService requires OutboxDao for completion delivery" }
+                    .insert(
+                        OutboxEntity(
+                            deliveryId = UUID.randomUUID().toString(),
+                            logicalMessageId = envelope.logicalMessageId,
+                            conversationId = media.conversationId,
+                            connectionId = connection.connectionId,
+                            queueAddress = connection.sendQueueId,
+                            ciphertext = ciphertext,
+                            queueAuthenticator = connection.sendAuth,
+                            status = DeliveryStatus.QUEUED.name,
+                            priority = DeliveryPriority.HIGH,
+                            nextAttemptAt = now,
+                            createdAt = now,
+                            updatedAt = now,
+                            expectsAck = true,
+                            applicationSequence = sequence,
+                            relationshipId = relationshipId
+                        )
+                    )
+            }
             Log.i(TAG, "[TX FILE_COMPLETE] sent confirmation for mediaId=${media.mediaId.take(8)}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send complete confirmation for ${media.mediaId}: ${e.message}", e)
@@ -843,7 +872,9 @@ class MediaService(
     suspend fun handleIncomingCompletion(connection: Connection, envelope: SecureEnvelope, complete: MediaCompletePayload): Boolean {
         val transfer = mediaTransferDao.getByMediaId(complete.mediaId) ?: return false
         if (transfer.relationshipId != connection.relationshipId || transfer.direction != TransferDirection.UPLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId ?: resolveLocalConversationId(connection.relationshipId))
+            transfer.conversationId != (envelope.groupMetadata?.groupId
+                ?: resolveLocalConversationId(connection.relationshipId)
+                ?: envelope.conversationId)
         ) return false
         return handleIncomingCompletion(complete)
     }
@@ -936,7 +967,9 @@ class MediaService(
     suspend fun handleIncomingResume(connection: Connection, envelope: SecureEnvelope, resumeReq: MediaResumeRequest): Boolean {
         val transfer = mediaTransferDao.getByMediaId(resumeReq.mediaId) ?: return false
         if (transfer.relationshipId != connection.relationshipId || transfer.direction != TransferDirection.UPLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId ?: resolveLocalConversationId(connection.relationshipId)) ||
+            transfer.conversationId != (envelope.groupMetadata?.groupId
+                ?: resolveLocalConversationId(connection.relationshipId)
+                ?: envelope.conversationId) ||
             resumeReq.missingChunkIndices.any { it !in 0 until transfer.totalChunks }
         ) return false
         return handleIncomingResume(resumeReq)
@@ -945,7 +978,9 @@ class MediaService(
     suspend fun handleIncomingCancel(connection: Connection, envelope: SecureEnvelope, mediaId: String): Boolean {
         val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return false
         if (transfer.relationshipId != connection.relationshipId ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId ?: resolveLocalConversationId(connection.relationshipId))
+            transfer.conversationId != (envelope.groupMetadata?.groupId
+                ?: resolveLocalConversationId(connection.relationshipId)
+                ?: envelope.conversationId)
         ) return false
         cancelTransfer(mediaId)
         return true

@@ -31,7 +31,9 @@ class ContactsViewModel(
     private val connectionManager: ConnectionManager,
     private val agent: com.torxone.app.agent.TorXAgent? = null,
     private val nearbyTransport: com.torxone.app.transport.nearby.NearbyTransport? = null,
-    private val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector()
+    private val torRouteManager: com.torxone.app.transport.tor.TorRouteManager? = null,
+    private val localOnionAddress: () -> String? = { null },
+    private val keyProtector: com.torxone.app.crypto.KeyProtector
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -51,7 +53,18 @@ class ContactsViewModel(
     fun generateMyInviteQr() {
         viewModelScope.launch {
             try {
-                val invite = identityRepository.createContactInvite()
+                val baseInvite = identityRepository.createContactInvite()
+                val onion = localOnionAddress()
+                val invite = if (onion != null) {
+                    val unsigned = baseInvite.copy(protocolVersion = 2, torOnionAddress = onion)
+                    val signed = ContactInviteCodec.serializeForSigning(
+                        unsigned.protocolVersion, unsigned.inviteId, unsigned.identityId,
+                        unsigned.displayName, unsigned.identitySigningPublicKey,
+                        unsigned.identityEncryptionPublicKey, unsigned.bootstrapEphemeralPublicKey,
+                        unsigned.createdAt, unsigned.expiresAt, onion
+                    )
+                    unsigned.copy(signature = identityRepository.sign(signed))
+                } else baseInvite
                 nearbyTransport?.registerPendingInvite(invite.inviteId)
                 val qr = ContactInviteCodec.encodeToQrString(invite)
                 _uiState.update { it.copy(myInviteQrString = qr) }
@@ -83,6 +96,9 @@ class ContactsViewModel(
 
             when (result) {
                 is InviteValidationResult.Valid -> {
+                    invite.torOnionAddress?.let {
+                        torRouteManager?.bind("invite-${invite.inviteId}", com.torxone.app.transport.tor.TorRoute(it))
+                    }
                     nearbyTransport?.registerScannedInvite(invite.inviteId)
                     _uiState.update { it.copy(pendingInviteValidation = result, error = null) }
                 }
@@ -123,7 +139,7 @@ class ContactsViewModel(
                     state = "LOCAL_ESTABLISHED",
                     generation = 1,
                     verifiedAt = System.currentTimeMillis(),
-                    cryptoFormatVersion = 1
+                    cryptoFormatVersion = 3
                 )
 
                 val contactEntity = ContactEntity(
@@ -154,7 +170,7 @@ class ContactsViewModel(
                     sendAuth = keyProtector.wrap(connection.sendAuth),
                     recvAuth = keyProtector.wrap(connection.recvAuth),
                     state = "LOCAL_ESTABLISHED",
-                    cryptoFormatVersion = 1
+                    cryptoFormatVersion = 3
                 )
 
                 val conversationEntity = ConversationEntity(

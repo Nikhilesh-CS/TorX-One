@@ -21,6 +21,12 @@ import com.torxone.app.identity.KeystoreIdentityRepository
 import com.torxone.app.incoming.*
 import com.torxone.app.transport.TransportRouter
 import com.torxone.app.transport.nearby.NearbyTransport
+import com.torxone.app.transport.tor.OnionEndpointManager
+import com.torxone.app.transport.tor.TorBootstrapManager
+import com.torxone.app.transport.tor.TorController
+import com.torxone.app.transport.tor.TorHealthMonitor
+import com.torxone.app.transport.tor.TorRouteManager
+import com.torxone.app.transport.tor.TorTransport
 import androidx.room.withTransaction
 import com.torxone.app.crypto.AndroidKeystoreKeyProtector
 import kotlinx.coroutines.*
@@ -67,6 +73,9 @@ class TorXOneApplication : Application() {
     lateinit var sessionStore: RoomSessionStore
         private set
 
+    lateinit var keyProtector: com.torxone.app.security.SecurityRepository
+        private set
+
     lateinit var agent: TorXAgent
         private set
 
@@ -86,6 +95,19 @@ class TorXOneApplication : Application() {
         private set
 
     lateinit var nearbyTransport: NearbyTransport
+        private set
+
+    lateinit var torRouteManager: TorRouteManager
+        private set
+    lateinit var onionEndpointManager: OnionEndpointManager
+        private set
+    lateinit var torController: TorController
+        private set
+    lateinit var torBootstrapManager: TorBootstrapManager
+        private set
+    lateinit var torHealthMonitor: TorHealthMonitor
+        private set
+    lateinit var torTransport: TorTransport
         private set
 
     lateinit var settingsRepository: AppSettingsRepository
@@ -115,6 +137,9 @@ class TorXOneApplication : Application() {
     val initState: kotlinx.coroutines.flow.StateFlow<AppInitState> = _initState.asStateFlow()
 
     @Volatile
+    private var runtimeInitialized = false
+
+    @Volatile
     var cachedLocalIdentityId: String? = null
         private set
 
@@ -133,11 +158,21 @@ class TorXOneApplication : Application() {
         // 0b. Settings DataStore
         settingsRepository = AppSettingsRepository(this)
 
-        // 1. Database
-        database = TorXDatabase.getInstance(this)
+        // 1. Single Keystore-backed authority for every persisted application secret.
+        keyProtector = com.torxone.app.security.VersionedSecurityRepository(AndroidKeystoreKeyProtector())
 
-        // 2. Keystore / Identity
-        identityRepository = KeystoreIdentityRepository(this, database.pendingInviteDao())
+        // 2. Database. Its SQLCipher passphrase is versioned by the same authority.
+        database = TorXDatabase.getInstance(
+            this,
+            com.torxone.app.data.DatabasePassphraseProvider(this, keyProtector)
+        )
+
+        // 3. Identity
+        identityRepository = KeystoreIdentityRepository(
+            context = this,
+            pendingInviteDao = database.pendingInviteDao(),
+            keyProtector = keyProtector
+        )
 
         // Continuously observe authoritative identity state
         applicationScope.launch {
@@ -145,13 +180,13 @@ class TorXOneApplication : Application() {
                 when (state) {
                     is com.torxone.app.identity.IdentityState.Ready -> {
                         cachedLocalIdentityId = state.identity.identityId
-                        if (_initState.value is AppInitState.Initializing) {
+                        if (runtimeInitialized && _initState.value !is AppInitState.Failed) {
                             _initState.value = AppInitState.Ready(state.identity.identityId)
                         }
                     }
                     is com.torxone.app.identity.IdentityState.NoIdentity -> {
                         cachedLocalIdentityId = null
-                        if (_initState.value is AppInitState.Initializing) {
+                        if (runtimeInitialized && _initState.value !is AppInitState.Failed) {
                             _initState.value = AppInitState.Ready(null)
                         }
                     }
@@ -166,14 +201,13 @@ class TorXOneApplication : Application() {
         }
 
         // 3. Crypto / Session
-        val keyProtector = AndroidKeystoreKeyProtector()
         sessionStore = RoomSessionStore(database.sessionDao(), database.skippedKeyDao(), keyProtector) { block ->
             database.withTransaction { block() }
         }
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 
         // 4. Connection Manager & Active Conversation Tracker
-        connectionManager = ConnectionManager(database.connectionDao())
+        connectionManager = ConnectionManager(database.connectionDao(), keyProtector)
         activeConversationTracker = ActiveConversationTracker()
 
         // 4b. Notification Authority (inject appSettingsRepository, M17)
@@ -205,6 +239,7 @@ class TorXOneApplication : Application() {
             sessionCrypto = sessionCrypto,
             agent = agent,
             directRouteTable = directRouteTable,
+            contactDao = database.contactDao(),
             localIdentityIdProvider = { getLocalIdentityId() },
             appSettingsRepository = settingsRepository
         )
@@ -295,7 +330,9 @@ class TorXOneApplication : Application() {
             agent = agent,
             conversationDao = database.conversationDao(),
             callHistoryDao = database.callHistoryDao(),
-            localIdentityIdProvider = { getLocalIdentityId() }
+            localIdentityIdProvider = { getLocalIdentityId() },
+            relationshipSendCoordinator = relationshipSendCoordinator,
+            outboxDao = database.outboxDao()
         )
         val localId = getLocalIdentityId() ?: ""
         callManager = com.torxone.app.calls.CallManager(
@@ -326,6 +363,7 @@ class TorXOneApplication : Application() {
         )
         val receiptHandler = DeliveryReceiptHandler(
             messageDao = database.messageDao(),
+            contactDao = database.contactDao(),
             outboxDao = database.outboxDao(),
             agent = agent,
             groupService = groupService,
@@ -361,11 +399,23 @@ class TorXOneApplication : Application() {
             sessionStore = sessionStore,
             consumedInviteDao = database.consumedInviteDao(),
             bootstrapStateDao = database.bootstrapStateDao(),
-            pairRelationshipDao = database.pairRelationshipDao()
+            pairRelationshipDao = database.pairRelationshipDao(),
+            keyProtector = keyProtector
         )
         incomingTransportHub = IncomingTransportHub(incomingDispatcher)
 
-        // 9. Nearby Transport
+        // 9. Tor transport: opaque TorX ciphertext over an embedded v3 onion service.
+        torRouteManager = TorRouteManager(this)
+        onionEndpointManager = OnionEndpointManager(
+            this, incomingTransportHub, torRouteManager, connectionManager
+        )
+        torController = TorController(this, onionEndpointManager)
+        torBootstrapManager = TorBootstrapManager(torController)
+        torHealthMonitor = TorHealthMonitor(torController)
+        torTransport = TorTransport(torController, torRouteManager)
+        transportRouter.registerTransport(torTransport)
+
+        // 9b. Nearby Transport
         nearbyTransport = NearbyTransport(
             context = this,
             incomingTransportHub = incomingTransportHub,
@@ -399,10 +449,34 @@ class TorXOneApplication : Application() {
             try {
                 val identity = identityRepository.loadIdentity()
                 cachedLocalIdentityId = identity?.identityId
+                database.withTransaction {
+                    for (contact in database.contactDao().getAll()) {
+                        val relationship = database.pairRelationshipDao().getById(contact.relationshipId) ?: continue
+                        if (relationship.cryptoFormatVersion in 0..2) {
+                            val raw = if (relationship.cryptoFormatVersion <= 1 && relationship.rootSecret.size == 32) relationship.rootSecret
+                                else keyProtector.unwrap(relationship.rootSecret)
+                            require(raw.size == 32) { "Invalid relationship secret length" }
+                            database.pairRelationshipDao().upsert(relationship.copy(
+                                rootSecret = keyProtector.wrap(raw), cryptoFormatVersion = 3
+                            ))
+                        } else {
+                            require(relationship.cryptoFormatVersion == 3)
+                            require(keyProtector.unwrap(relationship.rootSecret).size == 32)
+                        }
+                    }
+                }
                 connectionManager.restoreFromDatabase(database.connectionDao())
 
                 // Start background agent and transport only AFTER async initialization completes
                 agent.start()
+                torBootstrapManager.start()
+                applicationScope.launch {
+                    torController.state.collect { state ->
+                        if (state is com.torxone.app.transport.tor.TorConnectionState.Ready) {
+                            agent.triggerImmediateRetry()
+                        }
+                    }
+                }
                 if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(
                         this@TorXOneApplication,
                         com.torxone.app.ui.permissions.PermissionHelper.getNearbyPermissions()
@@ -416,6 +490,7 @@ class TorXOneApplication : Application() {
                 groupService.recoverPendingFanout()
                 recoverIncompleteBootstraps()
 
+                runtimeInitialized = true
                 _initState.value = AppInitState.Ready(cachedLocalIdentityId)
             } catch (e: Throwable) {
                 android.util.Log.e("TorXOneApplication", "Async app initialization failed", e)
@@ -428,6 +503,12 @@ class TorXOneApplication : Application() {
         try {
             val incomplete = database.bootstrapStateDao().getIncompleteBootstraps()
             for (state in incomplete) {
+                // Restore the initiator-side invite authorization before retrying a
+                // bootstrap queued before process death. Without this, Nearby rejects
+                // the resumed peer even though all durable crypto state is present.
+                if (state.isInitiator) {
+                    nearbyTransport.registerScannedInvite(state.inviteId)
+                }
                 when (state.status) {
                     com.torxone.app.data.entity.BootstrapStatus.LOCAL_ESTABLISHED -> {
                         val session = sessionStore.loadSession(state.relationshipId)

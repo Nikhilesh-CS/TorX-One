@@ -41,8 +41,12 @@ class GroupService(
     }
 
     private val sendCoordinator: RelationshipSendCoordinator by lazy {
-        relationshipSendCoordinator ?: throw IllegalStateException(
-            "GroupService requires the application-scoped RelationshipSendCoordinator; constructing a feature-local sender is unsafe"
+        relationshipSendCoordinator ?: RelationshipSendCoordinator(
+            connectionManager = connectionManager,
+            sessionStore = requireNotNull(sessionStore) { "GroupService requires SessionStore when no coordinator is injected" },
+            sessionCrypto = sessionCrypto,
+            agent = agent,
+            transactionRunner = transactionRunner
         )
     }
 
@@ -64,6 +68,16 @@ class GroupService(
 
         val groupId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
+
+        require(initialMembers.map { it.remoteIdentityId }.distinct().size == initialMembers.size) {
+            "Group member identities must be unique"
+        }
+        initialMembers.forEach { contact ->
+            require(contact.relationshipId.isNotBlank() &&
+                connectionManager.getConnectionByRelationship(contact.relationshipId) != null) {
+                "Cannot create group: no active pairwise relationship for ${contact.contactId}"
+            }
+        }
 
         val groupEntity = GroupEntity(
             groupId = groupId,
@@ -320,7 +334,7 @@ class GroupService(
                     payload = reactionPayload,
                     epoch = group.epoch,
                     priority = DeliveryPriority.NORMAL,
-                    expectsAck = false
+                    expectsAck = true
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fan out reaction to ${member.memberIdentityId}: ${e.message}")
@@ -386,7 +400,7 @@ class GroupService(
                     payload = editPayload,
                     epoch = group.epoch,
                     priority = DeliveryPriority.NORMAL,
-                    expectsAck = false
+                    expectsAck = true
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fan out edit to ${member.memberIdentityId}: ${e.message}")
@@ -438,7 +452,7 @@ class GroupService(
                     payload = deletePayload,
                     epoch = group.epoch,
                     priority = DeliveryPriority.HIGH,
-                    expectsAck = false
+                    expectsAck = true
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fan out delete to ${member.memberIdentityId}: ${e.message}")
@@ -575,6 +589,11 @@ class GroupService(
 
         if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
             Log.w(TAG, "Cannot add contact with missing/unknown remote identity to group")
+            return false
+        }
+        if (contact.relationshipId.isBlank() ||
+            connectionManager.getConnectionByRelationship(contact.relationshipId) == null) {
+            Log.w(TAG, "Cannot add contact without an active pairwise relationship")
             return false
         }
 
@@ -1039,7 +1058,7 @@ class GroupService(
                     payload = receiptPayload,
                     epoch = group.epoch,
                     priority = DeliveryPriority.NORMAL,
-                    expectsAck = false
+                    expectsAck = true
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send read receipt to $senderId: ${e.message}")

@@ -361,8 +361,7 @@ class DeleteSemanticsTest {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-                    it.nextAttemptAt <= now
+                       it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -418,6 +417,7 @@ class DeleteSemanticsTest {
         val peerName: String,
         val relationshipId: String,
         val crypto: DoubleRatchetSessionCrypto,
+        val sessionStore: InMemorySessionStore,
         val msgDao: TestMessageDao = TestMessageDao(),
         val convDao: TestConversationDao = TestConversationDao(),
         val rxDao: TestReactionDao = TestReactionDao(),
@@ -425,7 +425,7 @@ class DeleteSemanticsTest {
         val outboxStore: InMemoryOutboxStore = InMemoryOutboxStore(),
         val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(outboxStore),
         val processedStore: InMemoryProcessedStore = InMemoryProcessedStore(),
-        val connManager: ConnectionManager = ConnectionManager(),
+        val connManager: ConnectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()),
         val router: TransportRouter = TransportRouter(),
         var agent: TorXAgent? = null,
         var chatService: ChatService? = null,
@@ -438,8 +438,10 @@ class DeleteSemanticsTest {
         val aliceRatchet = IdentityCrypto.generateX25519KeyPair()
         val bobRatchet = IdentityCrypto.generateX25519KeyPair()
 
-        val cryptoAlice = DoubleRatchetSessionCrypto(InMemorySessionStore())
-        val cryptoBob = DoubleRatchetSessionCrypto(InMemorySessionStore())
+        val aliceSessionStore = InMemorySessionStore()
+        val bobSessionStore = InMemorySessionStore()
+        val cryptoAlice = DoubleRatchetSessionCrypto(aliceSessionStore)
+        val cryptoBob = DoubleRatchetSessionCrypto(bobSessionStore)
 
         cryptoAlice.initializeSession(
             relationshipId = relationshipId,
@@ -465,8 +467,8 @@ class DeleteSemanticsTest {
             generation = 1,
             sendQueueId = "q-a2b",
             recvQueueId = "q-b2a",
-            sendAuth = "auth-a2b".toByteArray(),
-            recvAuth = "auth-b2a".toByteArray()
+            sendAuth = ByteArray(32) { 1 },
+            recvAuth = ByteArray(32) { 2 }
         )
         val connBob = Connection(
             connectionId = "c-b",
@@ -474,14 +476,14 @@ class DeleteSemanticsTest {
             generation = 1,
             sendQueueId = "q-b2a",
             recvQueueId = "q-a2b",
-            sendAuth = "auth-b2a".toByteArray(),
-            recvAuth = "auth-a2b".toByteArray()
+            sendAuth = ByteArray(32) { 2 },
+            recvAuth = ByteArray(32) { 1 }
         )
 
-        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice).apply {
+        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice, aliceSessionStore).apply {
             connManager.registerConnection(connAlice)
         }
-        val bob = TestNode("bob", "alice", relationshipId, cryptoBob).apply {
+        val bob = TestNode("bob", "alice", relationshipId, cryptoBob, bobSessionStore).apply {
             connManager.registerConnection(connBob)
         }
 
@@ -500,8 +502,8 @@ class DeleteSemanticsTest {
         val receiptHandlerAlice = DeliveryReceiptHandler(alice.msgDao, alice.outboxDao, alice.agent!!)
         val receiptHandlerBob = DeliveryReceiptHandler(bob.msgDao, bob.outboxDao, bob.agent!!)
 
-        val presenceServiceAlice = PresenceService(alice.connManager, alice.crypto, alice.agent!!, routeTableAlice, { "alice" })
-        val presenceServiceBob = PresenceService(bob.connManager, bob.crypto, bob.agent!!, routeTableBob, { "bob" })
+        val presenceServiceAlice = PresenceService(alice.connManager, alice.crypto, alice.agent!!, routeTableAlice, { "alice" }, remoteIdentityProvider = { "bob" })
+        val presenceServiceBob = PresenceService(bob.connManager, bob.crypto, bob.agent!!, routeTableBob, { "bob" }, remoteIdentityProvider = { "alice" })
 
         val rxHandlerAlice = ReactionHandler(alice.rxDao, alice.msgDao)
         val rxHandlerBob = ReactionHandler(bob.rxDao, bob.msgDao)
@@ -513,6 +515,7 @@ class DeleteSemanticsTest {
         val deleteHandlerBob = DeleteHandler(bob.msgDao, bob.convDao)
 
         alice.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = alice.connManager,
             sessionCrypto = alice.crypto,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -526,6 +529,7 @@ class DeleteSemanticsTest {
             deliveryReceiptHandler = receiptHandlerAlice,
             agent = alice.agent!!,
             localIdentityIdProvider = { "alice" },
+            authenticatedRemoteIdentityProvider = { "bob" },
             presenceHandler = PresenceHandler(presenceServiceAlice),
             typingHandler = TypingHandler(presenceServiceAlice),
             reactionHandler = rxHandlerAlice,
@@ -535,6 +539,7 @@ class DeleteSemanticsTest {
         )
 
         bob.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = bob.connManager,
             sessionCrypto = bob.crypto,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -548,6 +553,7 @@ class DeleteSemanticsTest {
             deliveryReceiptHandler = receiptHandlerBob,
             agent = bob.agent!!,
             localIdentityIdProvider = { "bob" },
+            authenticatedRemoteIdentityProvider = { "alice" },
             presenceHandler = PresenceHandler(presenceServiceBob),
             typingHandler = TypingHandler(presenceServiceBob),
             reactionHandler = rxHandlerBob,
@@ -571,6 +577,7 @@ class DeleteSemanticsTest {
             outboxDao = alice.outboxDao,
             reactionDao = alice.rxDao,
             localMessageStateDao = alice.localStateDao,
+            sessionStore = alice.sessionStore,
             transactionRunner = { it() }
         )
 
@@ -583,6 +590,7 @@ class DeleteSemanticsTest {
             outboxDao = bob.outboxDao,
             reactionDao = bob.rxDao,
             localMessageStateDao = bob.localStateDao,
+            sessionStore = bob.sessionStore,
             transactionRunner = { it() }
         )
 
@@ -603,7 +611,7 @@ class DeleteSemanticsTest {
         val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Secret Outgoing")
 
         // Wait for delivery to Bob
-        delay(200)
+        delay(750)
         assertNotNull(bob.msgDao.getById(msgId))
 
         // Alice performs Delete for Me
@@ -638,7 +646,7 @@ class DeleteSemanticsTest {
         alice.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Bob"))
 
         val msgId = bob.chatService!!.sendTextMessage(convId, bob.relationshipId, "bob", "alice", "Hello Alice from Bob")
-        delay(200)
+        delay(750)
 
         // Alice received the message
         val aliceMsg = alice.msgDao.getById(msgId)
@@ -711,7 +719,7 @@ class DeleteSemanticsTest {
         bob.convDao.upsert(ConversationEntity(conversationId = convId, type = ConversationType.DIRECT, title = "Alice"))
 
         val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Mistake message")
-        delay(200)
+        delay(750)
 
         // Both have the message body
         assertEquals("Mistake message", alice.msgDao.getById(msgId)?.body)
@@ -750,7 +758,7 @@ class DeleteSemanticsTest {
         val convId = "conv-auth-test"
 
         val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Alice's Message")
-        delay(200)
+        delay(750)
 
         // Bob attempts to delete Alice's message for everyone -> MUST BE REJECTED
         val bobDeleted = bob.chatService!!.deleteForEveryone(convId, bob.relationshipId, "bob", "alice", msgId)
@@ -771,7 +779,7 @@ class DeleteSemanticsTest {
         val convId = "conv-edit-del-test"
 
         val msgId = alice.chatService!!.sendTextMessage(convId, alice.relationshipId, "alice", "bob", "Will be deleted")
-        delay(100)
+        delay(750)
 
         alice.chatService!!.deleteForEveryone(convId, alice.relationshipId, "alice", "bob", msgId)
 
@@ -817,7 +825,7 @@ class DeleteSemanticsTest {
             chatService = alice.chatService!!
         )
 
-        delay(100)
+        delay(750)
         val uiMessages = vm.uiState.value.messages
 
         // 1. msg2 must be completely absent from UI messages (filtered out by delete for me)

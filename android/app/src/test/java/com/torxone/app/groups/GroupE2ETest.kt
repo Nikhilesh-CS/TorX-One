@@ -60,7 +60,7 @@ class GroupE2ETest {
         val processedStore = TestProcessedStore()
         val sessionStore = TestSessionStore()
         val sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
-        val connectionManager = ConnectionManager()
+        val connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val activeTracker = ActiveConversationTracker()
         val transportRouter = TransportRouter()
         val agent: TorXAgent
@@ -114,7 +114,8 @@ class GroupE2ETest {
                 sessionCrypto = sessionCrypto,
                 agent = agent,
                 localIdentityIdProvider = { identity.identityId },
-                transactionRunner = { it() }
+                transactionRunner = { it() },
+                sessionStore = sessionStore
             )
 
             groupHandler = GroupHandler(
@@ -134,6 +135,7 @@ class GroupE2ETest {
             )
 
             dispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
                 connectionManager = connectionManager,
                 sessionCrypto = sessionCrypto,
                 processedEnvelopeDao = processedStore,
@@ -271,13 +273,13 @@ class GroupE2ETest {
         )
     }
 
-    private suspend fun waitFor(timeoutMs: Long = 8000, condition: suspend () -> Boolean) {
+    private suspend fun waitFor(label: String, timeoutMs: Long = 8000, condition: suspend () -> Boolean) {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return
             delay(50)
         }
-        assertTrue("Condition timed out after ${timeoutMs}ms", condition())
+        assertTrue("$label timed out after ${timeoutMs}ms", condition())
     }
 
     @Test
@@ -312,7 +314,7 @@ class GroupE2ETest {
         val groupId = createdGroup.groupId
 
         // Wait for Bob and Charlie to receive the group invite
-        waitFor {
+        waitFor("group invites") {
             bob.groupDao.getById(groupId) != null && charlie.groupDao.getById(groupId) != null
         }
 
@@ -340,7 +342,7 @@ class GroupE2ETest {
         val msg = alice.groupService.sendGroupText(groupId, "Welcome everyone to our secure group!")
 
         // Wait for Bob and Charlie to receive and decrypt the message
-        waitFor {
+        waitFor("group message fan-out") {
             bob.messageDao.getById(msg.logicalMessageId) != null &&
             charlie.messageDao.getById(msg.logicalMessageId) != null
         }
@@ -350,7 +352,7 @@ class GroupE2ETest {
 
         // Both nodes automatically reply with DELIVERY_ACK back to Alice
         // Wait for Alice to receive both ACKs and aggregate to DELIVERED
-        waitFor {
+        waitFor("group delivery ACK aggregation") {
             val aliceMsg = alice.messageDao.getById(msg.logicalMessageId)
             aliceMsg?.status == DeliveryStatus.DELIVERED.name
         }
@@ -389,7 +391,7 @@ class GroupE2ETest {
         assertTrue(reacted)
 
         // Wait for Alice to receive reaction
-        waitFor {
+        waitFor("reaction fan-out") {
             alice.reactionDao.getForMessage(msg.logicalMessageId).isNotEmpty()
         }
         val aliceReactions = alice.reactionDao.getForMessage(msg.logicalMessageId)
@@ -404,7 +406,7 @@ class GroupE2ETest {
         assertTrue(edited)
 
         // Wait for Bob and Charlie to see the edit
-        waitFor {
+        waitFor("edit fan-out") {
             bob.messageDao.getById(msg.logicalMessageId)?.body == "Welcome everyone to our ultra-secure group!" &&
             charlie.messageDao.getById(msg.logicalMessageId)?.body == "Welcome everyone to our ultra-secure group!"
         }
@@ -421,7 +423,7 @@ class GroupE2ETest {
         assertEquals(2L, alice.groupDao.getById(groupId)?.epoch)
 
         // Wait for Bob and Charlie to process removal
-        waitFor {
+        waitFor("member removal fan-out") {
             bob.groupDao.getById(groupId)?.epoch == 2L &&
             charlie.groupDao.getById(groupId)?.epoch == 2L
         }
@@ -434,7 +436,7 @@ class GroupE2ETest {
         val epoch2Msg = alice.groupService.sendGroupText(groupId, "Charlie has departed. Only active members remain.")
 
         // Wait for Bob to receive
-        waitFor {
+        waitFor("epoch 2 message fan-out") {
             bob.messageDao.getById(epoch2Msg.logicalMessageId) != null
         }
         assertEquals("Charlie has departed. Only active members remain.", bob.messageDao.getById(epoch2Msg.logicalMessageId)?.body)

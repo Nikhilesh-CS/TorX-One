@@ -5,6 +5,7 @@ import com.torxone.app.data.entity.*
 import com.torxone.app.groups.*
 import com.torxone.app.protocol.MessageType
 import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.protocol.GroupEnvelopeMetadata
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Before
@@ -66,6 +67,7 @@ class GroupHandlerTest {
             senderIdentity = bobIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_CREATE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 1, 0),
             payload = GroupProtocolCodec.encodeInvite(invite)
         )
 
@@ -111,6 +113,7 @@ class GroupHandlerTest {
             senderIdentity = bobIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_MEMBER_ACCEPT,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 2, 0),
             payload = GroupProtocolCodec.encodeJoined(joined)
         )
 
@@ -144,6 +147,7 @@ class GroupHandlerTest {
             senderIdentity = bobIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_MEMBER_REMOVE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 3, 0),
             payload = GroupProtocolCodec.encodeRemove(removePayload)
         )
 
@@ -176,6 +180,7 @@ class GroupHandlerTest {
             senderIdentity = charlieIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_MEMBER_REMOVE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 3, 0),
             payload = GroupProtocolCodec.encodeRemove(removePayload)
         )
 
@@ -199,6 +204,7 @@ class GroupHandlerTest {
             senderIdentity = bobIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_ROLE_CHANGE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 2, 0),
             payload = GroupProtocolCodec.encodeRoleChange(rolePayload)
         )
         assertTrue(groupHandler.handleRoleChange(connectionBob, roleEnv))
@@ -213,6 +219,7 @@ class GroupHandlerTest {
             senderIdentity = bobIdentityId,
             recipientBinding = localIdentityId,
             messageType = MessageType.GROUP_NAME_CHANGE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 3, 0),
             payload = GroupProtocolCodec.encodeNameChange(namePayload)
         )
         assertTrue(groupHandler.handleNameChange(connectionBob, nameEnv))

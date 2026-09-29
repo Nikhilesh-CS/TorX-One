@@ -74,10 +74,10 @@ class ProfileAndSettingsTest {
     }
 
     @Test
-    fun `isFounder returns true for matching key`() {
-        // The placeholder founder key is 32 zero bytes
+    fun `placeholder founder key never grants founder status`() {
+        // A zero placeholder must fail closed until the real founder key is configured.
         val founderKey = ByteArray(32) { 0 }
-        assertTrue(FounderIdentity.isFounder(founderKey))
+        assertFalse(FounderIdentity.isFounder(founderKey))
     }
 
     @Test

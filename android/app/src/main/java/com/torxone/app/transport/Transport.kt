@@ -36,3 +36,8 @@ interface Transport {
         payload: ByteArray
     ): TransportResult
 }
+
+/** A transport that can decide whether it owns a destination's explicit route. */
+interface AddressableTransport {
+    fun canRoute(destination: TransportDestination): Boolean
+}

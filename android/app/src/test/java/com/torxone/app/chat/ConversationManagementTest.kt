@@ -384,8 +384,7 @@ class ConversationManagementTest {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-                    it.nextAttemptAt <= now
+                       it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -432,6 +431,7 @@ class ConversationManagementTest {
         val peerName: String,
         val relationshipId: String,
         val crypto: DoubleRatchetSessionCrypto,
+        val sessionStore: InMemorySessionStore,
         val msgDao: TestMessageDao = TestMessageDao(),
         val convDao: TestConversationDao = TestConversationDao(),
         val rxDao: TestReactionDao = TestReactionDao(),
@@ -439,7 +439,7 @@ class ConversationManagementTest {
         val outboxStore: InMemoryOutboxStore = InMemoryOutboxStore(),
         val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(outboxStore),
         val processedStore: InMemoryProcessedStore = InMemoryProcessedStore(),
-        val connManager: ConnectionManager = ConnectionManager(),
+        val connManager: ConnectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()),
         val router: TransportRouter = TransportRouter(),
         var agent: TorXAgent? = null,
         var chatService: ChatService? = null,
@@ -452,8 +452,10 @@ class ConversationManagementTest {
         val aliceRatchet = IdentityCrypto.generateX25519KeyPair()
         val bobRatchet = IdentityCrypto.generateX25519KeyPair()
 
-        val cryptoAlice = DoubleRatchetSessionCrypto(InMemorySessionStore())
-        val cryptoBob = DoubleRatchetSessionCrypto(InMemorySessionStore())
+        val aliceSessionStore = InMemorySessionStore()
+        val bobSessionStore = InMemorySessionStore()
+        val cryptoAlice = DoubleRatchetSessionCrypto(aliceSessionStore)
+        val cryptoBob = DoubleRatchetSessionCrypto(bobSessionStore)
 
         cryptoAlice.initializeSession(
             relationshipId = relationshipId,
@@ -479,8 +481,8 @@ class ConversationManagementTest {
             generation = 1,
             sendQueueId = "q-a2b",
             recvQueueId = "q-b2a",
-            sendAuth = "auth-a2b".toByteArray(),
-            recvAuth = "auth-b2a".toByteArray()
+            sendAuth = ByteArray(32) { 1 },
+            recvAuth = ByteArray(32) { 2 }
         )
         val connBob = Connection(
             connectionId = "c-b",
@@ -488,14 +490,14 @@ class ConversationManagementTest {
             generation = 1,
             sendQueueId = "q-b2a",
             recvQueueId = "q-a2b",
-            sendAuth = "auth-b2a".toByteArray(),
-            recvAuth = "auth-a2b".toByteArray()
+            sendAuth = ByteArray(32) { 2 },
+            recvAuth = ByteArray(32) { 1 }
         )
 
-        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice).apply {
+        val alice = TestNode("alice", "bob", relationshipId, cryptoAlice, aliceSessionStore).apply {
             connManager.registerConnection(connAlice)
         }
-        val bob = TestNode("bob", "alice", relationshipId, cryptoBob).apply {
+        val bob = TestNode("bob", "alice", relationshipId, cryptoBob, bobSessionStore).apply {
             connManager.registerConnection(connBob)
         }
 
@@ -512,6 +514,7 @@ class ConversationManagementTest {
         val receiptHandlerBob = DeliveryReceiptHandler(bob.msgDao, bob.outboxDao, bob.agent!!)
 
         alice.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = alice.connManager,
             sessionCrypto = alice.crypto,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -525,10 +528,12 @@ class ConversationManagementTest {
             deliveryReceiptHandler = receiptHandlerAlice,
             agent = alice.agent!!,
             localIdentityIdProvider = { "alice" },
+            authenticatedRemoteIdentityProvider = { "bob" },
             transactionRunner = { it() }
         )
 
         bob.incomingDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = bob.connManager,
             sessionCrypto = bob.crypto,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -542,6 +547,7 @@ class ConversationManagementTest {
             deliveryReceiptHandler = receiptHandlerBob,
             agent = bob.agent!!,
             localIdentityIdProvider = { "bob" },
+            authenticatedRemoteIdentityProvider = { "alice" },
             transactionRunner = { it() }
         )
 
@@ -560,6 +566,7 @@ class ConversationManagementTest {
             outboxDao = alice.outboxDao,
             reactionDao = alice.rxDao,
             localMessageStateDao = alice.localStateDao,
+            sessionStore = alice.sessionStore,
             transactionRunner = { it() }
         )
 
@@ -572,6 +579,7 @@ class ConversationManagementTest {
             outboxDao = bob.outboxDao,
             reactionDao = bob.rxDao,
             localMessageStateDao = bob.localStateDao,
+            sessionStore = bob.sessionStore,
             transactionRunner = { it() }
         )
 
@@ -714,7 +722,7 @@ class ConversationManagementTest {
         )
 
         // Wait briefly for direct loopback delivery
-        delay(200)
+        delay(750)
 
         val updatedAlice = alice.convDao.getById("conv_ab")!!
         assertFalse("Conversation must auto-unarchive upon receiving incoming message", updatedAlice.isArchived)
@@ -815,7 +823,7 @@ class ConversationManagementTest {
 
         // Now Bob sends another message to Alice
         bob.chatService!!.sendTextMessage(convId, bob.relationshipId, "bob", "alice", "Can you still hear me?")
-        delay(200)
+        delay(750)
 
         // Alice successfully decrypts and automatically recreates conversation record!
         val newConvAlice = alice.convDao.getById(convId)

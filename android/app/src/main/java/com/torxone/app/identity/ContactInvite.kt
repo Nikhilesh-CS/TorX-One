@@ -18,6 +18,7 @@ data class ContactInviteV1(
     val bootstrapEphemeralPublicKey: ByteArray,
     val createdAt: Long = System.currentTimeMillis(),
     val expiresAt: Long = System.currentTimeMillis() + (7 * 24 * 60 * 60 * 1000L), // 7 days default
+    val torOnionAddress: String? = null,
     val signature: ByteArray
 ) {
     override fun equals(other: Any?): Boolean {

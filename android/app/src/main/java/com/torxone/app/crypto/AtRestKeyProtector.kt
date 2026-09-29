@@ -100,15 +100,22 @@ class AndroidKeystoreKeyProtector(
                     android.security.keystore.KeyProperties.KEY_ALGORITHM_AES,
                     ANDROID_KEYSTORE
                 )
-                val spec = android.security.keystore.KeyGenParameterSpec.Builder(
+                val builder = android.security.keystore.KeyGenParameterSpec.Builder(
                     alias,
                     android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT
                 )
                     .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
                     .setKeySize(256)
-                    .build()
-                keyGenerator.init(spec)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    try {
+                        keyGenerator.init(builder.setIsStrongBoxBacked(true).build())
+                    } catch (_: android.security.keystore.StrongBoxUnavailableException) {
+                        keyGenerator.init(builder.setIsStrongBoxBacked(false).build())
+                    }
+                } else {
+                    keyGenerator.init(builder.build())
+                }
                 keyGenerator.generateKey()
             }
             return keyStore.getKey(alias, null)
@@ -124,9 +131,9 @@ class AndroidKeystoreKeyProtector(
     override fun wrap(secret: ByteArray): ByteArray {
         if (secret.isEmpty()) return secret
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val iv = ByteArray(GCM_IV_LENGTH).also { secureRandom.nextBytes(it) }
-        val gcmSpec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, gcmSpec)
+        // Android Keystore requires provider-generated nonces for randomized encryption.
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
         val ciphertext = cipher.doFinal(secret)
         return byteArrayOf(MAGIC) + iv + ciphertext
     }

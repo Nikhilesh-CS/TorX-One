@@ -47,7 +47,7 @@ class LegacyAndFreshContactTest {
         messageDao = DirectConversationRoutingTest.FakeMessageDao()
         conversationDao = DirectConversationRoutingTest.FakeConversationDao()
         outboxDao = FakeOutboxDao()
-        connectionManager = ConnectionManager()
+        connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         sessionStore = FakeSessionStore()
         sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
 

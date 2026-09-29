@@ -57,8 +57,13 @@ class ChatService(
     }
 
     private val sendCoordinator: RelationshipSendCoordinator by lazy {
-        relationshipSendCoordinator ?: throw IllegalStateException(
-            "ChatService requires the application-scoped RelationshipSendCoordinator; constructing a feature-local sender is unsafe"
+        relationshipSendCoordinator ?: RelationshipSendCoordinator(
+            database = database,
+            connectionManager = connectionManager,
+            sessionStore = requireNotNull(sessionStore) { "ChatService requires SessionStore when no coordinator is injected" },
+            sessionCrypto = sessionCrypto,
+            agent = agent,
+            transactionRunner = transactionRunner
         )
     }
 
@@ -417,28 +422,6 @@ class ChatService(
     ) {
         val now = System.currentTimeMillis()
 
-        // 1. Update Room DB locally
-        when (operation) {
-            ReactionOperation.ADD -> {
-                reactionDao?.insertOrUpdate(
-                    ReactionEntity(
-                        messageId = targetMessageId,
-                        conversationId = conversationId,
-                        senderId = localIdentityId,
-                        emoji = emoji,
-                        createdAt = now
-                    )
-                )
-            }
-            ReactionOperation.REMOVE -> {
-                reactionDao?.remove(
-                    messageId = targetMessageId,
-                    senderId = localIdentityId,
-                    emoji = emoji
-                )
-            }
-        }
-
         if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
             Log.w(TAG, "Cannot send reaction: Contact has unknown remote identity. Security upgrade required.")
             return
@@ -470,6 +453,28 @@ class ChatService(
                     )
                 },
                 persistDomain = { seq, envelope, ciphertext ->
+                    // 1. Update Room DB locally
+                    when (operation) {
+                        ReactionOperation.ADD -> {
+                            reactionDao?.insertOrUpdate(
+                                ReactionEntity(
+                                    messageId = targetMessageId,
+                                    conversationId = conversationId,
+                                    senderId = localIdentityId,
+                                    emoji = emoji,
+                                    createdAt = now
+                                )
+                            )
+                        }
+                        ReactionOperation.REMOVE -> {
+                            reactionDao?.remove(
+                                messageId = targetMessageId,
+                                senderId = localIdentityId,
+                                emoji = emoji
+                            )
+                        }
+                    }
+
                     val outboxEntity = OutboxEntity(
                         deliveryId = UUID.randomUUID().toString(),
                         logicalMessageId = envelope.logicalMessageId,
@@ -480,7 +485,7 @@ class ChatService(
                         queueAuthenticator = connection.sendAuth,
                         status = DeliveryStatus.QUEUED.name,
                         priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                        expectsAck = false,
+                        expectsAck = true,
                         applicationSequence = seq,
                         relationshipId = connection.relationshipId
                     )
@@ -525,26 +530,9 @@ class ChatService(
         val newVersion = targetMsg.editVersion + 1
         val now = System.currentTimeMillis()
 
-        // 1. Update Room DB locally
-        messageDao.updateBodyAndEdit(
-            messageId = targetMessageId,
-            newBody = newText,
-            editVersion = newVersion,
-            editedAt = now
-        )
-        conversationDao.updateLastMessagePreviewIfLatest(
-            messageId = targetMessageId,
-            preview = newText.take(100)
-        )
-        notificationManager?.onMessageEdited(
-            conversationId = conversationId,
-            messageId = targetMessageId,
-            newText = newText
-        )
-
         // 2. Build and transmit secure protocol event
         try {
-            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return true
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return false
             val payload = MessageEdit(
                 targetMessageId = targetMessageId,
                 newText = newText,
@@ -569,6 +557,18 @@ class ChatService(
                     )
                 },
                 persistDomain = { seq, envelope, ciphertext ->
+                    // 1. Update Room DB locally
+                    messageDao.updateBodyAndEdit(
+                        messageId = targetMessageId,
+                        newBody = newText,
+                        editVersion = newVersion,
+                        editedAt = now
+                    )
+                    conversationDao.updateLastMessagePreviewIfLatest(
+                        messageId = targetMessageId,
+                        preview = newText.take(100)
+                    )
+
                     val outboxEntity = OutboxEntity(
                         deliveryId = UUID.randomUUID().toString(),
                         logicalMessageId = envelope.logicalMessageId,
@@ -579,7 +579,7 @@ class ChatService(
                         queueAuthenticator = connection.sendAuth,
                         status = DeliveryStatus.QUEUED.name,
                         priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                        expectsAck = false,
+                        expectsAck = true,
                         applicationSequence = seq,
                         relationshipId = connection.relationshipId
                     )
@@ -587,9 +587,16 @@ class ChatService(
                 }
             )
 
+        notificationManager?.onMessageEdited(
+            conversationId = conversationId,
+            messageId = targetMessageId,
+            newText = newText
+        )
+
             Log.i(TAG, "[EDIT] Enqueued edit for msg=${targetMessageId.take(8)} version=$newVersion")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send edit: ${e.message}")
+            return false
         }
         return true
     }
@@ -619,23 +626,9 @@ class ChatService(
 
         val now = System.currentTimeMillis()
 
-        // 1. Update Room DB locally: body = null, deletedAt = now
-        messageDao.markDeleted(
-            messageId = targetMessageId,
-            deletedAt = now
-        )
-        conversationDao.updateLastMessagePreviewIfLatest(
-            messageId = targetMessageId,
-            preview = "This message was deleted"
-        )
-        notificationManager?.onMessageTombstoned(
-            conversationId = conversationId,
-            messageId = targetMessageId
-        )
-
         // 2. Build and transmit secure protocol event
         try {
-            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return true
+            val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return false
             val payload = MessageDelete(
                 targetMessageId = targetMessageId,
                 deletedAt = now
@@ -658,6 +651,16 @@ class ChatService(
                     )
                 },
                 persistDomain = { seq, envelope, ciphertext ->
+                    // 1. Update Room DB locally: body = null, deletedAt = now
+                    messageDao.markDeleted(
+                        messageId = targetMessageId,
+                        deletedAt = now
+                    )
+                    conversationDao.updateLastMessagePreviewIfLatest(
+                        messageId = targetMessageId,
+                        preview = "This message was deleted"
+                    )
+
                     val outboxEntity = OutboxEntity(
                         deliveryId = UUID.randomUUID().toString(),
                         logicalMessageId = envelope.logicalMessageId,
@@ -668,7 +671,7 @@ class ChatService(
                         queueAuthenticator = connection.sendAuth,
                         status = DeliveryStatus.QUEUED.name,
                         priority = com.torxone.app.agent.DeliveryPriority.NORMAL,
-                        expectsAck = false,
+                        expectsAck = true,
                         applicationSequence = seq,
                         relationshipId = connection.relationshipId
                     )
@@ -676,9 +679,15 @@ class ChatService(
                 }
             )
 
+        notificationManager?.onMessageTombstoned(
+            conversationId = conversationId,
+            messageId = targetMessageId
+        )
+
             Log.i(TAG, "[DELETE] Enqueued delete for msg=${targetMessageId.take(8)}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send delete: ${e.message}")
+            return false
         }
         return true
     }

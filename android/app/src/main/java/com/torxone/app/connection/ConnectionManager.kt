@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class ConnectionManager(
     var connectionDao: ConnectionDao? = null,
-    private val keyProtector: com.torxone.app.crypto.KeyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
+    private val keyProtector: com.torxone.app.crypto.KeyProtector,
     private val scope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
 ) {
 
@@ -39,15 +39,27 @@ class ConnectionManager(
         this.connectionDao = dao
         val activeEntities = dao.getAllActive()
         for (entity in activeEntities) {
-            val sendAuth = if (entity.cryptoFormatVersion == 1) {
-                keyProtector.unwrap(entity.sendAuth)
-            } else {
-                entity.sendAuth
+            val rawV1 = entity.cryptoFormatVersion == 1 && entity.sendAuth.size == 32 && entity.recvAuth.size == 32
+            val sendAuth = when (entity.cryptoFormatVersion) {
+                0 -> entity.sendAuth
+                1 -> if (rawV1) entity.sendAuth else keyProtector.unwrap(entity.sendAuth)
+                2 -> keyProtector.unwrap(entity.sendAuth)
+                3 -> keyProtector.unwrap(entity.sendAuth)
+                else -> throw SecurityException("Unsupported connection secret format ${entity.cryptoFormatVersion}")
             }
-            val recvAuth = if (entity.cryptoFormatVersion == 1) {
-                keyProtector.unwrap(entity.recvAuth)
-            } else {
-                entity.recvAuth
+            val recvAuth = when (entity.cryptoFormatVersion) {
+                0 -> entity.recvAuth
+                1 -> if (rawV1) entity.recvAuth else keyProtector.unwrap(entity.recvAuth)
+                2 -> keyProtector.unwrap(entity.recvAuth)
+                3 -> keyProtector.unwrap(entity.recvAuth)
+                else -> throw SecurityException("Unsupported connection secret format ${entity.cryptoFormatVersion}")
+            }
+            if (entity.cryptoFormatVersion < 3) {
+                dao.upsert(entity.copy(
+                    sendAuth = keyProtector.wrap(sendAuth),
+                    recvAuth = keyProtector.wrap(recvAuth),
+                    cryptoFormatVersion = 3
+                ))
             }
             registerConnection(
                 Connection(
@@ -136,8 +148,8 @@ class ConnectionManager(
     }
 
     @Synchronized
-    fun releaseRecvSequenceReservation(relationshipId: String) {
-        recvSequenceReservations.remove(relationshipId)
+    fun releaseRecvSequenceReservation(relationshipId: String, expectedSequence: Long) {
+        recvSequenceReservations.remove(relationshipId, expectedSequence)
     }
 
     /**

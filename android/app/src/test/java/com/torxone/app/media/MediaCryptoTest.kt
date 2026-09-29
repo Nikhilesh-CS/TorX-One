@@ -109,7 +109,7 @@ class MediaCryptoTest {
             fileSize = 1048576L,
             encryptedSha256 = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
             mediaKeyBase64 = "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=",
-            totalChunks = 64,
+            totalChunks = 65,
             chunkSize = 16384,
             durationMs = null,
             thumbnailBase64 = "dGh1bWJuYWlsX2RhdGE=",

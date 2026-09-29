@@ -147,6 +147,9 @@ interface ContactDao {
 
 @Dao
 interface OutboxDao {
+    suspend fun getByDeliveryId(deliveryId: String): OutboxEntity? =
+        getPending().firstOrNull { it.deliveryId == deliveryId }
+
     @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') ORDER BY CASE WHEN application_sequence IS NOT NULL THEN 0 ELSE 1 END, application_sequence ASC, created_at ASC, priority DESC")
     suspend fun getPending(): List<OutboxEntity>
 
@@ -210,7 +213,7 @@ interface ConnectionDao {
     @Query("SELECT * FROM connections WHERE send_queue_id = :sendQueueId")
     suspend fun getBySendQueue(sendQueueId: String): ConnectionDbEntity?
 
-    @Query("SELECT * FROM connections WHERE state = 'ACTIVE'")
+    @Query("SELECT * FROM connections WHERE state IN ('ACTIVE', 'LOCAL_ESTABLISHED')")
     suspend fun getAllActive(): List<ConnectionDbEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -246,7 +249,7 @@ interface SessionDao {
 
 @Dao
 interface SkippedKeyDao {
-    @Query("SELECT * FROM skipped_message_keys WHERE session_id = :sessionId")
+    @Query("SELECT * FROM skipped_message_keys WHERE session_id = :sessionId ORDER BY id ASC")
     suspend fun getKeysForSession(sessionId: String): List<SkippedKeyEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

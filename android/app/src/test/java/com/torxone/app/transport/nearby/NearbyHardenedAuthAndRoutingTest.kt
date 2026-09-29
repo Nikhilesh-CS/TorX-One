@@ -5,6 +5,7 @@ import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.Connection
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.incoming.IncomingTransportHub
+import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.transport.TransportDestination
 import com.torxone.app.transport.TransportResult
 import com.torxone.app.transport.TransportRouter
@@ -25,7 +26,7 @@ class NearbyHardenedAuthAndRoutingTest {
     fun setUp() {
         network = NearbyTransportTest.TestNearbyNetwork()
         adapter = NearbyTransportTest.SimulatedNearbyAdapter("ep-local", network)
-        connManager = ConnectionManager()
+        connManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
 
         val agent = TorXAgent(
             transportRouter = TransportRouter(),
@@ -91,8 +92,8 @@ class NearbyHardenedAuthAndRoutingTest {
                 generation = 1,
                 sendQueueId = "q-send-victim",
                 recvQueueId = "q-recv-victim",
-                sendAuth = byteArrayOf(1),
-                recvAuth = byteArrayOf(2)
+                sendAuth = ByteArray(32) { 1 },
+                recvAuth = ByteArray(32) { 2 }
             )
         )
 
@@ -124,8 +125,8 @@ class NearbyHardenedAuthAndRoutingTest {
                 generation = 1,
                 sendQueueId = "q-send-bob",
                 recvQueueId = "q-recv-bob",
-                sendAuth = byteArrayOf(10, 20),
-                recvAuth = byteArrayOf(30, 40)
+                sendAuth = ByteArray(32) { 10 },
+                recvAuth = ByteArray(32) { 30 }
             )
         )
         connManager.registerConnection(
@@ -134,16 +135,21 @@ class NearbyHardenedAuthAndRoutingTest {
                 generation = 1,
                 sendQueueId = "q-send-charlie",
                 recvQueueId = "q-recv-charlie",
-                sendAuth = byteArrayOf(50, 60),
-                recvAuth = byteArrayOf(70, 80)
+                sendAuth = ByteArray(32) { 50 },
+                recvAuth = ByteArray(32) { 70 }
             )
         )
 
-        // 1. Verify hint computation
-        val hint1 = transport.computeRelHint(rel1)
-        val hint2 = transport.computeRelHint(rel2)
-        assertEquals("Hint must be 16-character hex (8 bytes)", 16, hint1.length)
-        assertEquals(16, hint2.length)
+        // 1. Capability hints are keyed and challenge-bound, so relationship IDs are not enumerable.
+        val challenge = ByteArray(16) { 7 }
+        fun hint(secret: ByteArray): String = IdentityCrypto.hmacSha256(
+            secret,
+            "torx-rel-hint-v2:".toByteArray(Charsets.UTF_8) + challenge
+        ).take(16).joinToString("") { "%02x".format(it) }
+        val hint1 = hint(ByteArray(32) { 30 })
+        val hint2 = hint(ByteArray(32) { 70 })
+        assertEquals("Hint must be 32-character hex (16 bytes)", 32, hint1.length)
+        assertEquals(32, hint2.length)
         assertNotEquals(hint1, hint2)
 
         // 2. Peer connects and advertises Bob's hint
@@ -164,7 +170,7 @@ class NearbyHardenedAuthAndRoutingTest {
             peerTieBreaker = 12345L,
             supportedFeatures = listOf("rel-hint:$hint1"),
             maxFrameSize = 65536,
-            challenge = ByteArray(16) { 7 }
+            challenge = challenge
         )
 
         transport.payloadCallback.onPayloadReceived("ep-bob", Payload.fromBytes(bobHello.encode()))

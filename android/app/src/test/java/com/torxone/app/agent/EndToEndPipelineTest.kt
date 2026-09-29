@@ -35,14 +35,12 @@ class EndToEndPipelineTest {
         }
 
         override suspend fun getPendingItems(): List<DeliveryItem> {
-            val now = System.currentTimeMillis()
             return items.values
                 .filter {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-                    it.nextAttemptAt <= now
+                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -385,7 +383,7 @@ class EndToEndPipelineTest {
         val contactDao = InMemoryContactDao()
         val pendingInviteDao = InMemoryPendingInviteDao()
         val identityRepo: InMemoryIdentityRepository
-        val connectionManager = ConnectionManager()
+        val connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val activeTracker = ActiveConversationTracker()
         val transportRouter = TransportRouter()
         val fakeTransport = FakeTransport()
@@ -418,6 +416,7 @@ class EndToEndPipelineTest {
             chatReceiver = ChatReceiver(messageDao, conversationDao, activeTracker)
             receiptHandler = DeliveryReceiptHandler(messageDao, outboxDao, agent)
             dispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
                 connectionManager = connectionManager,
                 sessionCrypto = sessionCrypto,
                 processedEnvelopeDao = processedDao,
@@ -1072,7 +1071,7 @@ class EndToEndPipelineTest {
         bob.agent.stop()
 
         // Create fresh ConnectionManager and restore from database
-        val newBobConnectionManager = ConnectionManager()
+        val newBobConnectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         newBobConnectionManager.restoreFromDatabase(bob.connectionDao)
 
         // Create fresh SessionCrypto using the persisted SessionStore
@@ -1080,6 +1079,7 @@ class EndToEndPipelineTest {
 
         // Re-wire Bob's incoming pipeline with restored managers
         val newBobDispatcher = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = newBobConnectionManager,
             sessionCrypto = newBobSessionCrypto,
             processedEnvelopeDao = bob.processedDao,
@@ -1170,11 +1170,11 @@ class EndToEndPipelineTest {
         assertTrue(MessageType.GROUP_AVATAR_CHANGE.requiresApplicationSequence())
         assertTrue(MessageType.GROUP_KEY_ROTATE.requiresApplicationSequence())
 
-        // Internal control and transfer frames are sequence-exempt
-        assertFalse(MessageType.FILE_PROGRESS.requiresApplicationSequence())
-        assertFalse(MessageType.FILE_COMPLETE.requiresApplicationSequence())
-        assertFalse(MessageType.FILE_RESUME.requiresApplicationSequence())
-        assertFalse(MessageType.FILE_CANCEL.requiresApplicationSequence())
+        // Durable transfer frames are sequenced and receiver-acknowledged.
+        assertTrue(MessageType.FILE_PROGRESS.requiresApplicationSequence())
+        assertTrue(MessageType.FILE_COMPLETE.requiresApplicationSequence())
+        assertTrue(MessageType.FILE_RESUME.requiresApplicationSequence())
+        assertTrue(MessageType.FILE_CANCEL.requiresApplicationSequence())
         assertFalse(MessageType.DELIVERY_ACK.requiresApplicationSequence())
         assertFalse(MessageType.READ_RECEIPT.requiresApplicationSequence())
         assertFalse(MessageType.TYPING_START.requiresApplicationSequence())

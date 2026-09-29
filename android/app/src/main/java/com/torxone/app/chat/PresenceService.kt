@@ -40,7 +40,9 @@ class PresenceService(
     private val directRouteTable: DirectRouteTable,
     private val localIdentityIdProvider: () -> String?,
     private val appSettingsRepository: AppSettingsRepository? = null,
-    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
+    private val remoteIdentityProvider: suspend (String) -> String? = { null }
 ) {
     companion object {
         private const val TAG = "PresenceService"
@@ -231,22 +233,25 @@ class PresenceService(
     ) {
         try {
             val connection = connectionManager.getConnectionByRelationship(relationshipId) ?: return
-            val localId = localIdentityIdProvider() ?: ""
+            val localId = localIdentityIdProvider() ?: return
+            val recipient = contactDao?.getByRelationshipId(relationshipId)?.remoteIdentityId
+                ?: remoteIdentityProvider(relationshipId)
+                ?: return
+            if (recipient.isBlank() || recipient == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) return
 
             val envelope = SecureEnvelope(
                 protocolVersion = 1,
                 logicalMessageId = UUID.randomUUID().toString(),
                 conversationId = conversationId,
                 senderIdentity = localId,
-                recipientBinding = "",
+                recipientBinding = recipient,
                 messageType = messageType,
                 payload = payload
             )
             val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
 
-            val encrypted = sessionCrypto.encrypt(relationshipId, envelopeBytes, aad)
-            val ciphertext = encrypted.serialize()
+            val ciphertext = com.torxone.app.crypto.EphemeralCipher.encrypt(connection.sendAuth, envelopeBytes, aad)
 
             val deliveryItem = DeliveryItem(
                 deliveryId = UUID.randomUUID().toString(),

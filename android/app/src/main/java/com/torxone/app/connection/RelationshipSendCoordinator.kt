@@ -34,13 +34,15 @@ import java.util.concurrent.ConcurrentHashMap
  * Sequence N+1 can NEVER be allocated, encrypted, or persisted before sequence N commits.
  */
 class RelationshipSendCoordinator(
-    private val database: TorXDatabase,
+    private val database: TorXDatabase? = null,
     private val connectionManager: ConnectionManager,
     private val sessionStore: SessionStore,
     private val sessionCrypto: SessionCrypto,
-    private val connectionDao: ConnectionDao,
+    private val connectionDao: ConnectionDao? = connectionManager.connectionDao,
     private val agent: TorXAgent,
-    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block -> database.withTransaction { block() } }
+    private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
+        if (database != null) database.withTransaction { block() } else block()
+    }
 ) {
     companion object {
         private const val TAG = "RelationshipSendCoordinator"
@@ -60,9 +62,12 @@ class RelationshipSendCoordinator(
         val mutex = getLock(relationshipId)
         return mutex.withLock {
             // 1. Read current durable sequence from database or connection
-            val dbConn = connectionDao.getByRelationshipId(relationshipId)
-                ?: throw IllegalStateException("Cannot sequence a send without a durable connection row for $relationshipId")
-            val currentSeq = maxOf(dbConn.sendSequence, connection.sendSequence)
+            val dbConn = connectionDao?.getByRelationshipId(relationshipId)
+            val liveConnection = connectionManager.getConnectionByRelationship(relationshipId)
+            val currentSeq = maxOf(
+                dbConn?.sendSequence ?: 0L,
+                liveConnection?.sendSequence ?: connection.sendSequence
+            )
             val nextSeq = currentSeq + 1L
 
             // 2. Build authenticated SecureEnvelope containing sequence nextSeq
@@ -81,7 +86,7 @@ class RelationshipSendCoordinator(
 
                     // Atomic transaction: sequence update + ratchet state + domain entities + outbox
                     transactionRunner {
-                        connectionDao.updateSendSequence(relationshipId, nextSeq)
+                        connectionDao?.updateSendSequence(relationshipId, nextSeq)
                         sessionStore.saveSession(updatedState)
                         val res = persistDomain(nextSeq, envelope, ciphertext)
                         domainResult = res
@@ -99,6 +104,28 @@ class RelationshipSendCoordinator(
             agent.wake(envelope.logicalMessageId)
 
             SendResult(nextSeq, envelope, domainResult!!)
+        }
+    }
+
+    suspend fun <T> sendDurableUnsequenced(
+        relationshipId: String,
+        connection: Connection,
+        envelope: SecureEnvelope,
+        persistDomain: suspend (envelope: SecureEnvelope, ciphertext: ByteArray) -> T
+    ): T {
+        require(envelope.directionSequence == 0L) { "Unsequenced envelope must use sequence zero" }
+        return getLock(relationshipId).withLock {
+            val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
+            val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
+            var domainResult: T? = null
+            sessionCrypto.encryptAndCommit(relationshipId, envelopeBytes, aad) { encrypted, updatedState ->
+                transactionRunner {
+                    sessionStore.saveSession(updatedState)
+                    domainResult = persistDomain(envelope, encrypted.serialize())
+                }
+            }
+            agent.wake(envelope.logicalMessageId)
+            domainResult ?: throw IllegalStateException("Durable send transaction did not produce a result")
         }
     }
 

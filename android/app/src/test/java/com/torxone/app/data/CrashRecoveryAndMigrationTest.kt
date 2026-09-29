@@ -125,7 +125,7 @@ class CrashRecoveryAndMigrationTest {
         assertNotNull("Bob session must be recovered from encrypted storage", recoveredBobSession)
 
         // Verify sequence counters survived
-        val connManagerAfterRestart = ConnectionManager(connectionDao = connectionDao)
+        val connManagerAfterRestart = ConnectionManager(connectionDao = connectionDao, keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val connEntity = connectionDao.getByRelationshipId(relationshipId)
         assertNotNull(connEntity)
         assertEquals(2L, connEntity!!.sendSequence)

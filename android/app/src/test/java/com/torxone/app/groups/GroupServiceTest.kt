@@ -37,9 +37,10 @@ class GroupServiceTest {
     private val outboxDao = TestOutboxDao(outboxStore)
     private val processedStore = TestProcessedStore()
 
-    private val connectionManager = ConnectionManager()
+    private val connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
     private val sessionStore = TestSessionStore()
     private val sessionCrypto = DoubleRatchetSessionCrypto(sessionStore)
+    private val receiverCryptos = mutableMapOf<String, DoubleRatchetSessionCrypto>()
     private val transportRouter = TransportRouter()
     private val agent = TorXAgent(
         transportRouter = transportRouter,
@@ -99,6 +100,7 @@ class GroupServiceTest {
             sessionCrypto = sessionCrypto,
             agent = agent,
             localIdentityIdProvider = { aliceIdentityId },
+            sessionStore = sessionStore,
             transactionRunner = { block -> block() }
         )
     }
@@ -140,6 +142,16 @@ class GroupServiceTest {
             localRatchetPrivateKey = aliceRatchet.privateKey,
             localRatchetPublicKey = aliceRatchet.publicKey
         )
+        val receiverCrypto = DoubleRatchetSessionCrypto(TestSessionStore())
+        receiverCrypto.initializeSession(
+            relationshipId = relationshipId,
+            sessionInitializationSecret = secrets.sessionInitializationSecret,
+            isInitiator = false,
+            remoteRatchetPublicKey = aliceRatchet.publicKey,
+            localRatchetPrivateKey = bobRatchet.privateKey,
+            localRatchetPublicKey = bobRatchet.publicKey
+        )
+        receiverCryptos[relationshipId] = receiverCrypto
     }
 
     @Test
@@ -393,7 +405,7 @@ class GroupServiceTest {
             // Envelopes are encrypted with pairwise ratchet session
             val connection = connectionManager.getConnectionByRelationship(item.relationshipId)!!
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray()
-            val decryptedBytes = sessionCrypto.decrypt(
+            val decryptedBytes = receiverCryptos.getValue(item.relationshipId).decrypt(
                 relationshipId = item.relationshipId,
                 message = com.torxone.app.crypto.EncryptedSessionMessage.deserialize(item.ciphertext),
                 associatedData = aad
@@ -443,7 +455,7 @@ class GroupServiceTest {
         val aliceToBobOutbox = outboxStore.items.values.first { it.relationshipId == "rel_alice_bob" }
         val aliceToBobConnection = connectionManager.getConnectionByRelationship(aliceToBobOutbox.relationshipId)!!
         val aliceToBobAad = "torx-aad-v1:${aliceToBobConnection.generation}:${aliceToBobConnection.sendQueueId}".toByteArray()
-        val decrypted = sessionCrypto.decrypt(
+        val decrypted = receiverCryptos.getValue(aliceToBobOutbox.relationshipId).decrypt(
             aliceToBobOutbox.relationshipId,
             com.torxone.app.crypto.EncryptedSessionMessage.deserialize(aliceToBobOutbox.ciphertext),
             aliceToBobAad

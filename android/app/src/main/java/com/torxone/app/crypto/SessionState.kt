@@ -53,7 +53,7 @@ data class ReceiveState(
     fun copyState(): ReceiveState = ReceiveState(
         chainKey = chainKey?.copyOf(),
         messageNumber = messageNumber,
-        skippedKeys = HashMap(skippedKeys)
+        skippedKeys = LinkedHashMap(skippedKeys)
     )
 }
 

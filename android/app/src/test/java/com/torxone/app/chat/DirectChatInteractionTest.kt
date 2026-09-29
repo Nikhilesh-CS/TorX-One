@@ -256,7 +256,7 @@ class DirectChatInteractionTest {
         val routeTable = DirectRouteTable()
         val relationshipId = "rel-presence-test"
 
-        val connManager = ConnectionManager()
+        val connManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val outbox = InMemoryOutboxStore()
         val processed = InMemoryProcessedStore()
         val router = TransportRouter()
@@ -299,7 +299,7 @@ class DirectChatInteractionTest {
         val routeTable = DirectRouteTable()
         val relationshipId = "rel-presence-update"
 
-        val connManager = ConnectionManager()
+        val connManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val outbox = InMemoryOutboxStore()
         val processed = InMemoryProcessedStore()
         val router = TransportRouter()
@@ -332,7 +332,7 @@ class DirectChatInteractionTest {
         val routeTable = DirectRouteTable()
         val relationshipId = "rel-typing-test"
 
-        val connManager = ConnectionManager()
+        val connManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val outbox = InMemoryOutboxStore()
         val processed = InMemoryProcessedStore()
         val router = TransportRouter()
@@ -370,7 +370,7 @@ class DirectChatInteractionTest {
             connectionId = "conn-1",
             queueAddress = "q-1",
             ciphertext = "cipher".toByteArray(),
-            queueAuthenticator = "auth".toByteArray(),
+            queueAuthenticator = ByteArray(32) { 1 },
             priority = DeliveryPriority.LOW
         )
 
@@ -394,6 +394,7 @@ class DirectChatInteractionTest {
         val outbox = InMemoryOutboxStore()
         val processed = InMemoryProcessedStore()
         val agent = TorXAgent(TransportRouter(), outbox, processed, Dispatchers.Default)
+        val convId = "conv-read-test"
 
         val handler = DeliveryReceiptHandler(
             messageDao = messageDao,
@@ -405,10 +406,10 @@ class DirectChatInteractionTest {
                 override suspend fun removeByMessageId(logicalMessageId: String) {}
                 override suspend fun removeByDeliveryId(deliveryId: String) {}
             },
-            agent = agent
+            agent = agent,
+            authenticatedContactProvider = { convId to "bob" }
         )
 
-        val convId = "conv-read-test"
         // Alice has 3 outgoing messages
         val m1 = MessageEntity(
             logicalMessageId = "msg-1",
@@ -460,7 +461,18 @@ class DirectChatInteractionTest {
             payload = receipt.toByteArray()
         )
 
-        handler.handleReadReceipt(envelope)
+        handler.handleReadReceipt(
+            envelope,
+            Connection(
+                connectionId = "conn-read",
+                relationshipId = "rel-read",
+                generation = 1,
+                sendQueueId = "send-read",
+                recvQueueId = "recv-read",
+                sendAuth = ByteArray(32),
+                recvAuth = ByteArray(32)
+            )
+        )
 
         // msg-1 and msg-2 must be READ; msg-3 must still be DELIVERED
         assertEquals("READ", messageDao.getById("msg-1")?.status)
@@ -486,8 +498,8 @@ class DirectChatInteractionTest {
             generation = 1,
             sendQueueId = "q-send",
             recvQueueId = "q-recv",
-            sendAuth = "auth".toByteArray(),
-            recvAuth = "auth".toByteArray()
+            sendAuth = ByteArray(32) { 1 },
+            recvAuth = ByteArray(32) { 1 }
         )
 
         // 1. Conversation NOT active: arrives as DELIVERED, unread count = 1
@@ -628,8 +640,8 @@ class DirectChatInteractionTest {
             generation = 1,
             sendQueueId = "q-a2b",
             recvQueueId = "q-b2a",
-            sendAuth = "auth-a2b".toByteArray(),
-            recvAuth = "auth-b2a".toByteArray()
+            sendAuth = ByteArray(32) { 1 },
+            recvAuth = ByteArray(32) { 2 }
         )
         val connBob = Connection(
             connectionId = "c-b",
@@ -637,12 +649,12 @@ class DirectChatInteractionTest {
             generation = 1,
             sendQueueId = "q-b2a",
             recvQueueId = "q-a2b",
-            sendAuth = "auth-b2a".toByteArray(),
-            recvAuth = "auth-a2b".toByteArray()
+            sendAuth = ByteArray(32) { 2 },
+            recvAuth = ByteArray(32) { 1 }
         )
 
-        val cmAlice = ConnectionManager().apply { registerConnection(connAlice) }
-        val cmBob = ConnectionManager().apply { registerConnection(connBob) }
+        val cmAlice = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()).apply { registerConnection(connAlice) }
+        val cmBob = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()).apply { registerConnection(connBob) }
 
         val msgDaoAlice = TestMessageDao()
         val msgDaoBob = TestMessageDao()
@@ -665,10 +677,11 @@ class DirectChatInteractionTest {
         val routeTableAlice = DirectRouteTable().apply { bindRoute(relationshipId, "ep-bob", RouteState.READY) }
         val routeTableBob = DirectRouteTable().apply { bindRoute(relationshipId, "ep-alice", RouteState.READY) }
 
-        val presenceAlice = PresenceService(cmAlice, cryptoAlice, agentAlice, routeTableAlice, { "alice" })
-        val presenceBob = PresenceService(cmBob, cryptoBob, agentBob, routeTableBob, { "bob" })
+        val presenceAlice = PresenceService(cmAlice, cryptoAlice, agentAlice, routeTableAlice, { "alice" }, remoteIdentityProvider = { "bob" })
+        val presenceBob = PresenceService(cmBob, cryptoBob, agentBob, routeTableBob, { "bob" }, remoteIdentityProvider = { "alice" })
 
         val dispatcherAlice = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = cmAlice,
             sessionCrypto = cryptoAlice,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -690,11 +703,13 @@ class DirectChatInteractionTest {
             }, agentAlice),
             agent = agentAlice,
             localIdentityIdProvider = { "alice" },
+            authenticatedRemoteIdentityProvider = { "bob" },
             presenceHandler = PresenceHandler(presenceAlice),
             typingHandler = TypingHandler(presenceAlice)
         )
 
         val dispatcherBob = IncomingDispatcher(
+            keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
             connectionManager = cmBob,
             sessionCrypto = cryptoBob,
             processedEnvelopeDao = object : ProcessedEnvelopeDao {
@@ -716,6 +731,7 @@ class DirectChatInteractionTest {
             }, agentBob),
             agent = agentBob,
             localIdentityIdProvider = { "bob" },
+            authenticatedRemoteIdentityProvider = { "alice" },
             presenceHandler = PresenceHandler(presenceBob),
             typingHandler = TypingHandler(presenceBob)
         )

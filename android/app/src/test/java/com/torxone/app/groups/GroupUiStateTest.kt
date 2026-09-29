@@ -58,11 +58,12 @@ class GroupUiStateTest {
             reactionDao = reactionDao,
             contactDao = contactDao,
             outboxDao = outboxDao,
-            connectionManager = com.torxone.app.connection.ConnectionManager(),
+            connectionManager = com.torxone.app.connection.ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector()),
             sessionCrypto = sessionCrypto,
             agent = agent,
             localIdentityIdProvider = { localIdentityId },
-            transactionRunner = { it() }
+            transactionRunner = { it() },
+            sessionStore = sessionStore
         )
     }
 
@@ -187,6 +188,7 @@ class GroupUiStateTest {
                 displayName = "Alice Wonderland",
                 relationshipId = "rel-alice",
                 conversationId = "conv-alice",
+                remoteIdentityId = "contact-alice",
                 signingPublicKey = ByteArray(32)
             )
         )
@@ -269,9 +271,9 @@ class GroupUiStateTest {
 
     @Test
     fun `typing indicators aggregate single, pair, and multiple members cleanly`() = runTest {
-        contactDao.upsert(ContactEntity(contactId = "user-1", relationshipId = "r1", displayName = "Alice", conversationId = "c1", signingPublicKey = ByteArray(32)))
-        contactDao.upsert(ContactEntity(contactId = "user-2", relationshipId = "r2", displayName = "Bob", conversationId = "c2", signingPublicKey = ByteArray(32)))
-        contactDao.upsert(ContactEntity(contactId = "user-3", relationshipId = "r3", displayName = "Charlie", conversationId = "c3", signingPublicKey = ByteArray(32)))
+        contactDao.upsert(ContactEntity(contactId = "user-1", relationshipId = "r1", displayName = "Alice", conversationId = "c1", signingPublicKey = ByteArray(32), remoteIdentityId = "user-1"))
+        contactDao.upsert(ContactEntity(contactId = "user-2", relationshipId = "r2", displayName = "Bob", conversationId = "c2", signingPublicKey = ByteArray(32), remoteIdentityId = "user-2"))
+        contactDao.upsert(ContactEntity(contactId = "user-3", relationshipId = "r3", displayName = "Charlie", conversationId = "c3", signingPublicKey = ByteArray(32), remoteIdentityId = "user-3"))
 
         val viewModel = GroupChatViewModel(
             groupId = groupId,

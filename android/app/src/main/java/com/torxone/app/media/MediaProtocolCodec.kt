@@ -149,6 +149,8 @@ object MediaProtocolCodec {
     // ─── MediaChunkAck ────────────────────────────────────────────────
 
     fun encodeChunkAck(ack: MediaChunkAck): ByteArray {
+        require(ack.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(ack.chunkIndex in 0 until MAX_CHUNK_COUNT)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(ACK_MAGIC)
@@ -159,13 +161,18 @@ object MediaProtocolCodec {
     }
 
     fun decodeChunkAck(bytes: ByteArray): MediaChunkAck {
+        require(bytes.size <= 2048) { "Media control payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == ACK_MAGIC) { "Invalid MediaChunkAck magic header" }
-        return MediaChunkAck(
+        val value = MediaChunkAck(
             mediaId = dis.readUTF(),
             chunkIndex = dis.readInt()
         )
+        require(dis.available() == 0) { "Trailing media control bytes" }
+        require(value.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(value.chunkIndex in 0 until MAX_CHUNK_COUNT)
+        return value
     }
 
     // ─── MediaResumeRequest ───────────────────────────────────────────
@@ -209,6 +216,8 @@ object MediaProtocolCodec {
     // ─── MediaCancelPayload ───────────────────────────────────────────
 
     fun encodeCancel(cancel: MediaCancelPayload): ByteArray {
+        require(cancel.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(cancel.reason.length <= 512)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(CANCEL_MAGIC)
@@ -219,18 +228,25 @@ object MediaProtocolCodec {
     }
 
     fun decodeCancel(bytes: ByteArray): MediaCancelPayload {
+        require(bytes.size <= 2048) { "Media control payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == CANCEL_MAGIC) { "Invalid MediaCancel magic header" }
-        return MediaCancelPayload(
+        val value = MediaCancelPayload(
             mediaId = dis.readUTF(),
             reason = dis.readUTF()
         )
+        require(dis.available() == 0) { "Trailing media control bytes" }
+        require(value.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(value.reason.length <= 512)
+        return value
     }
 
     // ─── MediaCompletePayload ─────────────────────────────────────────
 
     fun encodeComplete(complete: MediaCompletePayload): ByteArray {
+        require(complete.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(complete.verifiedSha256.matches(Regex("[A-Fa-f0-9]{64}")))
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(COMPLETE_MAGIC)
@@ -241,12 +257,17 @@ object MediaProtocolCodec {
     }
 
     fun decodeComplete(bytes: ByteArray): MediaCompletePayload {
+        require(bytes.size <= 2048) { "Media control payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == COMPLETE_MAGIC) { "Invalid MediaComplete magic header" }
-        return MediaCompletePayload(
+        val value = MediaCompletePayload(
             mediaId = dis.readUTF(),
             verifiedSha256 = dis.readUTF()
         )
+        require(dis.available() == 0) { "Trailing media control bytes" }
+        require(value.mediaId.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+        require(value.verifiedSha256.matches(Regex("[A-Fa-f0-9]{64}")))
+        return value
     }
 }

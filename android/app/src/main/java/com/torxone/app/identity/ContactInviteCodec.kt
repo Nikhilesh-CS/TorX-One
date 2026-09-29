@@ -31,9 +31,10 @@ object ContactInviteCodec {
         encryptionPublicKey: ByteArray,
         bootstrapEphemeralPublicKey: ByteArray,
         createdAt: Long,
-        expiresAt: Long
+        expiresAt: Long,
+        torOnionAddress: String? = null
     ): ByteArray {
-        require(protocolVersion == 1)
+        require(protocolVersion in 0..0xffff)
         require(inviteId.length in 1..128 && identityId.length in 1..128)
         require(displayName.length <= MAX_DISPLAY_NAME_LENGTH) { "Display name is not canonical" }
         require(signingPublicKey.size == 32 && encryptionPublicKey.size == 32 && bootstrapEphemeralPublicKey.size == 32)
@@ -58,6 +59,7 @@ object ContactInviteCodec {
 
         dos.writeLong(createdAt)
         dos.writeLong(expiresAt)
+        if (protocolVersion >= 2) dos.writeUTF(torOnionAddress.orEmpty())
         dos.flush()
 
         return baos.toByteArray()
@@ -76,7 +78,8 @@ object ContactInviteCodec {
             encryptionPublicKey = invite.identityEncryptionPublicKey,
             bootstrapEphemeralPublicKey = invite.bootstrapEphemeralPublicKey,
             createdAt = invite.createdAt,
-            expiresAt = invite.expiresAt
+            expiresAt = invite.expiresAt,
+            torOnionAddress = invite.torOnionAddress
         )
 
         val baos = ByteArrayOutputStream()
@@ -128,6 +131,7 @@ object ContactInviteCodec {
 
         val createdAt = dis.readLong()
         val expiresAt = dis.readLong()
+        val torOnionAddress = if (protocolVersion >= 2) dis.readUTF().ifBlank { null } else null
 
         val sigLen = dis.readShort().toInt()
         require(sigLen == 64)
@@ -146,6 +150,7 @@ object ContactInviteCodec {
             bootstrapEphemeralPublicKey = ephemeralKey,
             createdAt = createdAt,
             expiresAt = expiresAt,
+            torOnionAddress = torOnionAddress,
             signature = signature
         )
     }
@@ -163,6 +168,7 @@ object ContactInviteCodec {
      * Parses a QR string into a ContactInviteV1.
      */
     fun decodeFromQrString(qrString: String): ContactInviteV1? {
+        if (qrString.length > URI_PREFIX.length + ((MAX_INVITE_BYTES + 2) / 3) * 4) return null
         if (!qrString.startsWith(URI_PREFIX)) return null
         val base64Part = qrString.removePrefix(URI_PREFIX)
         return try {
@@ -188,7 +194,7 @@ object ContactInviteCodec {
         consumedInviteIds: Set<String> = emptySet(),
         now: Long = System.currentTimeMillis()
     ): InviteValidationResult {
-        if (invite.protocolVersion != 1) {
+        if (invite.protocolVersion !in 1..2) {
             return InviteValidationResult.Invalid(InviteValidationError.UNSUPPORTED_PROTOCOL)
         }
 
@@ -196,6 +202,10 @@ object ContactInviteCodec {
             invite.inviteId.length !in 1..128 || invite.identityId.length !in 1..128 ||
             invite.createdAt <= 0 || invite.expiresAt <= invite.createdAt ||
             invite.expiresAt - invite.createdAt > 30L * 24 * 60 * 60 * 1000
+        ) return InviteValidationResult.Invalid(InviteValidationError.MALFORMED)
+
+        if (invite.protocolVersion == 2 &&
+            invite.torOnionAddress?.matches(Regex("[a-z2-7]{56}\\.onion")) != true
         ) return InviteValidationResult.Invalid(InviteValidationError.MALFORMED)
 
         if (invite.identitySigningPublicKey.size != 32 ||
@@ -227,7 +237,8 @@ object ContactInviteCodec {
             encryptionPublicKey = invite.identityEncryptionPublicKey,
             bootstrapEphemeralPublicKey = invite.bootstrapEphemeralPublicKey,
             createdAt = invite.createdAt,
-            expiresAt = invite.expiresAt
+            expiresAt = invite.expiresAt,
+            torOnionAddress = invite.torOnionAddress
         )
 
         val isValidSignature = IdentityCrypto.verifyEd25519(

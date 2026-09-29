@@ -299,8 +299,7 @@ class TestOutboxStore : OutboxStore {
             (it.status == DeliveryStatus.QUEUED ||
              it.status == DeliveryStatus.RETRY_WAIT ||
              it.status == DeliveryStatus.TRANSMITTING ||
-             it.status == DeliveryStatus.TRANSPORT_ACCEPTED) &&
-            it.nextAttemptAt <= now
+               it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
         }
     }
 
@@ -321,11 +320,53 @@ class TestOutboxStore : OutboxStore {
     override suspend fun removeByMessageId(logicalMessageId: String) {
         items.entries.removeIf { it.value.logicalMessageId == logicalMessageId }
     }
+
+    override suspend fun removeByDeliveryId(deliveryId: String) {
+        items.remove(deliveryId)
+    }
 }
 
 class TestOutboxDao(private val store: TestOutboxStore) : OutboxDao {
-    override suspend fun getPending(): List<OutboxEntity> = emptyList()
-    override suspend fun insert(item: OutboxEntity) {}
+    override suspend fun getPending(): List<OutboxEntity> = store.getPendingItems().map {
+        OutboxEntity(
+            deliveryId = it.deliveryId,
+            logicalMessageId = it.logicalMessageId,
+            conversationId = it.conversationId,
+            connectionId = it.connectionId,
+            queueAddress = it.queueAddress,
+            ciphertext = it.ciphertext,
+            queueAuthenticator = it.queueAuthenticator,
+            status = it.status.name,
+            priority = it.priority,
+            attemptCount = it.attemptCount,
+            nextAttemptAt = it.nextAttemptAt,
+            createdAt = it.createdAt,
+            updatedAt = it.updatedAt,
+            expectsAck = it.expectsAck,
+            applicationSequence = it.applicationSequence,
+            relationshipId = it.relationshipId
+        )
+    }
+    override suspend fun insert(item: OutboxEntity) {
+        store.insert(DeliveryItem(
+            deliveryId = item.deliveryId,
+            logicalMessageId = item.logicalMessageId,
+            conversationId = item.conversationId,
+            connectionId = item.connectionId,
+            queueAddress = item.queueAddress,
+            ciphertext = item.ciphertext,
+            queueAuthenticator = item.queueAuthenticator,
+            status = DeliveryStatus.valueOf(item.status),
+            priority = item.priority,
+            attemptCount = item.attemptCount,
+            nextAttemptAt = item.nextAttemptAt,
+            createdAt = item.createdAt,
+            updatedAt = item.updatedAt,
+            expectsAck = item.expectsAck,
+            applicationSequence = item.applicationSequence,
+            relationshipId = item.relationshipId
+        ))
+    }
     override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
     override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long, now: Long) {}
     override suspend fun removeByMessageId(logicalMessageId: String) {

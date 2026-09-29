@@ -76,6 +76,9 @@ class TorXAgent(
      * Enqueue a message for delivery.
      */
     suspend fun enqueue(item: DeliveryItem) {
+        require(item.applicationSequence == null || item.expectsAck) {
+            "Sequenced durable deliveries require receiver ACK"
+        }
         Log.d(TAG, "[QUEUE] Enqueuing env=${item.deliveryId.take(8)} for msg=${item.logicalMessageId.take(8)}")
         outboxStore.insert(item)
         emitUpdate(item.logicalMessageId, DeliveryStatus.QUEUED)
@@ -357,7 +360,7 @@ class TorXAgent(
 
         when (result) {
             is TransportResult.Accepted -> {
-                Log.i(TAG, "[ACCEPTED] Nearby accepted env=${item.deliveryId.take(8)}")
+                Log.i(TAG, "[ACCEPTED] ${result.transportType} accepted env=${item.deliveryId.take(8)}")
                 if (!item.expectsAck) {
                     outboxStore.removeByMessageId(item.logicalMessageId)
                     emitUpdate(item.logicalMessageId, DeliveryStatus.DELIVERED)

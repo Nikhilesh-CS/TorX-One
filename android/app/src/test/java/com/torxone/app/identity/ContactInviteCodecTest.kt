@@ -160,7 +160,7 @@ class ContactInviteCodecTest {
 
     @Test
     fun testValidateUnsupportedProtocolVersionRejected() {
-        val (invite, _) = createSampleInvite(protocolVersion = 2)
+        val (invite, _) = createSampleInvite(protocolVersion = 3)
 
         val result = ContactInviteCodec.validate(invite)
         assertTrue(result is InviteValidationResult.Invalid)

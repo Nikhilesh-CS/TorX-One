@@ -35,6 +35,8 @@ object CallProtocolCodec {
     // ─── Call Offer ──────────────────────────────────────────────────────
 
     fun encodeOffer(payload: CallOfferPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.sdpOffer.toByteArray(Charsets.UTF_8).size <= 48 * 1024) { "SDP too large" }
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(OFFER_MAGIC)
@@ -47,6 +49,7 @@ object CallProtocolCodec {
     }
 
     fun decodeOffer(bytes: ByteArray): CallOfferPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == OFFER_MAGIC) { "Invalid CallOffer magic header" }
@@ -57,12 +60,15 @@ object CallProtocolCodec {
             createdAt = dis.readLong()
         )
         require(dis.available() == 0) { "Trailing bytes in CallOffer payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.sdpOffer.toByteArray(Charsets.UTF_8).size <= 48 * 1024) { "SDP too large" }
         return payload
     }
 
     // ─── Call Ringing ────────────────────────────────────────────────────
 
     fun encodeRinging(payload: CallRingingPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(RINGING_MAGIC)
@@ -72,17 +78,21 @@ object CallProtocolCodec {
     }
 
     fun decodeRinging(bytes: ByteArray): CallRingingPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == RINGING_MAGIC) { "Invalid CallRinging magic header" }
         val payload = CallRingingPayload(callId = dis.readUTF())
         require(dis.available() == 0) { "Trailing bytes in CallRinging payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         return payload
     }
 
     // ─── Call Answer ─────────────────────────────────────────────────────
 
     fun encodeAnswer(payload: CallAnswerPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.sdpAnswer.toByteArray(Charsets.UTF_8).size <= 48 * 1024) { "SDP too large" }
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(ANSWER_MAGIC)
@@ -93,6 +103,7 @@ object CallProtocolCodec {
     }
 
     fun decodeAnswer(bytes: ByteArray): CallAnswerPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == ANSWER_MAGIC) { "Invalid CallAnswer magic header" }
@@ -101,12 +112,17 @@ object CallProtocolCodec {
             sdpAnswer = dis.readUTF()
         )
         require(dis.available() == 0) { "Trailing bytes in CallAnswer payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.sdpAnswer.toByteArray(Charsets.UTF_8).size <= 48 * 1024) { "SDP too large" }
         return payload
     }
 
     // ─── ICE Candidate ──────────────────────────────────────────────────
 
     fun encodeIceCandidate(payload: IceCandidatePayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.candidate.toByteArray(Charsets.UTF_8).size <= 4096)
+        require((payload.sdpMid?.length ?: 0) <= 256 && payload.sdpMLineIndex in 0..255)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(ICE_MAGIC)
@@ -119,6 +135,7 @@ object CallProtocolCodec {
     }
 
     fun decodeIceCandidate(bytes: ByteArray): IceCandidatePayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == ICE_MAGIC) { "Invalid IceCandidate magic header" }
@@ -132,12 +149,16 @@ object CallProtocolCodec {
             candidate = dis.readUTF()
         )
         require(dis.available() == 0) { "Trailing bytes in IceCandidate payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
+        require(payload.candidate.toByteArray(Charsets.UTF_8).size <= 4096)
+        require((payload.sdpMid?.length ?: 0) <= 256 && payload.sdpMLineIndex in 0..255)
         return payload
     }
 
     // ─── Call Connected ──────────────────────────────────────────────────
 
     fun encodeConnected(payload: CallConnectedPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(CONNECTED_MAGIC)
@@ -148,6 +169,7 @@ object CallProtocolCodec {
     }
 
     fun decodeConnected(bytes: ByteArray): CallConnectedPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == CONNECTED_MAGIC) { "Invalid CallConnected magic header" }
@@ -156,12 +178,14 @@ object CallProtocolCodec {
             connectedAt = dis.readLong()
         )
         require(dis.available() == 0) { "Trailing bytes in CallConnected payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         return payload
     }
 
     // ─── Call End ────────────────────────────────────────────────────────
 
     fun encodeEnd(payload: CallEndPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(END_MAGIC)
@@ -173,6 +197,7 @@ object CallProtocolCodec {
     }
 
     fun decodeEnd(bytes: ByteArray): CallEndPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == END_MAGIC) { "Invalid CallEnd magic header" }
@@ -182,12 +207,14 @@ object CallProtocolCodec {
             durationMs = dis.readLong()
         )
         require(dis.available() == 0) { "Trailing bytes in CallEnd payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         return payload
     }
 
     // ─── Call Decline ────────────────────────────────────────────────────
 
     fun encodeDecline(payload: CallDeclinePayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(DECLINE_MAGIC)
@@ -197,17 +224,20 @@ object CallProtocolCodec {
     }
 
     fun decodeDecline(bytes: ByteArray): CallDeclinePayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == DECLINE_MAGIC) { "Invalid CallDecline magic header" }
         val payload = CallDeclinePayload(callId = dis.readUTF())
         require(dis.available() == 0) { "Trailing bytes in CallDecline payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         return payload
     }
 
     // ─── Call Busy ───────────────────────────────────────────────────────
 
     fun encodeBusy(payload: CallBusyPayload): ByteArray {
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeInt(BUSY_MAGIC)
@@ -217,11 +247,13 @@ object CallProtocolCodec {
     }
 
     fun decodeBusy(bytes: ByteArray): CallBusyPayload {
+        require(bytes.size <= 50 * 1024) { "Call payload too large" }
         val dis = DataInputStream(ByteArrayInputStream(bytes))
         val magic = dis.readInt()
         require(magic == BUSY_MAGIC) { "Invalid CallBusy magic header" }
         val payload = CallBusyPayload(callId = dis.readUTF())
         require(dis.available() == 0) { "Trailing bytes in CallBusy payload" }
+        require(payload.callId.isNotBlank() && payload.callId.length <= 128)
         return payload
     }
 }

@@ -157,6 +157,14 @@ class DirectRouteTable {
         return routesByRelationship[relId]?.state == RouteState.READY
     }
 
+    @Synchronized
+    fun markAuthenticating(endpointId: String) {
+        val relationshipId = endpointToRelationship[endpointId] ?: return
+        val route = routesByRelationship[relationshipId] ?: return
+        routesByRelationship[relationshipId] = route.copy(state = RouteState.AUTHENTICATING)
+        notifyRouteChanged(relationshipId, RouteState.AUTHENTICATING, route.lastSeen)
+    }
+
     fun markStale(endpointId: String) {
         val relId = endpointToRelationship[endpointId] ?: return
         val now = System.currentTimeMillis()

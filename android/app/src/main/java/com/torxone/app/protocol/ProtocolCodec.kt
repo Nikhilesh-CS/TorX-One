@@ -85,6 +85,7 @@ object ProtocolCodec {
         val payload = ByteArray(payloadSize)
         dis.readFully(payload)
 
+        require(dis.available() >= 1) { "Missing group metadata presence flag" }
         val groupMetadata = if (dis.available() > 0) {
             val hasGroup = dis.readBoolean()
             if (hasGroup) {

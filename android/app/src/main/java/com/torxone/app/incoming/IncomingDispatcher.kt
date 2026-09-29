@@ -62,13 +62,18 @@ class IncomingDispatcher(
     private val conversationDao: com.torxone.app.data.dao.ConversationDao? = null,
     private val consumedInviteDao: com.torxone.app.data.dao.ConsumedInviteDao? = null,
     private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null,
-    private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null
+    private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null,
+    private val keyProtector: com.torxone.app.crypto.KeyProtector,
+    private val authenticatedRemoteIdentityProvider: suspend (String) -> String? = { null }
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
     }
 
     private val processingEnvelopeIds = ConcurrentHashMap.newKeySet<String>()
+    private val ephemeralReplay = object : LinkedHashMap<String, Long>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 4096
+    }
 
     suspend fun dispatch(rawBytes: ByteArray, transportType: TransportType): Boolean {
         // Stage 1: Validate transport frame length
@@ -132,10 +137,12 @@ class IncomingDispatcher(
                         return false
                     }
 
+                    val invitePrivateKey = identityRepository.getPendingInviteEphemeralPrivateKey(inviteId)
+                        ?: return false
                     // Establish responder 3DH
                     val responderResult = com.torxone.app.relationship.RelationshipService.establishResponder(
                         localIdentity = localIdentity,
-                        ephemeralBootstrapPrivateKey = pendingInvite.ephemeralPrivateKey,
+                        ephemeralBootstrapPrivateKey = invitePrivateKey,
                         remoteEphemeralPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
                         remoteSigningPublicKey = bootstrapPayload.initiatorSigningPublicKey,
                         remoteEncryptionPublicKey = bootstrapPayload.initiatorEncryptionPublicKey,
@@ -169,9 +176,10 @@ class IncomingDispatcher(
                                 relationshipId = responderResult.relationship.relationshipId,
                                 localIdentityId = localIdentity.identityId,
                                 contactId = contactId,
-                                rootSecret = responderResult.relationship.pairRootSecret,
+                                rootSecret = keyProtector.wrap(responderResult.relationship.pairRootSecret),
                                 state = "LOCAL_ESTABLISHED",
-                                generation = 1
+                                generation = 1,
+                                cryptoFormatVersion = 3
                             )
                         )
 
@@ -182,9 +190,10 @@ class IncomingDispatcher(
                                 generation = conn.generation,
                                 sendQueueId = conn.sendQueueId,
                                 recvQueueId = conn.recvQueueId,
-                                sendAuth = conn.sendAuth,
-                                recvAuth = conn.recvAuth,
-                                state = "LOCAL_ESTABLISHED"
+                                sendAuth = keyProtector.wrap(conn.sendAuth),
+                                recvAuth = keyProtector.wrap(conn.recvAuth),
+                                state = "LOCAL_ESTABLISHED",
+                                cryptoFormatVersion = 3
                             )
                         )
 
@@ -216,7 +225,7 @@ class IncomingDispatcher(
                         sessionInitializationSecret = responderResult.secrets.sessionInitializationSecret,
                         isInitiator = false,
                         remoteRatchetPublicKey = bootstrapPayload.initiatorEphemeralPublicKey,
-                        localRatchetPrivateKey = pendingInvite.ephemeralPrivateKey,
+                        localRatchetPrivateKey = invitePrivateKey,
                         localRatchetPublicKey = pendingInvite.ephemeralPublicKey
                     )
 
@@ -269,6 +278,38 @@ class IncomingDispatcher(
             return false
         }
 
+        if (com.torxone.app.crypto.EphemeralCipher.isFrame(opaqueEnvelope.opaqueCiphertext)) {
+            return try {
+                val aad = "torx-aad-v1:${connection.generation}:${opaqueEnvelope.queueAddress}".toByteArray(Charsets.UTF_8)
+                val env = ProtocolCodec.decodeSecureEnvelope(com.torxone.app.crypto.EphemeralCipher.decrypt(
+                    connection.recvAuth, opaqueEnvelope.opaqueCiphertext, aad
+                ))
+                val expectedRemoteIdentity = contactDao?.getByRelationshipId(connection.relationshipId)
+                    ?.takeIf { it.isRemoteIdentityKnown }?.remoteIdentityId
+                    ?: authenticatedRemoteIdentityProvider(connection.relationshipId)
+                    ?: return false
+                require(env.senderIdentity == expectedRemoteIdentity)
+                require(env.recipientBinding == localIdentityIdProvider() && env.recipientBinding.isNotBlank())
+                require(env.directionSequence == 0L && env.groupMetadata == null)
+                require(env.messageType in setOf(MessageType.PRESENCE_UPDATE, MessageType.TYPING_START, MessageType.TYPING_STOP))
+                val now = System.currentTimeMillis()
+                require(env.timestamp in (now - 45_000L)..(now + 5_000L))
+                val key = "${connection.relationshipId}:${env.logicalMessageId}"
+                synchronized(ephemeralReplay) {
+                    if (ephemeralReplay.containsKey(key)) return true
+                    ephemeralReplay[key] = now
+                }
+                when (env.messageType) {
+                    MessageType.PRESENCE_UPDATE -> presenceHandler?.handlePresenceUpdate(connection, env)
+                    else -> typingHandler?.handleTypingEvent(connection, env)
+                }
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "Invalid ephemeral frame", e)
+                false
+            }
+        }
+
         // Stage 5: Dedupe transport envelope
         val existingProcessed = processedEnvelopeDao.getByEnvelopeId(opaqueEnvelope.envelopeId)
         if (existingProcessed != null) {
@@ -297,6 +338,7 @@ class IncomingDispatcher(
 
         var decryptedEnvelope: SecureEnvelope? = null
         var requiresSequence = false
+        var reservedSequence: Long? = null
 
         // Stage 6 to 11: Decrypt & Atomic Commit Boundary
         try {
@@ -324,14 +366,11 @@ class IncomingDispatcher(
 
                 // Stage 8b: Sender-Authentication Invariant (Phase 2)
                 // Bind remote identity to authenticated relationship
-                val contacts = contactDao
-                    ?: throw IllegalStateException("Sender-Authentication failure: contact identity binding is unavailable")
-                val contact = contacts.getByRelationshipId(connection.relationshipId)
-                    ?: throw IllegalStateException("Sender-Authentication failure: No contact found for relationship ${connection.relationshipId}")
-                if (contact.remoteIdentityId.isBlank() || contact.remoteIdentityId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
-                    throw IllegalStateException("Sender-Authentication failure: Contact identity is not initialized")
-                }
-                if (secureEnvelope.senderIdentity.isBlank() || secureEnvelope.senderIdentity != contact.remoteIdentityId) {
+                val expectedRemoteIdentity = contactDao?.getByRelationshipId(connection.relationshipId)
+                    ?.takeIf { it.isRemoteIdentityKnown }?.remoteIdentityId
+                    ?: authenticatedRemoteIdentityProvider(connection.relationshipId)
+                    ?: throw IllegalStateException("Sender-Authentication failure: relationship identity binding is unavailable")
+                if (secureEnvelope.senderIdentity.isBlank() || secureEnvelope.senderIdentity != expectedRemoteIdentity) {
                     throw IllegalStateException("Sender-Authentication failure: envelope sender does not match authenticated relationship")
                 }
 
@@ -345,6 +384,7 @@ class IncomingDispatcher(
                     if (!accepted) {
                         throw IllegalStateException("Non-monotonic directional sequence: received ${secureEnvelope.directionSequence}, current ${connection.recvSequence}")
                     }
+                    reservedSequence = secureEnvelope.directionSequence
                 }
 
                 // Stage 8c: Validate group authorization and epoch if group envelope
@@ -387,10 +427,10 @@ class IncomingDispatcher(
                             if (!ok) throw IllegalStateException("Text message receiver returned failure")
                         }
                         MessageType.DELIVERY_ACK -> {
-                            deliveryReceiptHandler.handleDeliveryAck(secureEnvelope)
+                            deliveryReceiptHandler.handleDeliveryAck(secureEnvelope, connection)
                         }
                         MessageType.READ_RECEIPT -> {
-                            deliveryReceiptHandler.handleReadReceipt(secureEnvelope)
+                            deliveryReceiptHandler.handleReadReceipt(secureEnvelope, connection)
                         }
                         MessageType.PRESENCE_UPDATE -> {
                             presenceHandler?.handlePresenceUpdate(connection, secureEnvelope)
@@ -476,27 +516,23 @@ class IncomingDispatcher(
                 }
 
                 decryptedEnvelope = secureEnvelope
-            }
-            if (requiresSequence) {
-                connectionManager.commitRecvSequence(connection.relationshipId, decryptedEnvelope!!.directionSequence)
+                if (requiresSequence) {
+                    connectionManager.commitRecvSequence(connection.relationshipId, secureEnvelope.directionSequence)
+                }
             }
         } catch (e: Exception) {
-            connectionManager.releaseRecvSequenceReservation(connection.relationshipId)
+            reservedSequence?.let { connectionManager.releaseRecvSequenceReservation(connection.relationshipId, it) }
             Log.e(TAG, "[STAGE 6-11 FAIL] Decryption or atomic commit failed: ${e.message}")
             return false
         } finally {
             processingEnvelopeIds.remove(processingKey)
         }
 
-        // Stage 12: If TEXT or Media descriptor, send secure authenticated ACK
+        // Stage 12: acknowledge every durable frame after its transaction commits.
+        // ACK itself is excluded to prevent acknowledgement loops; best-effort ephemeral
+        // frames are handled before this durable path.
         val env = decryptedEnvelope
-        if (env != null && (env.messageType == MessageType.TEXT ||
-                    env.messageType == MessageType.IMAGE ||
-                    env.messageType == MessageType.VIDEO ||
-                    env.messageType == MessageType.AUDIO ||
-                    env.messageType == MessageType.FILE ||
-                    env.messageType == MessageType.VOICE_NOTE)
-        ) {
+        if (env != null && env.messageType != MessageType.DELIVERY_ACK) {
             sendAck(connection, env.logicalMessageId, opaqueEnvelope.envelopeId, env.senderIdentity)
         }
 

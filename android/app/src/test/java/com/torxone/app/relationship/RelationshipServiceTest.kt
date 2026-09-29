@@ -139,6 +139,8 @@ class RelationshipServiceTest {
         val bobEphemeralWrong = IdentityCrypto.generateX25519KeyPair()
 
         val inviteId = UUID.randomUUID().toString()
+        val createdAt = System.currentTimeMillis()
+        val expiresAt = createdAt + 86400000L
         val signedData = ContactInviteCodec.serializeForSigning(
             protocolVersion = 1,
             inviteId = inviteId,
@@ -147,8 +149,8 @@ class RelationshipServiceTest {
             signingPublicKey = bob.signingPublicKey,
             encryptionPublicKey = bob.encryptionPublicKey,
             bootstrapEphemeralPublicKey = bobEphemeralReal.publicKey,
-            createdAt = System.currentTimeMillis(),
-            expiresAt = System.currentTimeMillis() + 86400000L
+            createdAt = createdAt,
+            expiresAt = expiresAt
         )
         val signature = IdentityCrypto.signEd25519(bob.signingPrivateKey, signedData)
 
@@ -160,8 +162,8 @@ class RelationshipServiceTest {
             identitySigningPublicKey = bob.signingPublicKey,
             identityEncryptionPublicKey = bob.encryptionPublicKey,
             bootstrapEphemeralPublicKey = bobEphemeralReal.publicKey,
-            createdAt = System.currentTimeMillis(),
-            expiresAt = System.currentTimeMillis() + 86400000L,
+            createdAt = createdAt,
+            expiresAt = expiresAt,
             signature = signature
         )
 

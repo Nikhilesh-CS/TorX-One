@@ -9,6 +9,7 @@ import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.Connection
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.incoming.IncomingTransportHub
+import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.transport.*
 import kotlinx.coroutines.*
 import org.junit.Assert.*
@@ -260,11 +261,11 @@ class NearbyTransportTest {
         val decodedPong = NearbyWireFrame.decode(pong.encode())
         assertTrue(decodedPong is NearbyWireFrame.Control.Pong)
 
-        // 6. Backward compatibility fallback
+        // 6. Unknown bytes are rejected instead of being treated as authenticated data.
         val rawUnknownBytes = byteArrayOf(0x99.toByte(), 0x88.toByte(), 0x77.toByte())
-        val decodedFallback = NearbyWireFrame.decode(rawUnknownBytes)
-        assertTrue(decodedFallback is NearbyWireFrame.Data)
-        assertArrayEquals(rawUnknownBytes, (decodedFallback as NearbyWireFrame.Data).payload)
+        assertThrows(IllegalArgumentException::class.java) {
+            NearbyWireFrame.decode(rawUnknownBytes)
+        }
     }
 
     @Test
@@ -363,12 +364,12 @@ class NearbyTransportTest {
         val adapterAlice = SimulatedNearbyAdapter("ep-alice", network)
         val adapterBob = SimulatedNearbyAdapter("ep-bob", network)
 
-        val connManagerAlice = ConnectionManager()
-        val connManagerBob = ConnectionManager()
+        val connManagerAlice = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
+        val connManagerBob = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
 
         val relationshipId = "rel-alice-bob"
-        val aToSendAuth = "secret-a2b-auth".toByteArray()
-        val bToSendAuth = "secret-b2a-auth".toByteArray()
+        val aToSendAuth = ByteArray(32) { 0x21 }
+        val bToSendAuth = ByteArray(32) { 0x42 }
 
         connManagerAlice.registerConnection(
             Connection(
@@ -468,7 +469,7 @@ class NearbyTransportTest {
         val adapterBob = SimulatedNearbyAdapter("ep-bob", network)
         val adapterCharlie = SimulatedNearbyAdapter("ep-charlie", network)
 
-        val connManagerAlice = ConnectionManager()
+        val connManagerAlice = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val relBob = "rel-alice-bob"
         val relCharlie = "rel-alice-charlie"
 
@@ -478,8 +479,8 @@ class NearbyTransportTest {
                 generation = 1,
                 sendQueueId = "q-bob-send",
                 recvQueueId = "q-bob-recv",
-                sendAuth = "bAuth".toByteArray(),
-                recvAuth = "bAuth".toByteArray()
+                sendAuth = ByteArray(32) { 0x0B },
+                recvAuth = ByteArray(32) { 0x0B }
             )
         )
         connManagerAlice.registerConnection(
@@ -488,8 +489,8 @@ class NearbyTransportTest {
                 generation = 1,
                 sendQueueId = "q-charlie-send",
                 recvQueueId = "q-charlie-recv",
-                sendAuth = "cAuth".toByteArray(),
-                recvAuth = "cAuth".toByteArray()
+                sendAuth = ByteArray(32) { 0x0C },
+                recvAuth = ByteArray(32) { 0x0C }
             )
         )
 
@@ -547,7 +548,7 @@ class NearbyTransportTest {
         val adapterAlice = SimulatedNearbyAdapter("ep-alice", network)
         val adapterBob = SimulatedNearbyAdapter("ep-bob", network)
 
-        val connManagerAlice = ConnectionManager()
+        val connManagerAlice = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val relationshipId = "rel-reconnect-test"
         connManagerAlice.registerConnection(
             Connection(
@@ -555,8 +556,8 @@ class NearbyTransportTest {
                 generation = 1,
                 sendQueueId = "q-send",
                 recvQueueId = "q-recv",
-                sendAuth = "auth".toByteArray(),
-                recvAuth = "auth".toByteArray()
+                sendAuth = ByteArray(32) { 0x2A },
+                recvAuth = ByteArray(32) { 0x2A }
             )
         )
 
@@ -598,12 +599,17 @@ class NearbyTransportTest {
         )
 
         // Simulate Hello from Bob requesting relationship reconnection
+        val reconnectChallenge = ByteArray(16)
+        val reconnectHint = IdentityCrypto.hmacSha256(
+            ByteArray(32) { 0x2A },
+            "torx-rel-hint-v2:".toByteArray(Charsets.UTF_8) + reconnectChallenge
+        ).take(16).joinToString("") { "%02x".format(it) }
         val bobHello = NearbyWireFrame.Control.Hello(
             protocolVersion = 1,
             peerTieBreaker = 999L,
-            supportedFeatures = listOf("rel-hint:$relationshipId"),
+            supportedFeatures = listOf("rel-hint:$reconnectHint"),
             maxFrameSize = 65536,
-            challenge = ByteArray(16)
+            challenge = reconnectChallenge
         )
         transportAlice.payloadCallback.onPayloadReceived(
             "ep-bob",

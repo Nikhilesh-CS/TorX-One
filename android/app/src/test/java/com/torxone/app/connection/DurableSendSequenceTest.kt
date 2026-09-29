@@ -32,7 +32,7 @@ class DurableSendSequenceTest {
         fakeDao.upsert(initialDbEntity)
 
         // Process 1: ConnectionManager starts up
-        val connManager1 = ConnectionManager(connectionDao = fakeDao)
+        val connManager1 = ConnectionManager(connectionDao = fakeDao, keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val initialConnection = Connection(
             relationshipId = relationshipId,
             generation = 1,
@@ -57,7 +57,7 @@ class DurableSendSequenceTest {
 
         // Simulate app kill and process restart
         // Process 2: Fresh ConnectionManager instantiated, loads connections from DB
-        val connManager2 = ConnectionManager(connectionDao = fakeDao)
+        val connManager2 = ConnectionManager(connectionDao = fakeDao, keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val persisted = fakeDao.getByRelationshipId(relationshipId)
         assertNotNull(persisted)
         assertEquals(7L, persisted!!.sendSequence)
@@ -86,7 +86,7 @@ class DurableSendSequenceTest {
         val fakeDao = AtomicReceiveSequenceTest.FakeConnectionDao()
         val relationshipId = "rel-concurrent-seq"
 
-        val connManager = ConnectionManager(connectionDao = fakeDao)
+        val connManager = ConnectionManager(connectionDao = fakeDao, keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val conn = Connection(
             relationshipId = relationshipId,
             generation = 1,

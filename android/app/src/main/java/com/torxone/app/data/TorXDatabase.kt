@@ -134,7 +134,7 @@ abstract class TorXDatabase : RoomDatabase() {
 
         fun getInstance(
             context: Context,
-            passphraseProvider: DatabasePassphraseProvider? = null
+            passphraseProvider: DatabasePassphraseProvider
         ): TorXDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: buildDatabase(context, passphraseProvider).also { INSTANCE = it }
@@ -143,7 +143,7 @@ abstract class TorXDatabase : RoomDatabase() {
 
         private fun buildDatabase(
             context: Context,
-            passphraseProvider: DatabasePassphraseProvider? = null
+            passphraseProvider: DatabasePassphraseProvider
         ): TorXDatabase {
             val builder = Room.databaseBuilder(
                 context.applicationContext,
@@ -151,7 +151,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 "torxone.db"
             ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
 
-            val provider = passphraseProvider ?: DatabasePassphraseProvider(context.applicationContext)
+            val provider = passphraseProvider
             try {
                 val passphrase = provider.getOrCreatePassphrase()
                 migratePlaintextIfNeeded(context.applicationContext, passphrase)
@@ -271,6 +271,7 @@ abstract class TorXDatabase : RoomDatabase() {
  */
 class DatabasePassphraseProvider(
     private val context: Context,
+    private val securityRepository: com.torxone.app.security.SecurityRepository,
     val allowInsecureFallback: Boolean = false
 ) {
     fun getOrCreatePassphrase(): ByteArray {
@@ -296,16 +297,37 @@ class DatabasePassphraseProvider(
 
         val existingBase64 = prefs.getString("db_passphrase", null)
         if (existingBase64 != null) {
-            return java.util.Base64.getDecoder().decode(existingBase64)
+            val stored = java.util.Base64.getDecoder().decode(existingBase64)
+            val format = prefs.getInt(
+                "db_passphrase_crypto_format",
+                com.torxone.app.security.VersionedSecurityRepository.FORMAT_V1_RAW
+            )
+            val passphrase = securityRepository.reveal(
+                com.torxone.app.security.ProtectedSecret(format, stored),
+                com.torxone.app.security.SecretPurpose.DATABASE_PASSPHRASE
+            )
+            if (format != securityRepository.currentCryptoFormatVersion) {
+                persistPassphrase(prefs, passphrase)
+            }
+            return passphrase
         }
 
         val newPassphrase = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        persistPassphrase(prefs, newPassphrase)
+        return newPassphrase
+    }
+
+    private fun persistPassphrase(prefs: android.content.SharedPreferences, passphrase: ByteArray) {
+        val protected = securityRepository.protect(
+            passphrase,
+            com.torxone.app.security.SecretPurpose.DATABASE_PASSPHRASE
+        )
         val committed = prefs.edit()
-            .putString("db_passphrase", java.util.Base64.getEncoder().encodeToString(newPassphrase))
+            .putString("db_passphrase", java.util.Base64.getEncoder().encodeToString(protected.bytes))
+            .putInt("db_passphrase_crypto_format", protected.cryptoFormatVersion)
             .commit()
         if (!committed) {
             throw SecurityException("Failed to durably commit database encryption passphrase to Keystore-backed storage")
         }
-        return newPassphrase
     }
 }

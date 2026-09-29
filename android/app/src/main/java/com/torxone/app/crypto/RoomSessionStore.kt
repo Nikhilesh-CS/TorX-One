@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 class RoomSessionStore(
     private val sessionDao: SessionDao,
     private val skippedKeyDao: SkippedKeyDao,
-    val keyProtector: KeyProtector = NoOpKeyProtector(),
+    val keyProtector: KeyProtector,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block -> block() }
 ) : SessionStore {
 
@@ -21,24 +21,24 @@ class RoomSessionStore(
         val entity = sessionDao.getByRelationshipId(relationshipId) ?: return@withContext null
         val skippedEntities = skippedKeyDao.getKeysForSession(entity.sessionId)
 
-        val isLegacy = entity.cryptoFormatVersion == 0
-        var needsMigration = isLegacy
+        val isRawLegacy = entity.cryptoFormatVersion == 0
+        var needsMigration = entity.cryptoFormatVersion < 3
 
         fun unwrapField(bytes: ByteArray?): ByteArray? {
             if (bytes == null || bytes.isEmpty()) return bytes
-            return if (isLegacy) {
+            return if (isRawLegacy) {
                 // Version 0: treat as legacy raw secret even if first byte happens to be 0x54
                 needsMigration = true
                 bytes
             } else {
-                // Version 1: strictly unwrap with KeyProtector. Tampered data throws SecurityException.
+                // Versions 1-3: strictly unwrap. Version 3 is the current context-bound envelope.
                 keyProtector.unwrap(bytes)
             }
         }
 
-        val skippedMap = mutableMapOf<SkippedKeyId, ByteArray>()
+        val skippedMap = linkedMapOf<SkippedKeyId, ByteArray>()
         for (skip in skippedEntities) {
-            val skipLegacy = skip.cryptoFormatVersion == 0 || isLegacy
+            val skipLegacy = skip.cryptoFormatVersion == 0 || isRawLegacy
             val unwrapped = if (skipLegacy) {
                 needsMigration = true
                 skip.messageKey
@@ -90,7 +90,7 @@ class RoomSessionStore(
             previousSendCount = state.previousSendCount,
             state = "ACTIVE",
             updatedAt = System.currentTimeMillis(),
-            cryptoFormatVersion = 1
+            cryptoFormatVersion = 3
         )
         transactionRunner {
             sessionDao.upsert(entity)
@@ -103,7 +103,7 @@ class RoomSessionStore(
                     ratchetPublicKeyHex = keyId.ratchetPublicKeyHex,
                     counter = keyId.counter,
                     messageKey = keyProtector.wrap(mk),
-                    cryptoFormatVersion = 1
+                    cryptoFormatVersion = 3
                 )
             }
             if (skippedList.isNotEmpty()) {

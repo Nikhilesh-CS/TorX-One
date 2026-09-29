@@ -205,7 +205,6 @@ object SessionRatchet {
         if (state.skippedKeys.size > MAX_TOTAL_SKIPPED_KEYS) {
             val excess = state.skippedKeys.size - MAX_TOTAL_SKIPPED_KEYS
             val keysToEvict = state.skippedKeys.keys
-                .sortedBy { it.counter }
                 .take(excess)
             for (key in keysToEvict) {
                 state.skippedKeys.remove(key)

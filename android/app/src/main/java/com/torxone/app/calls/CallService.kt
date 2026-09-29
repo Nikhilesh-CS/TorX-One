@@ -8,6 +8,8 @@ import com.torxone.app.agent.TorXAgent
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.crypto.SessionCrypto
 import com.torxone.app.data.dao.ConversationDao
+import com.torxone.app.data.dao.OutboxDao
+import com.torxone.app.data.entity.OutboxEntity
 import com.torxone.app.protocol.*
 import java.util.UUID
 
@@ -32,7 +34,9 @@ open class CallService(
     private val agent: TorXAgent,
     private val conversationDao: ConversationDao,
     private val callHistoryDao: CallHistoryDao,
-    private val localIdentityIdProvider: () -> String?
+    private val localIdentityIdProvider: () -> String?,
+    private val relationshipSendCoordinator: com.torxone.app.connection.RelationshipSendCoordinator,
+    private val outboxDao: OutboxDao
 ) : CallSignaling {
     companion object {
         private const val TAG = "CallService"
@@ -189,25 +193,28 @@ open class CallService(
             payload = payload
         )
 
-        val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-        val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-
-        val encrypted = sessionCrypto.encrypt(connection.relationshipId, envelopeBytes, aad)
-        val ciphertext = encrypted.serialize()
-
-        val deliveryItem = DeliveryItem(
-            deliveryId = UUID.randomUUID().toString(),
-            logicalMessageId = envelope.logicalMessageId,
-            conversationId = session.conversationId,
-            connectionId = connection.connectionId,
-            queueAddress = connection.sendQueueId,
-            ciphertext = ciphertext,
-            queueAuthenticator = connection.sendAuth,
-            status = DeliveryStatus.QUEUED,
-            priority = DeliveryPriority.HIGH,
-            expectsAck = false  // Call signals are fire-and-forget at transport level
-        )
-
-        agent.enqueue(deliveryItem)
+        relationshipSendCoordinator.sendDurableUnsequenced(
+            relationshipId = connection.relationshipId,
+            connection = connection,
+            envelope = envelope
+        ) { committedEnvelope, ciphertext ->
+            val now = System.currentTimeMillis()
+            outboxDao.insert(OutboxEntity(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = committedEnvelope.logicalMessageId,
+                conversationId = session.conversationId,
+                connectionId = connection.connectionId,
+                queueAddress = connection.sendQueueId,
+                ciphertext = ciphertext,
+                queueAuthenticator = connection.sendAuth,
+                status = DeliveryStatus.QUEUED.name,
+                priority = DeliveryPriority.HIGH,
+                nextAttemptAt = now,
+                createdAt = now,
+                updatedAt = now,
+                expectsAck = true,
+                relationshipId = connection.relationshipId
+            ))
+        }
     }
 }
