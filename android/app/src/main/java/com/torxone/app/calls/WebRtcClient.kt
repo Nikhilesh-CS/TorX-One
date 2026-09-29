@@ -20,9 +20,11 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * Invariant: No UI component manipulates PeerConnection directly.
  * TorX treats WebRTC purely as a media engine underneath CallManager.
  *
- * Privacy: No public STUN by default. First milestone uses host ICE candidates
- * only (direct/local connectivity). Internet-wide calls require TorX-controlled
- * TURN/relay infrastructure in a future milestone.
+ * Privacy: no third-party ICE service is used by default. STUN/TURN endpoints
+ * must be supplied by the operator through Gradle properties or environment
+ * variables. Without that configuration calls are explicitly direct/LAN only.
+ * TURN operators can observe relay metadata, so TorX-controlled infrastructure
+ * is preferred and credentials must be rotated outside source control.
  */
 class WebRtcClient(
     private val context: Context,
@@ -107,16 +109,18 @@ class WebRtcClient(
     fun getEglBase(): EglBase? = localEglBase
 
     /**
-     * Create a PeerConnection with host-only ICE (no public STUN).
-     * This restricts first milestone to direct-reachable peers.
+     * Create a PeerConnection from operator-supplied ICE configuration.
+     * Empty configuration deliberately produces direct/LAN-only host candidates.
      */
     fun createPeerConnection(callId: String) {
         activeCallId = callId
         val factory = peerConnectionFactory
             ?: throw IllegalStateException("PeerConnectionFactory not initialized")
 
-        // Privacy: No public STUN servers. Host candidates only.
-        val iceServers = emptyList<PeerConnection.IceServer>()
+        val iceServers = buildIceServers()
+        if (iceServers.isEmpty()) {
+            Log.w(TAG, "No STUN/TURN configuration: calls are direct/LAN-only")
+        }
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
@@ -396,6 +400,39 @@ class WebRtcClient(
                 Log.e(TAG, "Camera switch failed: $error")
             }
         })
+    }
+
+    private fun buildIceServers(): List<PeerConnection.IceServer> {
+        fun urls(value: String): List<String> = value.split(',')
+            .map(String::trim)
+            .filter(String::isNotBlank)
+
+        val servers = mutableListOf<PeerConnection.IceServer>()
+        urls(com.torxone.app.BuildConfig.TORX_STUN_URLS).forEach { url ->
+            require(url.startsWith("stun:") || url.startsWith("stuns:")) {
+                "Invalid STUN URL scheme"
+            }
+            servers += PeerConnection.IceServer.builder(url).createIceServer()
+        }
+
+        val turnUrls = urls(com.torxone.app.BuildConfig.TORX_TURN_URLS)
+        if (turnUrls.isNotEmpty()) {
+            val username = com.torxone.app.BuildConfig.TORX_TURN_USERNAME
+            val credential = com.torxone.app.BuildConfig.TORX_TURN_CREDENTIAL
+            require(username.isNotBlank() && credential.isNotBlank()) {
+                "TURN URLs require both TORX_TURN_USERNAME and TORX_TURN_CREDENTIAL"
+            }
+            turnUrls.forEach { url ->
+                require(url.startsWith("turn:") || url.startsWith("turns:")) {
+                    "Invalid TURN URL scheme"
+                }
+                servers += PeerConnection.IceServer.builder(url)
+                    .setUsername(username)
+                    .setPassword(credential)
+                    .createIceServer()
+            }
+        }
+        return servers
     }
 
     // ─── Teardown ────────────────────────────────────────────────────────

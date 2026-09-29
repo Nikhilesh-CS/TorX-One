@@ -204,3 +204,52 @@ data class GroupMessageDeliveryEntity(
     @ColumnInfo(name = "updated_at")
     val updatedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * One locally-authored group epoch transition. The operation is written in the
+ * same transaction as the local group mutation so a crash cannot orphan fan-out.
+ */
+@Entity(
+    tableName = "group_control_operations",
+    indices = [
+        Index(value = ["group_id", "new_epoch"], unique = true),
+        Index(value = ["status", "created_at"])
+    ]
+)
+data class GroupControlOperationEntity(
+    @PrimaryKey @ColumnInfo(name = "operation_id") val operationId: String,
+    @ColumnInfo(name = "group_id") val groupId: String,
+    @ColumnInfo(name = "previous_epoch") val previousEpoch: Long,
+    @ColumnInfo(name = "new_epoch") val newEpoch: Long,
+    @ColumnInfo(name = "status") val status: String = "PENDING",
+    @ColumnInfo(name = "created_at") val createdAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(name = "updated_at") val updatedAt: Long = System.currentTimeMillis()
+)
+
+/** A recipient-specific control envelope belonging to an ordered epoch transition. */
+@Entity(
+    tableName = "group_control_deliveries",
+    primaryKeys = ["operation_id", "recipient_identity_id"],
+    indices = [Index("relationship_id"), Index(value = ["operation_id", "status"])],
+    foreignKeys = [
+        ForeignKey(
+            entity = GroupControlOperationEntity::class,
+            parentColumns = ["operation_id"],
+            childColumns = ["operation_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ]
+)
+data class GroupControlDeliveryEntity(
+    @ColumnInfo(name = "operation_id") val operationId: String,
+    @ColumnInfo(name = "recipient_identity_id") val recipientIdentityId: String,
+    @ColumnInfo(name = "relationship_id") val relationshipId: String,
+    @ColumnInfo(name = "message_type") val messageType: String,
+    @ColumnInfo(name = "payload") val payload: ByteArray,
+    @ColumnInfo(name = "envelope_epoch") val envelopeEpoch: Long,
+    @ColumnInfo(name = "status") val status: String = "PENDING",
+    @ColumnInfo(name = "outbox_delivery_id") val outboxDeliveryId: String? = null,
+    @ColumnInfo(name = "attempt_count") val attemptCount: Int = 0,
+    @ColumnInfo(name = "last_error") val lastError: String? = null,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long = System.currentTimeMillis()
+)

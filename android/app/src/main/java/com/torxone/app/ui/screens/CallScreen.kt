@@ -179,6 +179,7 @@ private fun VoiceCallLayout(
             CallAvatar(
                 name = uiState.peerName,
                 isPulsing = uiState.state == CallState.INCOMING_RINGING ||
+                    uiState.state == CallState.OUTGOING_CALLING ||
                     uiState.state == CallState.OUTGOING_RINGING ||
                     uiState.state == CallState.CONNECTED
             )

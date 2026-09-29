@@ -272,10 +272,46 @@ class TestContactDao : ContactDao {
     override suspend fun getById(id: String): ContactEntity? = contacts[id]
     override suspend fun getByRelationshipId(relationshipId: String): ContactEntity? =
         contacts.values.firstOrNull { it.relationshipId == relationshipId }
+    override suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity? =
+        contacts.values.firstOrNull { it.remoteIdentityId == remoteIdentityId }
     override suspend fun getByConversationId(conversationId: String): ContactEntity? =
         contacts.values.firstOrNull { it.conversationId == conversationId }
     override suspend fun getAll(): List<ContactEntity> = contacts.values.toList()
     override suspend fun upsert(contact: ContactEntity) { contacts[contact.contactId] = contact }
+}
+
+class TestGroupControlDao : GroupControlDao {
+    val operations = ConcurrentHashMap<String, GroupControlOperationEntity>()
+    val deliveries = ConcurrentHashMap<Pair<String, String>, GroupControlDeliveryEntity>()
+
+    override suspend fun insertOperation(operation: GroupControlOperationEntity) {
+        check(operations.putIfAbsent(operation.operationId, operation) == null)
+    }
+    override suspend fun insertDeliveries(deliveries: List<GroupControlDeliveryEntity>) {
+        deliveries.forEach { delivery ->
+            check(this.deliveries.putIfAbsent(delivery.operationId to delivery.recipientIdentityId, delivery) == null)
+        }
+    }
+    override suspend fun getPendingOperations(): List<GroupControlOperationEntity> =
+        operations.values.filter { it.status == "PENDING" }.sortedWith(compareBy({ it.groupId }, { it.newEpoch }, { it.createdAt }))
+    override suspend fun getOperation(operationId: String): GroupControlOperationEntity? = operations[operationId]
+    override suspend fun getPendingDeliveries(operationId: String): List<GroupControlDeliveryEntity> =
+        deliveries.values.filter { it.operationId == operationId && it.status == "PENDING" }.sortedBy { it.recipientIdentityId }
+    override suspend fun countPendingOperations(groupId: String): Int =
+        operations.values.count { it.groupId == groupId && it.status == "PENDING" }
+    override suspend fun markDeliveryQueued(operationId: String, recipientIdentityId: String, outboxDeliveryId: String, updatedAt: Long) {
+        val key = operationId to recipientIdentityId
+        deliveries[key]?.let { deliveries[key] = it.copy(status = "QUEUED", outboxDeliveryId = outboxDeliveryId, attemptCount = it.attemptCount + 1, lastError = null, updatedAt = updatedAt) }
+    }
+    override suspend fun markDeliveryFailed(operationId: String, recipientIdentityId: String, error: String, updatedAt: Long) {
+        val key = operationId to recipientIdentityId
+        deliveries[key]?.let { deliveries[key] = it.copy(attemptCount = it.attemptCount + 1, lastError = error, updatedAt = updatedAt) }
+    }
+    override suspend fun countPendingDeliveries(operationId: String): Int =
+        deliveries.values.count { it.operationId == operationId && it.status == "PENDING" }
+    override suspend fun markOperationQueued(operationId: String, updatedAt: Long) {
+        operations[operationId]?.let { operations[operationId] = it.copy(status = "QUEUED", updatedAt = updatedAt) }
+    }
 }
 
 class TestSessionStore : SessionStore {

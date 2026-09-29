@@ -53,6 +53,7 @@ class GroupUiStateTest {
             groupDao = groupDao,
             groupMemberDao = groupMemberDao,
             groupMessageDeliveryDao = TestGroupMessageDeliveryDao(),
+            groupControlDao = TestGroupControlDao(),
             conversationDao = conversationDao,
             messageDao = messageDao,
             reactionDao = reactionDao,

@@ -85,14 +85,15 @@ class CallManager(
 
     /**
      * Called when WebRtcClient produces a local SDP offer.
-     * Sends CALL_OFFER via secure signaling and transitions to OUTGOING_RINGING.
+     * Sends CALL_OFFER via secure signaling and remains in a local calling state
+     * until the peer returns an authenticated CALL_RINGING signal.
      */
     suspend fun onLocalOfferReady(callId: String, sdpOffer: String) {
         val session = _activeCall.value ?: return
         if (session.callId != callId || session.state != CallState.OUTGOING_PREPARING) return
 
         callService.sendCallOffer(session, sdpOffer)
-        transition(callId, CallState.OUTGOING_RINGING)
+        transition(callId, CallState.OUTGOING_CALLING)
         startRingingTimeout(callId)
     }
 
@@ -116,7 +117,7 @@ class CallManager(
         if (existing != null && existing.state != CallState.OUTGOING_PREPARING) {
             // Check for simultaneous-call collision
             if (existing.peerIdentityId == peerIdentityId &&
-                (existing.state == CallState.OUTGOING_RINGING || existing.state == CallState.OUTGOING_PREPARING)
+                (existing.state == CallState.OUTGOING_CALLING || existing.state == CallState.OUTGOING_RINGING || existing.state == CallState.OUTGOING_PREPARING)
             ) {
                 return handleCollision(existing, callId, conversationId, relationshipId, peerIdentityId, type, sdpOffer)
             }
@@ -195,14 +196,14 @@ class CallManager(
 
     fun onRemoteRinging(callId: String) {
         val session = _activeCall.value ?: return
-        if (session.callId != callId || session.state != CallState.OUTGOING_RINGING) return
-        // Stay in OUTGOING_RINGING — this just confirms the peer is presenting
+        if (session.callId != callId || session.state != CallState.OUTGOING_CALLING) return
+        transition(callId, CallState.OUTGOING_RINGING)
         Log.d(TAG, "[CALL] Remote ringing for call=$callId")
     }
 
     suspend fun onRemoteAnswer(callId: String, sdpAnswer: String) {
         val session = _activeCall.value ?: return
-        if (session.callId != callId || session.state != CallState.OUTGOING_RINGING) return
+        if (session.callId != callId || session.state !in setOf(CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING)) return
 
         cancelRingingTimeout()
         transition(callId, CallState.CONNECTING)
@@ -332,7 +333,10 @@ class CallManager(
     fun toggleSpeaker() {
         val session = _activeCall.value ?: return
         val newSpeaker = !session.isSpeakerOn
-        _activeCall.value = session.copy(isSpeakerOn = newSpeaker)
+        _activeCall.value = session.copy(
+            isSpeakerOn = newSpeaker,
+            hasExplicitAudioRouteSelection = true
+        )
         callEventListener?.onSpeakerChanged(newSpeaker)
     }
 
@@ -363,7 +367,8 @@ class CallManager(
         if (from == to) return true
         return when (from) {
             CallState.IDLE -> to in setOf(CallState.OUTGOING_PREPARING, CallState.INCOMING_RINGING)
-            CallState.OUTGOING_PREPARING -> to in setOf(CallState.OUTGOING_RINGING, CallState.ENDING, CallState.FAILED, CallState.ENDED)
+            CallState.OUTGOING_PREPARING -> to in setOf(CallState.OUTGOING_CALLING, CallState.ENDING, CallState.FAILED, CallState.ENDED)
+            CallState.OUTGOING_CALLING -> to in setOf(CallState.OUTGOING_RINGING, CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.MISSED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.OUTGOING_RINGING -> to in setOf(CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.MISSED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.INCOMING_RINGING -> to in setOf(CallState.CONNECTING, CallState.DECLINED, CallState.MISSED, CallState.BUSY, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.CONNECTING -> to in setOf(CallState.CONNECTED, CallState.RECONNECTING, CallState.ENDING, CallState.ENDED, CallState.FAILED)
@@ -488,7 +493,7 @@ class CallManager(
             if (session.callId != callId) return@launch
 
             when (session.state) {
-                CallState.OUTGOING_RINGING -> {
+                CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING -> {
                     Log.i(TAG, "[TIMEOUT] No answer for outgoing call=$callId")
                     callService.sendEnd(session, CallEndReason.NO_ANSWER)
                     transition(callId, CallState.MISSED)

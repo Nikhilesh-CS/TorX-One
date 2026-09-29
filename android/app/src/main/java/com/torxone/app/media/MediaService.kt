@@ -14,9 +14,11 @@ import com.torxone.app.data.dao.MediaDao
 import com.torxone.app.data.dao.MediaTransferDao
 import com.torxone.app.data.dao.MessageDao
 import com.torxone.app.data.dao.OutboxDao
+import com.torxone.app.data.dao.GroupMessageDeliveryDao
 import com.torxone.app.data.entity.*
 import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.protocol.MessageType
+import com.torxone.app.protocol.GroupEnvelopeMetadata
 import com.torxone.app.protocol.SecureEnvelope
 import com.torxone.app.transport.TransportDestination
 import com.torxone.app.transport.TransportResult
@@ -62,7 +64,8 @@ class MediaService(
     private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
     private val relationshipSendCoordinator: RelationshipSendCoordinator? = null,
     private val sessionStore: com.torxone.app.crypto.SessionStore? = null,
-    private val dedicatedMediaTransport: DedicatedMediaTransport? = null
+    private val dedicatedMediaTransport: DedicatedMediaTransport? = null,
+    private val groupMessageDeliveryDao: GroupMessageDeliveryDao? = null
 ) {
     companion object {
         private const val TAG = "MediaService"
@@ -81,6 +84,11 @@ class MediaService(
 
     private val scope = CoroutineScope(SupervisorJob() + coroutineDispatcher)
     private val activeTransfers = ConcurrentHashMap<String, Job>()
+
+    data class GroupMediaRecipient(
+        val identityId: String,
+        val relationshipId: String
+    )
 
     fun observeMediaForMessage(messageId: String): Flow<MediaEntity?> =
         mediaDao.observeByMessageId(messageId)
@@ -214,6 +222,239 @@ class MediaService(
             replyToMessageId = replyToMessageId
         )
     }
+
+    /**
+     * Creates one logical group message and one encrypted media object, then fans the
+     * descriptor and chunks out over each member's pairwise session. Transfer rows are
+     * recipient-specific so retrying one member cannot duplicate the message for everyone.
+     */
+    suspend fun sendGroupMedia(
+        groupId: String,
+        groupEpoch: Long,
+        localIdentityId: String,
+        recipients: List<GroupMediaRecipient>,
+        type: MediaType,
+        fileName: String,
+        mimeType: String,
+        rawBytes: ByteArray,
+        durationMs: Long? = null,
+        thumbnailBytes: ByteArray? = null,
+        waveformData: ByteArray? = null,
+        replyToMessageId: String? = null
+    ): String {
+        require(rawBytes.size.toLong() in 1..MediaProtocolCodec.MAX_MEDIA_BYTES) { "Media file exceeds supported size" }
+        require(fileName.isNotBlank() && fileName.length <= 255 && '/' !in fileName && '\\' !in fileName)
+        require(recipients.distinctBy { it.identityId }.size == recipients.size) { "Duplicate group media recipient" }
+        recipients.forEach {
+            require(it.identityId.isNotBlank() && it.relationshipId.isNotBlank()) { "Invalid group media recipient" }
+            require(it.identityId != ContactEntity.REMOTE_IDENTITY_UNKNOWN) { "Recipient identity is not authenticated" }
+        }
+
+        val mediaId = UUID.randomUUID().toString()
+        val localFile = mediaStorage.saveIncomingFile(mediaId, fileName, rawBytes)
+        val encryptedFile = mediaStorage.getTempEncryptedFile(mediaId)
+        val mediaKey = MediaCrypto.generateMediaKey()
+        val encryptedSha256 = encryptedFile.outputStream().use { output ->
+            ByteArrayInputStream(rawBytes).use { input -> MediaCrypto.encryptStream(mediaKey, input, output) }
+        }
+        return sendGroupMediaInternal(
+            mediaId, groupId, groupEpoch, localIdentityId, recipients, type, fileName, mimeType,
+            rawBytes.size.toLong(), encryptedFile.length(), encryptedSha256, mediaKey,
+            localFile.absolutePath, encryptedFile, durationMs, thumbnailBytes, waveformData,
+            replyToMessageId
+        )
+    }
+
+    private suspend fun sendGroupMediaInternal(
+        mediaId: String,
+        groupId: String,
+        groupEpoch: Long,
+        localIdentityId: String,
+        recipients: List<GroupMediaRecipient>,
+        type: MediaType,
+        fileName: String,
+        mimeType: String,
+        fileSize: Long,
+        encryptedFileSize: Long,
+        encryptedSha256: String,
+        mediaKey: ByteArray,
+        localFilePath: String,
+        tempEncryptedFile: File,
+        durationMs: Long?,
+        thumbnailBytes: ByteArray?,
+        waveformData: ByteArray?,
+        replyToMessageId: String?
+    ): String {
+        val deliveryDao = requireNotNull(groupMessageDeliveryDao) {
+            "Group media requires GroupMessageDeliveryDao"
+        }
+        val messageId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val chunkSize = if (dedicatedMediaTransport != null) DedicatedMediaFrameCodec.MAX_PLAINTEXT_CHUNK_BYTES else DEFAULT_CHUNK_SIZE
+        val totalChunks = if (encryptedFileSize == 0L) 1 else ((encryptedFileSize + chunkSize - 1) / chunkSize).toInt()
+        val protoMessageType = mediaMessageType(type)
+        val descriptorBytes = MediaProtocolCodec.encodeDescriptor(
+            MediaDescriptor(
+                mediaId = mediaId,
+                type = type,
+                mimeType = mimeType,
+                fileName = fileName,
+                fileSize = fileSize,
+                encryptedSha256 = encryptedSha256,
+                mediaKeyBase64 = Base64.getEncoder().encodeToString(mediaKey),
+                totalChunks = totalChunks,
+                chunkSize = chunkSize,
+                durationMs = durationMs,
+                thumbnailBase64 = thumbnailBytes?.let { Base64.getEncoder().encodeToString(it) },
+                waveformBase64 = waveformData?.let { Base64.getEncoder().encodeToString(it) }
+            )
+        )
+        val message = MessageEntity(
+            logicalMessageId = messageId,
+            conversationId = groupId,
+            senderId = localIdentityId,
+            type = protoMessageType.name,
+            body = fileName,
+            direction = MessageDirection.OUTGOING,
+            status = if (recipients.isEmpty()) DeliveryStatus.DELIVERED.name else DeliveryStatus.QUEUED.name,
+            createdAt = now,
+            replyToMessageId = replyToMessageId
+        )
+        val media = MediaEntity(
+            mediaId = mediaId,
+            messageId = messageId,
+            conversationId = groupId,
+            mediaType = type.name,
+            mimeType = mimeType,
+            fileName = fileName,
+            fileSize = fileSize,
+            localPath = localFilePath,
+            encryptedSha256 = encryptedSha256,
+            mediaKey = mediaKey,
+            thumbnailData = thumbnailBytes,
+            durationMs = durationMs,
+            waveformData = waveformData,
+            status = if (recipients.isEmpty()) MediaStatus.COMPLETE.name else MediaStatus.QUEUED.name,
+            transferProgress = if (recipients.isEmpty()) 1f else 0f,
+            createdAt = now
+        )
+        val deliveries = recipients.map { recipient ->
+            GroupMessageDeliveryEntity(
+                deliveryId = UUID.randomUUID().toString(),
+                logicalMessageId = messageId,
+                recipientIdentityId = recipient.identityId,
+                relationshipId = recipient.relationshipId,
+                status = GroupDeliveryStatus.PENDING.name,
+                createdAt = now,
+                updatedAt = now
+            )
+        }
+        val transfers = recipients.map { recipient ->
+            MediaTransferEntity(
+                transferId = groupTransferId(mediaId, recipient.relationshipId),
+                mediaId = mediaId,
+                conversationId = groupId,
+                relationshipId = recipient.relationshipId,
+                direction = TransferDirection.UPLOAD.name,
+                totalChunks = totalChunks,
+                chunkSize = chunkSize,
+                tempEncryptedPath = tempEncryptedFile.absolutePath,
+                status = TransferStatus.IDLE.name,
+                totalBytes = encryptedFileSize,
+                updatedAt = now
+            )
+        }
+        transactionRunner {
+            messageDao.insertIfAbsent(message)
+            mediaDao.insert(media)
+            deliveries.forEach { deliveryDao.upsert(it) }
+            transfers.forEach { mediaTransferDao.upsert(it) }
+            conversationDao.updateLastMessage(groupId, messageId, mediaPreview(type, fileName), now)
+            conversationDao.unarchive(groupId)
+            conversationDao.updateManuallyUnread(groupId, false)
+        }
+
+        recipients.forEachIndexed { index, recipient ->
+            val delivery = deliveries[index]
+            val transfer = transfers[index]
+            try {
+                val connection = connectionManager.getConnectionByRelationship(recipient.relationshipId)
+                    ?: throw IllegalStateException("No active connection for relationship ${recipient.relationshipId}")
+                val outboxDeliveryId = UUID.randomUUID().toString()
+                sendCoordinator.sendSequenced(
+                    relationshipId = recipient.relationshipId,
+                    connection = connection,
+                    buildEnvelope = { sequence ->
+                        SecureEnvelope(
+                            logicalMessageId = messageId,
+                            conversationId = groupId,
+                            senderIdentity = localIdentityId,
+                            recipientBinding = recipient.identityId,
+                            messageType = protoMessageType,
+                            timestamp = now,
+                            payload = descriptorBytes,
+                            replyToMessageId = replyToMessageId,
+                            groupMetadata = GroupEnvelopeMetadata(groupId, groupEpoch.toInt(), groupEpoch.toInt()),
+                            directionSequence = sequence
+                        )
+                    },
+                    persistDomain = { sequence, _, ciphertext ->
+                        requireNotNull(outboxDao) { "Group media requires OutboxDao" }.insert(
+                            OutboxEntity(
+                                deliveryId = outboxDeliveryId,
+                                logicalMessageId = messageId,
+                                conversationId = groupId,
+                                connectionId = connection.connectionId,
+                                queueAddress = connection.sendQueueId,
+                                ciphertext = ciphertext,
+                                queueAuthenticator = connection.sendAuth,
+                                status = DeliveryStatus.QUEUED.name,
+                                nextAttemptAt = now,
+                                createdAt = now,
+                                updatedAt = now,
+                                expectsAck = true,
+                                applicationSequence = sequence,
+                                relationshipId = recipient.relationshipId
+                            )
+                        )
+                        deliveryDao.upsert(delivery.copy(outboxDeliveryId = outboxDeliveryId, status = GroupDeliveryStatus.QUEUED.name, updatedAt = now))
+                        mediaTransferDao.updateStatus(transfer.transferId, TransferStatus.ACTIVE.name)
+                    }
+                )
+                if (dedicatedMediaTransport == null) {
+                    startChunkUpload(
+                        mediaId, groupId, localIdentityId, recipient.identityId, recipient.relationshipId,
+                        tempEncryptedFile, totalChunks, chunkSize, encryptedFileSize,
+                        transferId = transfer.transferId,
+                        groupMetadata = GroupEnvelopeMetadata(groupId, groupEpoch.toInt(), groupEpoch.toInt())
+                    )
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Group media fan-out pending for ${recipient.identityId}", error)
+                deliveryDao.upsert(delivery.copy(status = GroupDeliveryStatus.FAILED.name, updatedAt = System.currentTimeMillis()))
+                mediaTransferDao.updateStatus(transfer.transferId, TransferStatus.FAILED.name)
+            }
+        }
+        return messageId
+    }
+
+    private fun mediaMessageType(type: MediaType): MessageType = when (type) {
+        MediaType.IMAGE -> MessageType.IMAGE
+        MediaType.VIDEO -> MessageType.VIDEO
+        MediaType.AUDIO -> MessageType.AUDIO
+        MediaType.DOCUMENT -> MessageType.FILE
+        MediaType.VOICE_NOTE -> MessageType.VOICE_NOTE
+    }
+
+    private fun mediaPreview(type: MediaType, fileName: String): String = when (type) {
+        MediaType.IMAGE -> "📷 Photo"
+        MediaType.VIDEO -> "🎥 Video"
+        MediaType.VOICE_NOTE -> "🎤 Voice message"
+        MediaType.AUDIO -> "🎵 Audio"
+        MediaType.DOCUMENT -> "📄 $fileName"
+    }
+
+    private fun groupTransferId(mediaId: String, relationshipId: String): String = "$mediaId:$relationshipId"
 
     private suspend fun sendMediaInternal(
         mediaId: String,
@@ -415,14 +656,17 @@ class MediaService(
         totalChunks: Int,
         chunkSize: Int,
         totalBytes: Long,
-        chunkIndicesToUpload: List<Int>? = null
+        chunkIndicesToUpload: List<Int>? = null,
+        transferId: String = mediaId,
+        groupMetadata: GroupEnvelopeMetadata? = null
     ) {
         if (dedicatedMediaTransport != null) {
             startDedicatedChunkUpload(
-                mediaId, relationshipId, tempEncryptedFile, totalChunks, chunkSize, totalBytes, chunkIndicesToUpload
+                mediaId, relationshipId, tempEncryptedFile, totalChunks, chunkSize, totalBytes, chunkIndicesToUpload, transferId
             )
             return
         }
+        val activeKey = transferId
         val indices = chunkIndicesToUpload ?: (0 until totalChunks).toList()
 
         val job = scope.launch {
@@ -465,6 +709,7 @@ class MediaService(
                                     messageType = MessageType.FILE_PROGRESS,
                                     timestamp = System.currentTimeMillis(),
                                     payload = rawChunkBytes,
+                                    groupMetadata = groupMetadata,
                                     directionSequence = sequence
                                 )
                             }
@@ -503,7 +748,7 @@ class MediaService(
                     ) {
                         mediaDao.updateStatus(mediaId, MediaStatus.UPLOADING.name, progress)
                         mediaTransferDao.updateProgress(
-                            transferId = mediaId,
+                            transferId = transferId,
                             completedChunks = bitmaskSet.size,
                             chunkBitmask = bitmaskSet.joinToString(","),
                             bytesTransferred = (bitmaskSet.size * chunkSize).toLong().coerceAtMost(totalBytes),
@@ -530,16 +775,16 @@ class MediaService(
                 }
             } catch (e: CancellationException) {
                 mediaDao.updateStatus(mediaId, MediaStatus.CANCELLED.name, 0f)
-                mediaTransferDao.updateStatus(mediaId, TransferStatus.CANCELLED.name)
+                mediaTransferDao.updateStatus(transferId, TransferStatus.CANCELLED.name)
             } catch (e: Exception) {
                 Log.e(TAG, "[UPLOAD FAILED] mediaId=${mediaId.take(8)}", e)
                 mediaDao.updateStatus(mediaId, MediaStatus.FAILED.name, 0f)
-                mediaTransferDao.updateStatus(mediaId, TransferStatus.FAILED.name)
+                mediaTransferDao.updateStatus(transferId, TransferStatus.FAILED.name)
             } finally {
-                activeTransfers.remove(mediaId)
+                activeTransfers.remove(activeKey)
             }
         }
-        activeTransfers[mediaId] = job
+        activeTransfers[activeKey] = job
     }
 
     private fun startDedicatedChunkUpload(
@@ -549,24 +794,25 @@ class MediaService(
         totalChunks: Int,
         chunkSize: Int,
         totalBytes: Long,
-        requestedIndices: List<Int>? = null
+        requestedIndices: List<Int>? = null,
+        transferId: String = mediaId
     ) {
-        activeTransfers[mediaId]?.cancel()
+        activeTransfers[transferId]?.cancel()
         val job = scope.launch {
             try {
                 val media = mediaDao.getById(mediaId) ?: error("Missing media record")
                 val connection = connectionManager.getConnectionByRelationship(relationshipId)
                     ?: error("No active connection for media transfer")
                 val destination = TransportDestination(connection.sendQueueId)
-                val transfer = mediaTransferDao.getByMediaId(mediaId) ?: error("Missing transfer record")
+                val transfer = mediaTransferDao.getByTransferId(transferId) ?: error("Missing transfer record")
                 val alreadySent = transfer.chunkBitmask.split(',').mapNotNull(String::toIntOrNull).toMutableSet()
                 val indices = requestedIndices ?: (0 until totalChunks).filterNot(alreadySent::contains)
-                mediaTransferDao.updateStatus(mediaId, TransferStatus.ACTIVE.name)
+                mediaTransferDao.updateStatus(transferId, TransferStatus.ACTIVE.name)
                 mediaDao.updateStatus(mediaId, MediaStatus.UPLOADING.name, alreadySent.size.toFloat() / totalChunks)
 
                 for (chunkIndex in indices) {
                     ensureActive()
-                    val current = mediaTransferDao.getByMediaId(mediaId) ?: break
+                    val current = mediaTransferDao.getByTransferId(transferId) ?: break
                     if (current.status == TransferStatus.PAUSED.name || current.status == TransferStatus.CANCELLED.name) break
                     val plaintextChunk = mediaStorage.readChunk(encryptedFile, chunkIndex, chunkSize, totalBytes)
                     val encryptedChunk = DedicatedMediaChunkCrypto.encrypt(
@@ -582,7 +828,7 @@ class MediaService(
                         minOf(chunkSize.toLong(), totalBytes - index.toLong() * chunkSize)
                     }
                     mediaTransferDao.updateProgress(
-                        mediaId,
+                        transferId,
                         alreadySent.size,
                         alreadySent.sorted().joinToString(","),
                         sentBytes,
@@ -598,13 +844,13 @@ class MediaService(
                 // Pause/cancel methods persist the intended terminal state.
             } catch (error: Exception) {
                 Log.e(TAG, "Dedicated upload failed for $mediaId", error)
-                mediaTransferDao.updateStatus(mediaId, TransferStatus.FAILED.name)
+                mediaTransferDao.updateStatus(transferId, TransferStatus.FAILED.name)
                 mediaDao.updateStatus(mediaId, MediaStatus.FAILED.name, 0f)
             } finally {
-                activeTransfers.remove(mediaId)
+                activeTransfers.remove(transferId)
             }
         }
-        activeTransfers[mediaId] = job
+        activeTransfers[transferId] = job
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -796,7 +1042,7 @@ class MediaService(
         envelope: SecureEnvelope,
         accept: MediaAcceptPayload
     ): Boolean {
-        val transfer = mediaTransferDao.getByMediaId(accept.mediaId) ?: return false
+        val transfer = mediaTransferDao.getByMediaIdAndRelationship(accept.mediaId, connection.relationshipId) ?: return false
         if (dedicatedMediaTransport == null || transfer.relationshipId != connection.relationshipId ||
             transfer.direction != TransferDirection.UPLOAD.name || transfer.conversationId != envelope.conversationId ||
             transfer.status == TransferStatus.CANCELLED.name || transfer.status == TransferStatus.COMPLETED.name
@@ -812,7 +1058,9 @@ class MediaService(
             tempEncryptedFile = file,
             totalChunks = transfer.totalChunks,
             chunkSize = transfer.chunkSize,
-            totalBytes = transfer.totalBytes
+            totalBytes = transfer.totalBytes,
+            transferId = transfer.transferId,
+            groupMetadata = envelope.groupMetadata
         )
         return true
     }
@@ -846,12 +1094,10 @@ class MediaService(
 
         val mediaId = chunk.mediaId
         val media = mediaDao.getById(mediaId) ?: return false
-        val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return false
+        val transfer = mediaTransferDao.getByMediaIdAndRelationship(mediaId, connection.relationshipId) ?: return false
         if (transfer.relationshipId != connection.relationshipId ||
             transfer.direction != TransferDirection.DOWNLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId
-                ?: resolveLocalConversationId(connection.relationshipId)
-                ?: envelope.conversationId) ||
+            transfer.conversationId != expectedConversationId(envelope, connection.relationshipId, transfer.conversationId) ||
             chunk.totalChunks != transfer.totalChunks || chunk.chunkIndex !in 0 until transfer.totalChunks ||
             chunk.chunkData.size > transfer.chunkSize || transfer.chunkSize !in 1..MediaProtocolCodec.MAX_CHUNK_BYTES
         ) return false
@@ -1069,14 +1315,45 @@ class MediaService(
     }
 
     suspend fun handleIncomingCompletion(connection: Connection, envelope: SecureEnvelope, complete: MediaCompletePayload): Boolean {
-        val transfer = mediaTransferDao.getByMediaId(complete.mediaId) ?: return false
+        val transfer = mediaTransferDao.getByMediaIdAndRelationship(complete.mediaId, connection.relationshipId) ?: return false
         if (transfer.relationshipId != connection.relationshipId || transfer.direction != TransferDirection.UPLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId
-                ?: resolveLocalConversationId(connection.relationshipId)
-                ?: envelope.conversationId)
+            transfer.conversationId != expectedConversationId(envelope, connection.relationshipId, transfer.conversationId)
         ) return false
-        return handleIncomingCompletion(complete)
+        val media = mediaDao.getById(complete.mediaId) ?: return false
+        if (!media.encryptedSha256.equals(complete.verifiedSha256, ignoreCase = true)) return false
+        mediaTransferDao.updateStatus(transfer.transferId, TransferStatus.COMPLETED.name)
+        val message = messageDao.getById(media.messageId)
+        if (message != null && groupMessageDeliveryDao != null && message.conversationId == transfer.conversationId) {
+            groupMessageDeliveryDao.markDelivered(
+                message.logicalMessageId,
+                envelope.senderIdentity,
+                System.currentTimeMillis()
+            )
+        }
+        val allTransfers = mediaTransferDao.getAllByMediaId(complete.mediaId)
+        val allComplete = allTransfers.all {
+            it.transferId == transfer.transferId || it.status == TransferStatus.COMPLETED.name
+        }
+        if (allComplete) {
+            mediaDao.updateStatus(complete.mediaId, MediaStatus.DELIVERED.name, 1f)
+            mediaStorage.cleanupTempTransfer(complete.mediaId)
+        } else {
+            val progress = allTransfers.count {
+                it.transferId == transfer.transferId || it.status == TransferStatus.COMPLETED.name
+            }.toFloat() / allTransfers.size.coerceAtLeast(1)
+            mediaDao.updateStatus(complete.mediaId, MediaStatus.SENT.name, progress)
+        }
+        return true
     }
+
+    private suspend fun expectedConversationId(
+        envelope: SecureEnvelope,
+        relationshipId: String,
+        persistedConversationId: String
+    ): String = envelope.groupMetadata?.groupId
+        ?: envelope.conversationId.takeIf { it == persistedConversationId }
+        ?: resolveLocalConversationId(relationshipId)
+        ?: envelope.conversationId
 
     // ═══════════════════════════════════════════════════════════════
     //  Resumability & Missing Chunk Recovery
@@ -1084,6 +1361,10 @@ class MediaService(
 
     suspend fun getMissingChunkIndices(mediaId: String): List<Int> {
         val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return emptyList()
+        return getMissingChunkIndices(transfer)
+    }
+
+    private fun getMissingChunkIndices(transfer: MediaTransferEntity): List<Int> {
         val receivedIndices = if (transfer.chunkBitmask.isEmpty()) {
             emptySet()
         } else {
@@ -1094,12 +1375,16 @@ class MediaService(
 
     suspend fun resumeUpload(mediaId: String, missingChunkIndices: List<Int>) {
         val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return
+        resumeUpload(transfer, missingChunkIndices)
+    }
+
+    private suspend fun resumeUpload(transfer: MediaTransferEntity, missingChunkIndices: List<Int>) {
         val tempFile = File(transfer.tempEncryptedPath)
         if (!tempFile.exists()) return
 
         val localSenderId = localIdentityIdProvider?.invoke() ?: ""
         startChunkUpload(
-            mediaId = mediaId,
+            mediaId = transfer.mediaId,
             conversationId = transfer.conversationId,
             localIdentityId = localSenderId,
             recipientId = contactDao?.getByRelationshipId(transfer.relationshipId)?.remoteIdentityId?.takeIf { it.isNotBlank() && it != ContactEntity.REMOTE_IDENTITY_UNKNOWN } ?: return,
@@ -1108,7 +1393,8 @@ class MediaService(
             totalChunks = transfer.totalChunks,
             chunkSize = transfer.chunkSize,
             totalBytes = transfer.totalBytes,
-            chunkIndicesToUpload = missingChunkIndices
+            chunkIndicesToUpload = missingChunkIndices,
+            transferId = transfer.transferId
         )
     }
 
@@ -1191,22 +1477,21 @@ class MediaService(
     }
 
     suspend fun handleIncomingResume(connection: Connection, envelope: SecureEnvelope, resumeReq: MediaResumeRequest): Boolean {
-        val transfer = mediaTransferDao.getByMediaId(resumeReq.mediaId) ?: return false
+        val transfer = mediaTransferDao.getByMediaIdAndRelationship(resumeReq.mediaId, connection.relationshipId) ?: return false
         if (transfer.relationshipId != connection.relationshipId || transfer.direction != TransferDirection.UPLOAD.name ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId
-                ?: resolveLocalConversationId(connection.relationshipId)
-                ?: envelope.conversationId) ||
+            transfer.conversationId != expectedConversationId(envelope, connection.relationshipId, transfer.conversationId) ||
             resumeReq.missingChunkIndices.any { it !in 0 until transfer.totalChunks }
         ) return false
-        return handleIncomingResume(resumeReq)
+        val tempFile = File(transfer.tempEncryptedPath)
+        if (!tempFile.exists()) return false
+        resumeUpload(transfer, resumeReq.missingChunkIndices)
+        return true
     }
 
     suspend fun handleIncomingCancel(connection: Connection, envelope: SecureEnvelope, mediaId: String): Boolean {
-        val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return false
+        val transfer = mediaTransferDao.getByMediaIdAndRelationship(mediaId, connection.relationshipId) ?: return false
         if (transfer.relationshipId != connection.relationshipId ||
-            transfer.conversationId != (envelope.groupMetadata?.groupId
-                ?: resolveLocalConversationId(connection.relationshipId)
-                ?: envelope.conversationId)
+            transfer.conversationId != expectedConversationId(envelope, connection.relationshipId, transfer.conversationId)
         ) return false
         cancelTransfer(mediaId, notifyPeer = false)
         return true
@@ -1223,7 +1508,7 @@ class MediaService(
             for (transfer in pendingTransfers) {
                 if (transfer.status == TransferStatus.PAUSED.name) continue
                 if (transfer.direction == TransferDirection.DOWNLOAD.name) {
-                    val missing = getMissingChunkIndices(transfer.mediaId)
+                    val missing = getMissingChunkIndices(transfer)
                     if (missing.isNotEmpty()) {
                         Log.i(TAG, "[STARTUP RECOVERY] Requesting resume for download ${transfer.mediaId.take(8)}, missing ${missing.size} chunks")
                         requestResume(transfer.mediaId)
@@ -1239,7 +1524,7 @@ class MediaService(
                         val remaining = (0 until transfer.totalChunks).filter { !sentIndices.contains(it) }
                         if (remaining.isNotEmpty()) {
                             Log.i(TAG, "[STARTUP RECOVERY] Resuming upload for ${transfer.mediaId.take(8)}, remaining ${remaining.size} chunks")
-                            resumeUpload(transfer.mediaId, remaining)
+                            resumeUpload(transfer, remaining)
                         }
                     }
                 }
@@ -1254,14 +1539,13 @@ class MediaService(
     // ═══════════════════════════════════════════════════════════════
 
     suspend fun cancelTransfer(mediaId: String, notifyPeer: Boolean = true) {
-        val transfer = mediaTransferDao.getByMediaId(mediaId)
-        if (notifyPeer && transfer != null) {
-            scope.launch { sendCancelControl(transfer) }
+        val transfers = mediaTransferDao.getAllByMediaId(mediaId)
+        if (notifyPeer) {
+            transfers.forEach { transfer -> scope.launch { sendCancelControl(transfer) } }
         }
-        activeTransfers[mediaId]?.cancel()
-        activeTransfers.remove(mediaId)
+        transfers.forEach { transfer -> activeTransfers.remove(transfer.transferId)?.cancel() }
         mediaDao.updateStatus(mediaId, MediaStatus.CANCELLED.name, 0f)
-        mediaTransferDao.updateStatus(mediaId, TransferStatus.CANCELLED.name)
+        transfers.forEach { mediaTransferDao.updateStatus(it.transferId, TransferStatus.CANCELLED.name) }
         mediaStorage.cleanupTempTransfer(mediaId)
     }
 

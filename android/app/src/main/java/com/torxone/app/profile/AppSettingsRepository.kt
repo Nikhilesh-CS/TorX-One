@@ -19,6 +19,12 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
     name = "torx_app_settings"
 )
 
+sealed interface ProfileAvatarUpdate {
+    data object Unchanged : ProfileAvatarUpdate
+    data class Changed(val uri: String) : ProfileAvatarUpdate
+    data object Removed : ProfileAvatarUpdate
+}
+
 class AppSettingsRepository(context: Context) {
 
     companion object {
@@ -117,14 +123,18 @@ class AppSettingsRepository(context: Context) {
         prefs[ProfileKeys.PROFILE_VERSION] ?: 1
     }
 
-    suspend fun updateProfile(displayName: String, about: String = "", avatarUri: String? = null) {
+    suspend fun updateProfile(
+        displayName: String,
+        about: String = "",
+        avatarUpdate: ProfileAvatarUpdate = ProfileAvatarUpdate.Unchanged
+    ) {
         store.edit { prefs ->
             prefs[ProfileKeys.DISPLAY_NAME] = displayName
             prefs[ProfileKeys.ABOUT] = about
-            if (avatarUri != null) {
-                prefs[ProfileKeys.AVATAR_URI] = avatarUri
-            } else {
-                prefs.remove(ProfileKeys.AVATAR_URI)
+            when (avatarUpdate) {
+                ProfileAvatarUpdate.Unchanged -> Unit
+                is ProfileAvatarUpdate.Changed -> prefs[ProfileKeys.AVATAR_URI] = avatarUpdate.uri
+                ProfileAvatarUpdate.Removed -> prefs.remove(ProfileKeys.AVATAR_URI)
             }
             prefs[ProfileKeys.PROFILE_VERSION] = (prefs[ProfileKeys.PROFILE_VERSION] ?: 0) + 1
         }

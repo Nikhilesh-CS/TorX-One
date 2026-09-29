@@ -322,7 +322,8 @@ class TorXOneApplication : Application() {
             contactDao = database.contactDao(),
             relationshipSendCoordinator = relationshipSendCoordinator,
             sessionStore = sessionStore,
-            dedicatedMediaTransport = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter)
+            dedicatedMediaTransport = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter),
+            groupMessageDeliveryDao = database.groupMessageDeliveryDao()
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -334,6 +335,7 @@ class TorXOneApplication : Application() {
             groupDao = database.groupDao(),
             groupMemberDao = database.groupMemberDao(),
             groupMessageDeliveryDao = database.groupMessageDeliveryDao(),
+            groupControlDao = database.groupControlDao(),
             conversationDao = database.conversationDao(),
             messageDao = database.messageDao(),
             reactionDao = database.reactionDao(),
@@ -351,6 +353,7 @@ class TorXOneApplication : Application() {
             groupDao = database.groupDao(),
             groupMemberDao = database.groupMemberDao(),
             conversationDao = database.conversationDao(),
+            contactDao = database.contactDao(),
             localIdentityIdProvider = { getLocalIdentityId() },
             notificationManager = notificationManager,
             transactionRunner = { block -> database.withTransaction { block() } }

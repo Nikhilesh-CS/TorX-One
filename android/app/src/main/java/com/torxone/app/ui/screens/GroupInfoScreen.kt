@@ -1,5 +1,9 @@
 package com.torxone.app.ui.screens
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -28,8 +35,11 @@ import com.torxone.app.data.entity.GroupMemberEntity
 import com.torxone.app.data.entity.GroupMemberRole
 import com.torxone.app.data.entity.GroupMemberState
 import com.torxone.app.groups.GroupService
+import com.torxone.app.groups.GroupAvatarStorage
 import com.torxone.app.notifications.NotificationPolicy
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -49,13 +59,14 @@ fun GroupInfoScreen(
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     val group by database.groupDao().observeById(groupId).collectAsState(initial = null)
     val conversation by database.conversationDao().observeById(groupId).collectAsState(initial = null)
     val allMembers by database.groupMemberDao().observeMembers(groupId).collectAsState(initial = emptyList())
     val allContacts by database.contactDao().observeAll().collectAsState(initial = emptyList())
 
-    val contactsMap = remember(allContacts) { allContacts.associateBy { it.contactId } }
+    val contactsMap = remember(allContacts) { allContacts.associateBy { it.remoteIdentityId } }
     val activeMembers = remember(allMembers) {
         allMembers.filter { it.state == GroupMemberState.ACTIVE.name }
     }
@@ -76,6 +87,32 @@ fun GroupInfoScreen(
     var showLeaveConfirmDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showMuteDialog by remember { mutableStateOf(false) }
+    var avatarError by remember { mutableStateOf<String?>(null) }
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null && canManage) coroutineScope.launch {
+            runCatching {
+                val bytes = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        val output = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            require(output.size().toLong() + read <= GroupAvatarStorage.MAX_BYTES) { "Group image exceeds 10 MB" }
+                            output.write(buffer, 0, read)
+                        }
+                        output.toByteArray()
+                    } ?: error("Unable to read selected image")
+                }
+                val hash = GroupAvatarStorage.save(context, bytes)
+                check(groupService.updateGroupAvatar(groupId, hash)) { "Only an owner or admin can change the group image" }
+            }.onFailure { avatarError = it.message ?: "Unable to change group image" }
+                .onSuccess { avatarError = null }
+        }
+    }
+    val avatarBitmap = remember(group?.avatarHash) {
+        GroupAvatarStorage.resolve(context, group?.avatarHash)?.let { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }
+    }
 
     val isMuted = NotificationPolicy.isConversationMuted(conversation?.mutedUntil)
 
@@ -120,16 +157,34 @@ fun GroupInfoScreen(
                         modifier = Modifier
                             .size(96.dp)
                             .clip(CircleShape)
+                            .clickable(enabled = canManage) { avatarPicker.launch("image/*") }
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
+                        if (avatarBitmap != null) Image(
+                            bitmap = avatarBitmap,
+                            contentDescription = "Group image",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        ) else Icon(
                             imageVector = Icons.Default.Groups,
                             contentDescription = "Group",
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
                             modifier = Modifier.size(54.dp)
                         )
                     }
+
+                    if (canManage) {
+                        Row {
+                            TextButton(onClick = { avatarPicker.launch("image/*") }) { Text("Change image") }
+                            if (group?.avatarHash != null) TextButton(onClick = {
+                                coroutineScope.launch {
+                                    if (!groupService.updateGroupAvatar(groupId, null)) avatarError = "Unable to remove group image"
+                                }
+                            }) { Text("Remove") }
+                        }
+                    }
+                    avatarError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
@@ -467,7 +522,7 @@ fun GroupInfoScreen(
     if (showAddMemberSheet) {
         val nonMemberContacts = remember(allContacts, activeMembers) {
             val memberIds = activeMembers.map { it.memberIdentityId }.toSet()
-            allContacts.filter { it.contactId !in memberIds }
+            allContacts.filter { it.remoteIdentityId !in memberIds }
         }
 
         ModalBottomSheet(

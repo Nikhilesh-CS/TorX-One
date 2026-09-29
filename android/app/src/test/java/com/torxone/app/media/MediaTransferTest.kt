@@ -108,6 +108,12 @@ class MediaTransferTest {
         override suspend fun getByMediaId(mediaId: String): MediaTransferEntity? =
             transfers.values.firstOrNull { it.mediaId == mediaId }
 
+        override suspend fun getAllByMediaId(mediaId: String): List<MediaTransferEntity> =
+            transfers.values.filter { it.mediaId == mediaId }
+
+        override suspend fun getByMediaIdAndRelationship(mediaId: String, relationshipId: String): MediaTransferEntity? =
+            transfers.values.firstOrNull { it.mediaId == mediaId && it.relationshipId == relationshipId }
+
         override fun observeByMediaId(mediaId: String): Flow<MediaTransferEntity?> =
             flowOf(transfers.values.firstOrNull { it.mediaId == mediaId })
 

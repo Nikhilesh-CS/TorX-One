@@ -8,9 +8,13 @@ import com.torxone.app.data.dao.*
 import com.torxone.app.data.entity.*
 import com.torxone.app.media.MediaService
 import com.torxone.app.media.MediaType
+import com.torxone.app.media.VoiceNoteRecorder
 import com.torxone.app.protocol.ReactionOperation
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -37,7 +41,8 @@ class GroupChatViewModel(
     private val conversationDao: ConversationDao,
     private val mediaDao: MediaDao? = null,
     private val mediaService: MediaService? = null,
-    private val localMessageStateDao: LocalMessageStateDao? = null
+    private val localMessageStateDao: LocalMessageStateDao? = null,
+    private val voiceNoteRecorder: VoiceNoteRecorder? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -49,6 +54,7 @@ class GroupChatViewModel(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val typingTimestamps = ConcurrentHashMap<String, Long>()
+    private var recordingTimerJob: Job? = null
 
     init {
         // 1. Observe Group Entity & Title
@@ -86,11 +92,13 @@ class GroupChatViewModel(
                 messageDao.observeByConversation(conversationId),
                 reactionDao.observeForConversation(conversationId),
                 contactDao.observeAll(),
-                localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList())
-            ) { messages, reactions, contacts, hiddenMessageIds ->
+                localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList()),
+                mediaDao?.observeForConversation(conversationId) ?: flowOf(emptyList())
+            ) { messages, reactions, contacts, hiddenMessageIds, mediaItems ->
                 val hidden = hiddenMessageIds.toHashSet()
                 val contactsMap = contacts.associateBy { it.remoteIdentityId }
                 val reactionsByMessage = reactions.groupBy { it.messageId }
+                val mediaByMessage = mediaItems.associateBy { it.messageId }
 
                 messages.filterNot { it.logicalMessageId in hidden }.map { msg ->
                     val senderName = if (msg.senderId == localIdentityId) {
@@ -131,6 +139,23 @@ class GroupChatViewModel(
                         }
                     }
 
+                    val mediaModel = mediaByMessage[msg.logicalMessageId]?.let { media ->
+                        MediaUiModel(
+                            mediaId = media.mediaId,
+                            type = runCatching { MediaType.valueOf(media.mediaType) }.getOrDefault(MediaType.IMAGE),
+                            fileName = media.fileName,
+                            mimeType = media.mimeType,
+                            fileSize = media.fileSize,
+                            localPath = media.localPath,
+                            thumbnailData = media.thumbnailData,
+                            durationMs = media.durationMs,
+                            waveformData = media.waveformData,
+                            status = runCatching { com.torxone.app.media.MediaStatus.valueOf(media.status) }
+                                .getOrDefault(com.torxone.app.media.MediaStatus.COMPLETE),
+                            progress = media.transferProgress
+                        )
+                    }
+
                     MessageUiModel(
                         logicalMessageId = msg.logicalMessageId,
                         conversationId = msg.conversationId,
@@ -152,7 +177,8 @@ class GroupChatViewModel(
                         isEdited = msg.editVersion > 0,
                         editedAt = msg.editedAt,
                         isDeleted = msg.deletedAt != null,
-                        reactions = reactionSummaries
+                        reactions = reactionSummaries,
+                        media = mediaModel
                     )
                 }
             }.collect { messageList ->
@@ -250,26 +276,13 @@ class GroupChatViewModel(
         }
     }
 
-    fun sendImage(fileName: String, bytes: ByteArray) {
+    fun sendImage(fileName: String, bytes: ByteArray, mimeType: String) {
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {
             try {
                 if (mediaService != null) {
-                    val activeMembers = groupMemberDao.getActiveMembers(groupId)
-                        .filter { it.memberIdentityId != localIdentityId }
-                    val isVideo = fileName.endsWith(".mp4", ignoreCase = true) || fileName.endsWith(".mov", ignoreCase = true)
-                    for (member in activeMembers) {
-                        mediaService.sendMedia(
-                            conversationId = groupId,
-                            relationshipId = member.relationshipId,
-                            localIdentityId = localIdentityId,
-                            recipientId = member.memberIdentityId,
-                            type = if (isVideo) MediaType.VIDEO else MediaType.IMAGE,
-                            fileName = fileName,
-                            mimeType = if (isVideo) "video/mp4" else "image/jpeg",
-                            rawBytes = bytes
-                        )
-                    }
+                    val isVideo = mimeType.startsWith("video/")
+                    sendGroupMedia(if (isVideo) MediaType.VIDEO else MediaType.IMAGE, fileName, mimeType, bytes)
                 } else {
                     groupService.sendGroupText(groupId, "📷 $fileName")
                 }
@@ -279,30 +292,103 @@ class GroupChatViewModel(
         }
     }
 
-    fun sendDocument(fileName: String, bytes: ByteArray) {
+    fun sendDocument(fileName: String, bytes: ByteArray, mimeType: String) {
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {
             try {
                 if (mediaService != null) {
-                    val activeMembers = groupMemberDao.getActiveMembers(groupId)
-                        .filter { it.memberIdentityId != localIdentityId }
-                    for (member in activeMembers) {
-                        mediaService.sendMedia(
-                            conversationId = groupId,
-                            relationshipId = member.relationshipId,
-                            localIdentityId = localIdentityId,
-                            recipientId = member.memberIdentityId,
-                            type = MediaType.DOCUMENT,
-                            fileName = fileName,
-                            mimeType = "application/octet-stream",
-                            rawBytes = bytes
-                        )
-                    }
+                    sendGroupMedia(MediaType.DOCUMENT, fileName, mimeType, bytes)
                 } else {
                     groupService.sendGroupText(groupId, "📄 $fileName")
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    private suspend fun sendGroupMedia(
+        type: MediaType,
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+        durationMs: Long? = null,
+        waveform: ByteArray? = null
+    ) {
+        val service = requireNotNull(mediaService)
+        val group = groupDao.getById(groupId) ?: error("Group no longer exists")
+        val recipients = groupMemberDao.getActiveMembers(groupId)
+            .filter { it.memberIdentityId != localIdentityId }
+            .map { MediaService.GroupMediaRecipient(it.memberIdentityId, it.relationshipId) }
+        service.sendGroupMedia(
+            groupId = groupId,
+            groupEpoch = group.epoch,
+            localIdentityId = localIdentityId,
+            recipients = recipients,
+            type = type,
+            fileName = fileName,
+            mimeType = mimeType,
+            rawBytes = bytes,
+            durationMs = durationMs,
+            waveformData = waveform,
+            replyToMessageId = _uiState.value.replyingTo?.logicalMessageId
+        )
+        _uiState.update { it.copy(replyingTo = null) }
+    }
+
+    fun startVoiceRecording() {
+        if (!_uiState.value.isParticipantActive) return
+        val recorder = voiceNoteRecorder ?: run {
+            _uiState.update { it.copy(error = "Audio recorder unavailable") }
+            return
+        }
+        if (!recorder.startRecording()) {
+            _uiState.update { it.copy(error = "Microphone recording permission or device unavailable") }
+            return
+        }
+        _uiState.update { it.copy(voiceRecording = VoiceRecordingState(isRecording = true)) }
+        recordingTimerJob?.cancel()
+        recordingTimerJob = viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
+            val amplitudes = mutableListOf<Float>()
+            while (isActive) {
+                delay(100)
+                amplitudes += recorder.amplitudeFlow.value
+                if (amplitudes.size > 30) amplitudes.removeAt(0)
+                _uiState.update {
+                    it.copy(voiceRecording = it.voiceRecording.copy(
+                        elapsedDurationMs = System.currentTimeMillis() - startedAt,
+                        amplitudeLevels = amplitudes.toList()
+                    ))
+                }
+            }
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        recordingTimerJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
+        _uiState.update { it.copy(voiceRecording = VoiceRecordingState()) }
+    }
+
+    fun finishVoiceRecording() {
+        val elapsed = _uiState.value.voiceRecording.elapsedDurationMs
+        recordingTimerJob?.cancel()
+        _uiState.update { it.copy(voiceRecording = VoiceRecordingState()) }
+        if (elapsed < 500) {
+            voiceNoteRecorder?.cancelRecording()
+            return
+        }
+        val result = voiceNoteRecorder?.stopRecording()
+        if (result == null) {
+            _uiState.update { it.copy(error = "Audio recording failed or microphone was unavailable") }
+            return
+        }
+        viewModelScope.launch {
+            try {
+                sendGroupMedia(MediaType.VOICE_NOTE, "voice_note.wav", "audio/wav", result.audioData, result.durationMs, result.waveform)
+            } catch (error: Exception) {
+                _uiState.update { it.copy(error = error.message ?: "Failed to send voice note") }
             }
         }
     }

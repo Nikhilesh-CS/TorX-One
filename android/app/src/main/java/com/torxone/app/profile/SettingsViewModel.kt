@@ -137,16 +137,22 @@ class SettingsViewModel(
     }
 
     // ─── Profile Update ──────────────────────────────────────────────
-    fun updateProfile(name: String, about: String, avatarUri: String? = null) {
+    fun updateProfile(
+        name: String,
+        about: String,
+        avatarUpdate: ProfileAvatarUpdate = ProfileAvatarUpdate.Unchanged
+    ) {
         viewModelScope.launch {
-            settingsRepo.updateProfile(displayName = name, about = about, avatarUri = avatarUri)
+            settingsRepo.updateProfile(displayName = name, about = about, avatarUpdate = avatarUpdate)
             try {
                 chatService?.let { cs ->
                     identityRepo?.loadIdentity()?.let { id ->
                         cs.broadcastProfileUpdate(id.identityId, name, about)
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("SettingsViewModel", "Profile metadata broadcast failed", e)
+            }
         }
     }
 }

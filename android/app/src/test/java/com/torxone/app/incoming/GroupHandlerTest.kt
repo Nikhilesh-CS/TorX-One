@@ -17,6 +17,7 @@ class GroupHandlerTest {
     private val groupDao = TestGroupDao()
     private val groupMemberDao = TestGroupMemberDao()
     private val conversationDao = TestConversationDao()
+    private val contactDao = TestContactDao()
     private val localIdentityId = "alice_id"
     private val bobIdentityId = "bob_id"
     private val charlieIdentityId = "charlie_id"
@@ -26,10 +27,15 @@ class GroupHandlerTest {
 
     @Before
     fun setUp() {
+        runBlocking {
+            contactDao.upsert(ContactEntity(contactId = "contact_bob", relationshipId = "rel_bob", displayName = "Bob", signingPublicKey = ByteArray(32), verificationState = "VERIFIED", conversationId = "conv_bob", remoteIdentityId = bobIdentityId))
+            contactDao.upsert(ContactEntity(contactId = "contact_charlie", relationshipId = "rel_charlie", displayName = "Charlie", signingPublicKey = ByteArray(32), verificationState = "VERIFIED", conversationId = "conv_charlie", remoteIdentityId = charlieIdentityId))
+        }
         groupHandler = GroupHandler(
             groupDao = groupDao,
             groupMemberDao = groupMemberDao,
             conversationDao = conversationDao,
+            contactDao = contactDao,
             localIdentityIdProvider = { localIdentityId },
             notificationManager = null,
             transactionRunner = { it() }
@@ -226,5 +232,37 @@ class GroupHandlerTest {
         assertEquals(3L, groupDao.getById(groupId)?.epoch)
         assertEquals("Alpha Force", groupDao.getById(groupId)?.title)
         assertEquals("Alpha Force", conversationDao.getById(groupId)?.title)
+    }
+
+    @Test
+    fun testRejectsRosterContainingActiveMemberWithoutPairwiseRelationship() = runBlocking {
+        val groupId = "group_transitive_only"
+        val unknownIdentity = "dave_known_only_to_bob"
+        val invite = GroupInvitePayload(
+            groupId = groupId,
+            title = "Invalid Transitive Group",
+            avatarHash = null,
+            creatorIdentity = bobIdentityId,
+            epoch = 1L,
+            inviterIdentity = bobIdentityId,
+            members = listOf(
+                GroupMemberSnapshot(bobIdentityId, bobIdentityId, GroupMemberRole.OWNER, GroupMemberState.ACTIVE),
+                GroupMemberSnapshot(localIdentityId, localIdentityId, GroupMemberRole.MEMBER, GroupMemberState.ACTIVE),
+                GroupMemberSnapshot(unknownIdentity, unknownIdentity, GroupMemberRole.MEMBER, GroupMemberState.ACTIVE)
+            )
+        )
+        val envelope = SecureEnvelope(
+            logicalMessageId = UUID.randomUUID().toString(),
+            conversationId = groupId,
+            senderIdentity = bobIdentityId,
+            recipientBinding = localIdentityId,
+            messageType = MessageType.GROUP_CREATE,
+            groupMetadata = GroupEnvelopeMetadata(groupId, 1, 0),
+            payload = GroupProtocolCodec.encodeInvite(invite)
+        )
+
+        assertFalse(groupHandler.handleGroupCreateOrInvite(connectionBob, envelope))
+        assertNull(groupDao.getById(groupId))
+        assertTrue(groupMemberDao.getMembers(groupId).isEmpty())
     }
 }

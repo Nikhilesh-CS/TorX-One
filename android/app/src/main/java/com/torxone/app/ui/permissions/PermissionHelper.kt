@@ -50,10 +50,11 @@ object PermissionHelper {
     }
 
     /**
-     * All initial startup permissions (Transport + Notifications).
+     * Permissions that gate startup networking. Notifications are deliberately
+     * excluded: declining POST_NOTIFICATIONS must never disable transport.
      */
     fun getStartupPermissions(): Array<String> {
-        return getNearbyPermissions() + getNotificationPermissions()
+        return getNearbyPermissions()
     }
 
     /**

@@ -105,6 +105,7 @@ class GroupE2ETest {
                 groupDao = groupDao,
                 groupMemberDao = groupMemberDao,
                 groupMessageDeliveryDao = groupMessageDeliveryDao,
+                groupControlDao = TestGroupControlDao(),
                 conversationDao = conversationDao,
                 messageDao = messageDao,
                 reactionDao = reactionDao,
@@ -122,6 +123,7 @@ class GroupE2ETest {
                 groupDao = groupDao,
                 groupMemberDao = groupMemberDao,
                 conversationDao = conversationDao,
+                contactDao = contactDao,
                 localIdentityIdProvider = { identity.identityId },
                 notificationManager = null,
                 transactionRunner = { it() }

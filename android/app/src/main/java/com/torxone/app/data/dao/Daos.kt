@@ -135,6 +135,9 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE relationship_id = :relationshipId")
     suspend fun getByRelationshipId(relationshipId: String): ContactEntity?
 
+    @Query("SELECT * FROM contacts WHERE remote_identity_id = :remoteIdentityId LIMIT 1")
+    suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity?
+
     @Query("SELECT * FROM contacts WHERE conversation_id = :conversationId")
     suspend fun getByConversationId(conversationId: String): ContactEntity?
 
@@ -371,6 +374,12 @@ interface MediaTransferDao {
 
     @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId")
     suspend fun getByMediaId(mediaId: String): MediaTransferEntity?
+
+    @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId ORDER BY transfer_id ASC")
+    suspend fun getAllByMediaId(mediaId: String): List<MediaTransferEntity>
+
+    @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId AND relationship_id = :relationshipId LIMIT 1")
+    suspend fun getByMediaIdAndRelationship(mediaId: String, relationshipId: String): MediaTransferEntity?
 
     @Query("SELECT * FROM media_transfers WHERE media_id = :mediaId")
     fun observeByMediaId(mediaId: String): Flow<MediaTransferEntity?>

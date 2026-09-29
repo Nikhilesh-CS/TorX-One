@@ -212,6 +212,12 @@ class ContactsViewModel(
                 // 2. Register Connection in-memory and initialize Double Ratchet session
                 connectionManager.registerConnection(connection)
 
+                // The invite address is only a bootstrap capability. Normal traffic and
+                // the authenticated bootstrap ACK use the derived permanent send queue.
+                // Bind that queue to the already verified invite onion before bootstrap
+                // is sent, then persist it through TorRouteManager for process restarts.
+                bindPermanentTorRoute(torRouteManager, connection, valid.invite.torOnionAddress)
+
                 sessionCrypto.initializeSession(
                     relationshipId = bootstrap.relationship.relationshipId,
                     sessionInitializationSecret = bootstrap.secrets.sessionInitializationSecret,
@@ -285,4 +291,13 @@ class ContactsViewModel(
     fun dismissValidation() {
         _uiState.update { it.copy(pendingInviteValidation = null) }
     }
+}
+
+internal fun bindPermanentTorRoute(
+    routeManager: com.torxone.app.transport.tor.TorRouteManager?,
+    connection: Connection,
+    peerOnionAddress: String?
+) {
+    if (routeManager == null || peerOnionAddress == null) return
+    routeManager.bind(connection.sendQueueId, com.torxone.app.transport.tor.TorRoute(peerOnionAddress))
 }

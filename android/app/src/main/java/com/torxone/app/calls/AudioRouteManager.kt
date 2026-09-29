@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioDeviceInfo
 import android.os.Build
 import android.util.Log
 
@@ -65,8 +66,13 @@ class AudioRouteManager(context: Context) {
      * MUST be called on every exit path.
      */
     fun stopCallAudio() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audioManager.clearCommunicationDevice()
+        }
         audioManager.mode = previousAudioMode
-        audioManager.isSpeakerphoneOn = previousSpeakerState
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            audioManager.isSpeakerphoneOn = previousSpeakerState
+        }
         abandonAudioFocus()
         Log.i(TAG, "Call audio stopped. Mode restored to $previousAudioMode")
     }
@@ -75,12 +81,33 @@ class AudioRouteManager(context: Context) {
      * Set the audio output route.
      */
     fun setRoute(route: AudioRoute) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val requestedTypes = when (route) {
+                AudioRoute.EARPIECE -> setOf(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE)
+                AudioRoute.SPEAKER -> setOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER)
+                AudioRoute.BLUETOOTH -> setOf(
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_BLE_SPEAKER
+                )
+                AudioRoute.WIRED_HEADSET -> setOf(
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_USB_HEADSET
+                )
+            }
+            val device = audioManager.availableCommunicationDevices.firstOrNull { it.type in requestedTypes }
+            if (device != null && audioManager.setCommunicationDevice(device)) {
+                Log.d(TAG, "Audio communication device set to $route")
+            } else {
+                Log.w(TAG, "Requested audio route $route is unavailable")
+            }
+            return
+        }
+
         when (route) {
             AudioRoute.EARPIECE -> {
                 audioManager.isSpeakerphoneOn = false
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    audioManager.clearCommunicationDevice()
-                }
             }
             AudioRoute.SPEAKER -> {
                 audioManager.isSpeakerphoneOn = true
@@ -98,6 +125,18 @@ class AudioRouteManager(context: Context) {
     }
 
     fun getCurrentRoute(): AudioRoute {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return when (audioManager.communicationDevice?.type) {
+                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> AudioRoute.SPEAKER
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                AudioDeviceInfo.TYPE_BLE_HEADSET,
+                AudioDeviceInfo.TYPE_BLE_SPEAKER -> AudioRoute.BLUETOOTH
+                AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                AudioDeviceInfo.TYPE_USB_HEADSET -> AudioRoute.WIRED_HEADSET
+                else -> AudioRoute.EARPIECE
+            }
+        }
         return when {
             audioManager.isBluetoothScoOn -> AudioRoute.BLUETOOTH
             audioManager.isSpeakerphoneOn -> AudioRoute.SPEAKER
@@ -106,9 +145,16 @@ class AudioRouteManager(context: Context) {
         }
     }
 
-    fun isSpeakerOn(): Boolean = audioManager.isSpeakerphoneOn
+    fun isSpeakerOn(): Boolean = getCurrentRoute() == AudioRoute.SPEAKER
 
     fun isBluetoothAvailable(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return audioManager.availableCommunicationDevices.any {
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+            }
+        }
         return audioManager.isBluetoothScoAvailableOffCall ||
             audioManager.isBluetoothScoOn
     }

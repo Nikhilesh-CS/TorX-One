@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 /**
  * First-run landing / onboarding screen.
  *
- * Shows 3 feature slides, then a "Create Profile" step.
+ * Explains each transport mode separately, then shows a "Create Profile" step.
  * When the user finishes profile creation, calls [onComplete].
  */
 @Composable
@@ -52,9 +52,21 @@ fun LandingScreen(
                 accentColor = primaryColor
             ),
             OnboardingPage(
+                icon = Icons.Filled.Public,
+                title = "Private Tor Routing",
+                subtitle = "Reach people over the internet through Tor onion services.\nYour network address stays private.",
+                accentColor = secondaryColor
+            ),
+            OnboardingPage(
                 icon = Icons.Filled.WifiTethering,
-                title = "Mesh Network",
-                subtitle = "Connect directly with people nearby.\nNo servers. No internet required.",
+                title = "Nearby Direct",
+                subtitle = "Connect device-to-device when people are nearby.\nNo internet connection is required.",
+                accentColor = tertiaryColor
+            ),
+            OnboardingPage(
+                icon = Icons.Filled.Hub,
+                title = "Offline Mesh",
+                subtitle = "Forward encrypted messages across trusted nearby peers.\nMulti-hop delivery extends beyond direct range.",
                 accentColor = secondaryColor
             ),
             OnboardingPage(

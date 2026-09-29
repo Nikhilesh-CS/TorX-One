@@ -106,6 +106,7 @@ class CallViewModel(
             isRemoteCameraOn = session.isRemoteCameraOn,
             isActive = session.state in setOf(
                 CallState.OUTGOING_PREPARING,
+                CallState.OUTGOING_CALLING,
                 CallState.OUTGOING_RINGING,
                 CallState.INCOMING_RINGING,
                 CallState.CONNECTING,
@@ -119,6 +120,7 @@ class CallViewModel(
         return when (session.state) {
             CallState.IDLE -> ""
             CallState.OUTGOING_PREPARING -> "Calling…"
+            CallState.OUTGOING_CALLING -> "Calling…"
             CallState.OUTGOING_RINGING -> "Ringing…"
             CallState.INCOMING_RINGING -> {
                 val typeLabel = if (session.type == CallType.VIDEO) "video" else "voice"

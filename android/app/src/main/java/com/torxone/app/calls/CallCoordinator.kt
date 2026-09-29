@@ -106,7 +106,12 @@ class CallCoordinator(
     override fun onCallConnected(session: CallSession) {
         Log.d(TAG, "onCallConnected: callId=${session.callId}")
         callNotificationManager.cancelIncomingNotification()
-        audioRouteManager.startCallAudio(isSpeaker = session.type == CallType.VIDEO)
+        val selectedSpeaker = if (session.hasExplicitAudioRouteSelection) {
+            session.isSpeakerOn
+        } else {
+            session.type == CallType.VIDEO
+        }
+        audioRouteManager.startCallAudio(isSpeaker = selectedSpeaker)
         scope.launch {
             val contact = contactDao.getByRelationshipId(session.relationshipId)
             val peerName = contact?.displayName ?: session.peerIdentityId.take(8)

@@ -293,6 +293,8 @@ class EndToEndPipelineTest {
         override suspend fun getById(id: String): ContactEntity? = contacts[id]
         override suspend fun getByRelationshipId(relationshipId: String): ContactEntity? =
             contacts.values.find { it.relationshipId == relationshipId }
+        override suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity? =
+            contacts.values.find { it.remoteIdentityId == remoteIdentityId }
         override suspend fun getByConversationId(conversationId: String): ContactEntity? =
             contacts.values.find { it.conversationId == conversationId }
         override suspend fun getAll(): List<ContactEntity> = contacts.values.toList()

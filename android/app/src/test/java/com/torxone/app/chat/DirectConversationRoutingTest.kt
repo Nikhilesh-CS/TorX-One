@@ -246,6 +246,8 @@ class DirectConversationRoutingTest {
         override suspend fun getById(id: String): ContactEntity? = contacts[id]
         override suspend fun getByRelationshipId(relationshipId: String): ContactEntity? =
             contacts.values.firstOrNull { it.relationshipId == relationshipId }
+        override suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity? =
+            contacts.values.firstOrNull { it.remoteIdentityId == remoteIdentityId }
         override suspend fun getByConversationId(conversationId: String): ContactEntity? =
             contacts.values.firstOrNull { it.conversationId == conversationId }
         override suspend fun getAll(): List<ContactEntity> = contacts.values.toList()

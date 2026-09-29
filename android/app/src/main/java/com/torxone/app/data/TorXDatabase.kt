@@ -28,13 +28,15 @@ import com.torxone.app.calls.CallHistoryDao
         GroupEntity::class,
         GroupMemberEntity::class,
         GroupMessageDeliveryEntity::class,
+        GroupControlOperationEntity::class,
+        GroupControlDeliveryEntity::class,
         CallHistoryEntity::class,
         ConsumedInviteEntity::class,
         BootstrapStateEntity::class,
         RelayPacketEntity::class,
         RelayReceiptEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -55,6 +57,7 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun groupDao(): GroupDao
     abstract fun groupMemberDao(): GroupMemberDao
     abstract fun groupMessageDeliveryDao(): GroupMessageDeliveryDao
+    abstract fun groupControlDao(): GroupControlDao
     abstract fun callHistoryDao(): CallHistoryDao
     abstract fun consumedInviteDao(): ConsumedInviteDao
     abstract fun bootstrapStateDao(): BootstrapStateDao
@@ -162,6 +165,35 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_12_13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `group_control_operations` (
+                        `operation_id` TEXT NOT NULL, `group_id` TEXT NOT NULL,
+                        `previous_epoch` INTEGER NOT NULL, `new_epoch` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL, `created_at` INTEGER NOT NULL,
+                        `updated_at` INTEGER NOT NULL, PRIMARY KEY(`operation_id`)
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_group_control_operations_group_id_new_epoch` ON `group_control_operations` (`group_id`, `new_epoch`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_control_operations_status_created_at` ON `group_control_operations` (`status`, `created_at`)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `group_control_deliveries` (
+                        `operation_id` TEXT NOT NULL, `recipient_identity_id` TEXT NOT NULL,
+                        `relationship_id` TEXT NOT NULL, `message_type` TEXT NOT NULL,
+                        `payload` BLOB NOT NULL, `envelope_epoch` INTEGER NOT NULL,
+                        `status` TEXT NOT NULL, `outbox_delivery_id` TEXT,
+                        `attempt_count` INTEGER NOT NULL, `last_error` TEXT,
+                        `updated_at` INTEGER NOT NULL,
+                        PRIMARY KEY(`operation_id`, `recipient_identity_id`),
+                        FOREIGN KEY(`operation_id`) REFERENCES `group_control_operations`(`operation_id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_control_deliveries_relationship_id` ON `group_control_deliveries` (`relationship_id`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_group_control_deliveries_operation_id_status` ON `group_control_deliveries` (`operation_id`, `status`)")
+            }
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider
@@ -179,7 +211,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
 
             val provider = passphraseProvider
             try {

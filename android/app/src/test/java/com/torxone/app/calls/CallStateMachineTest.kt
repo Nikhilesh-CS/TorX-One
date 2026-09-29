@@ -42,12 +42,12 @@ class CallStateMachineTest {
     }
 
     @Test
-    fun `onLocalOfferReady transitions to OUTGOING_RINGING and sends offer`() = runTest {
+    fun `onLocalOfferReady transitions to OUTGOING_CALLING and sends offer`() = runTest {
         val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
         callManager.onLocalOfferReady(session.callId, "sdp-offer-data")
 
         val current = callManager.activeCall.value!!
-        assertEquals(CallState.OUTGOING_RINGING, current.state)
+        assertEquals(CallState.OUTGOING_CALLING, current.state)
         assertTrue(fakeSignaling.sentOffer)
     }
 
@@ -277,6 +277,14 @@ class CallStateMachineTest {
         assertFalse(callManager.activeCall.value!!.isSpeakerOn)
         callManager.toggleSpeaker()
         assertTrue(callManager.activeCall.value!!.isSpeakerOn)
+        assertTrue(callManager.activeCall.value!!.hasExplicitAudioRouteSelection)
+
+        val callId = callManager.activeCall.value!!.callId
+        callManager.onLocalOfferReady(callId, "sdp")
+        callManager.onRemoteAnswer(callId, "answer")
+        callManager.onIceConnected(callId)
+        assertTrue(callManager.activeCall.value!!.isSpeakerOn)
+        assertTrue(callManager.activeCall.value!!.hasExplicitAudioRouteSelection)
     }
 
     @Test
@@ -316,10 +324,10 @@ class CallStateMachineTest {
     }
 
     @Test
-    fun `onRemoteRinging while OUTGOING_RINGING does not change state`() = runTest {
+    fun `onRemoteRinging changes authenticated caller state to OUTGOING_RINGING`() = runTest {
         val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
         callManager.onLocalOfferReady(session.callId, "sdp")
-        assertEquals(CallState.OUTGOING_RINGING, callManager.activeCall.value!!.state)
+        assertEquals(CallState.OUTGOING_CALLING, callManager.activeCall.value!!.state)
 
         callManager.onRemoteRinging(session.callId)
         assertEquals(CallState.OUTGOING_RINGING, callManager.activeCall.value!!.state)

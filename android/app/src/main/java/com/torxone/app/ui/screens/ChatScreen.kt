@@ -1,6 +1,10 @@
 package com.torxone.app.ui.screens
 
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.graphics.drawable.AnimatedImageDrawable
+import android.os.Build
+import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
@@ -44,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.viewinterop.AndroidView
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.chat.*
 import com.torxone.app.data.entity.MessageDirection
@@ -52,6 +57,7 @@ import com.torxone.app.media.MediaType
 import com.torxone.app.media.VoiceNoteHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.roundToInt
@@ -67,6 +73,11 @@ fun ChatScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val recordAudioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) viewModel.startVoiceRecording()
+        else android.widget.Toast.makeText(context, "Microphone permission is required for voice notes", android.widget.Toast.LENGTH_SHORT).show()
+    }
     var infoMessageId by remember { mutableStateOf<String?>(null) }
     var deliverySummary by remember { mutableStateOf<com.torxone.app.groups.GroupMessageDeliverySummary?>(null) }
 
@@ -105,9 +116,18 @@ fun ChatScreen(
         onToggleReaction = viewModel::toggleReaction,
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
-        onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
-        onSendVideo = { name, bytes -> viewModel.sendImage(name, bytes) },
-        onSendDocument = { name, bytes -> viewModel.sendDocument(name, bytes) },
+        onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
+        onSendVideo = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
+        onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
+        onStartVoiceRecording = {
+            if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
+                viewModel.startVoiceRecording()
+            } else {
+                recordAudioLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            }
+        },
+        onCancelVoiceRecording = viewModel::cancelVoiceRecording,
+        onFinishVoiceRecording = viewModel::finishVoiceRecording,
         onRequestMessageInfo = { msg ->
             infoMessageId = msg.logicalMessageId
         },
@@ -187,9 +207,9 @@ fun ChatScreen(
         },
         onCancelVoiceRecording = viewModel::cancelVoiceRecording,
         onFinishVoiceRecording = viewModel::finishVoiceRecording,
-        onSendImage = { name, bytes -> viewModel.sendImage(name, bytes) },
-        onSendVideo = { name, bytes -> viewModel.sendVideo(name, bytes) },
-        onSendDocument = { name, bytes -> viewModel.sendDocument(name, bytes) },
+        onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
+        onSendVideo = { name, bytes, mime -> viewModel.sendVideo(name, bytes, mime) },
+        onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
         onCancelMediaTransfer = viewModel::cancelMediaTransfer,
         onHeaderClick = onHeaderClick,
         onBackClick = onBackClick,
@@ -246,9 +266,9 @@ fun ChatScreen(
     onStartVoiceRecording: () -> Unit = {},
     onCancelVoiceRecording: () -> Unit = {},
     onFinishVoiceRecording: () -> Unit = {},
-    onSendImage: (String, ByteArray) -> Unit = { _, _ -> },
-    onSendVideo: (String, ByteArray) -> Unit = { _, _ -> },
-    onSendDocument: (String, ByteArray) -> Unit = { _, _ -> },
+    onSendImage: (String, ByteArray, String) -> Unit = { _, _, _ -> },
+    onSendVideo: (String, ByteArray, String) -> Unit = { _, _, _ -> },
+    onSendDocument: (String, ByteArray, String) -> Unit = { _, _, _ -> },
     onCancelMediaTransfer: (String) -> Unit = {},
     onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
     onHeaderClick: () -> Unit = {},
@@ -272,9 +292,10 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "photo_${System.currentTimeMillis()}.jpg")
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
             coroutineScope.launch {
                 val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes)
+                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes, mimeType)
             }
         }
     }
@@ -284,9 +305,10 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "video_${System.currentTimeMillis()}.mp4")
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
             coroutineScope.launch {
                 val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendVideo(fileName, bytes)
+                if (bytes != null && bytes.isNotEmpty()) onSendVideo(fileName, bytes, mimeType)
             }
         }
     }
@@ -296,9 +318,49 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             val fileName = resolveMediaFileName(context, uri, "document_${System.currentTimeMillis()}.pdf")
+            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
             coroutineScope.launch {
                 val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendDocument(fileName, bytes)
+                if (bytes != null && bytes.isNotEmpty()) onSendDocument(fileName, bytes, mimeType)
+            }
+        }
+    }
+
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        if (bitmap != null) {
+            coroutineScope.launch {
+                val bytes = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                    java.io.ByteArrayOutputStream().use { output ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, output)
+                        output.toByteArray()
+                    }
+                }
+                onSendImage("camera_${System.currentTimeMillis()}.jpg", bytes, "image/jpeg")
+            }
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) cameraCaptureLauncher.launch(null)
+        else android.widget.Toast.makeText(
+            context,
+            "Camera permission is required to take a photo.",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+
+    val gifPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val fileName = resolveMediaFileName(context, uri, "animation_${System.currentTimeMillis()}.gif")
+            coroutineScope.launch {
+                val bytes = readUriWithLimit(context, uri)
+                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes, "image/gif")
             }
         }
     }
@@ -406,6 +468,12 @@ fun ChatScreen(
             )
         },
         bottomBar = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .imePadding()
+            ) {
             if (!isParticipantActive) {
                 Surface(
                     modifier = Modifier
@@ -437,10 +505,14 @@ fun ChatScreen(
                     onMicClick = onStartVoiceRecording,
                     onCancelRecording = onCancelVoiceRecording,
                     onSendRecording = onFinishVoiceRecording,
-                    showVoiceNote = !isGroup
+                    showVoiceNote = true
                 )
             }
+            }
         },
+        contentWindowInsets = WindowInsets.safeDrawing.only(
+            WindowInsetsSides.Top + WindowInsetsSides.Horizontal
+        ),
         modifier = modifier
     ) { innerPadding ->
         LazyColumn(
@@ -514,6 +586,19 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     AttachmentOptionItem(
+                        icon = Icons.Default.PhotoCamera,
+                        label = "Camera",
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        showAttachmentMenu = false
+                        if (com.torxone.app.ui.permissions.PermissionHelper.isCameraGranted(context)) {
+                            cameraCaptureLauncher.launch(null)
+                        } else {
+                            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                        }
+                    }
+
+                    AttachmentOptionItem(
                         icon = Icons.Default.Image,
                         label = "Photo",
                         containerColor = MaterialTheme.colorScheme.primaryContainer
@@ -538,6 +623,19 @@ fun ChatScreen(
                     ) {
                         showAttachmentMenu = false
                         docPickerLauncher.launch("*/*")
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    AttachmentOptionItem(
+                        icon = Icons.Default.Gif,
+                        label = "GIF",
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        showAttachmentMenu = false
+                        gifPickerLauncher.launch("image/gif")
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -951,6 +1049,18 @@ private fun MessageBubble(
 
 @Composable
 private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
+    val animatedDrawable = remember(media.localPath, media.mimeType) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            media.mimeType.equals("image/gif", ignoreCase = true) &&
+            media.localPath != null
+        ) {
+            runCatching {
+                ImageDecoder.decodeDrawable(
+                    ImageDecoder.createSource(java.io.File(media.localPath))
+                ) as? AnimatedImageDrawable
+            }.getOrNull()
+        } else null
+    }
     val imageBitmap = remember(media.thumbnailData) {
         media.thumbnailData?.let {
             try {
@@ -967,7 +1077,22 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
             .background(Color.Black.copy(alpha = 0.2f)),
         contentAlignment = Alignment.Center
     ) {
-        if (imageBitmap != null) {
+        if (animatedDrawable != null) {
+            AndroidView(
+                factory = { ctx ->
+                    ImageView(ctx).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        setImageDrawable(animatedDrawable)
+                        animatedDrawable.start()
+                    }
+                },
+                update = { view ->
+                    if (view.drawable !== animatedDrawable) view.setImageDrawable(animatedDrawable)
+                    if (!animatedDrawable.isRunning) animatedDrawable.start()
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else if (imageBitmap != null) {
             Image(
                 bitmap = imageBitmap,
                 contentDescription = media.fileName,

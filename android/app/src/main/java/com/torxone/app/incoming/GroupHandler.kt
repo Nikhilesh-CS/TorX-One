@@ -3,6 +3,7 @@ package com.torxone.app.incoming
 import android.util.Log
 import com.torxone.app.connection.Connection
 import com.torxone.app.data.dao.ConversationDao
+import com.torxone.app.data.dao.ContactDao
 import com.torxone.app.data.dao.GroupDao
 import com.torxone.app.data.dao.GroupMemberDao
 import com.torxone.app.data.entity.*
@@ -19,6 +20,7 @@ class GroupHandler(
     private val groupDao: GroupDao,
     private val groupMemberDao: GroupMemberDao,
     private val conversationDao: ConversationDao,
+    private val contactDao: ContactDao,
     private val localIdentityIdProvider: suspend () -> String?,
     private val notificationManager: TorXNotificationManager? = null,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit
@@ -101,11 +103,25 @@ class GroupHandler(
                 updatedAt = now
             )
 
+            val contactsByIdentity = contactDao.getAll()
+                .filter { it.remoteIdentityId.isNotBlank() && it.remoteIdentityId != ContactEntity.REMOTE_IDENTITY_UNKNOWN }
+                .associateBy { it.remoteIdentityId }
             val memberEntities = payload.members.map { m ->
-                val (contactId, relationshipId) = when {
-                    m.identityId == localIdentityId -> "self" to "self"
-                    m.identityId == envelope.senderIdentity -> connection.relationshipId to connection.relationshipId
-                    else -> "" to ""
+                val (contactId, relationshipId) = if (m.identityId == localIdentityId) {
+                    "self" to "self"
+                } else {
+                    val contact = contactsByIdentity[m.identityId]
+                    if (m.state == GroupMemberState.ACTIVE &&
+                        (contact == null || contact.relationshipId.isBlank())) {
+                        Log.w(TAG, "Rejecting group roster: no pairwise relationship for ${m.identityId.take(8)}")
+                        return false
+                    }
+                    if (m.identityId == envelope.senderIdentity &&
+                        contact?.relationshipId != connection.relationshipId) {
+                        Log.w(TAG, "Rejecting group roster: authenticated sender relationship does not match contact")
+                        return false
+                    }
+                    (contact?.contactId ?: "") to (contact?.relationshipId ?: "")
                 }
                 GroupMemberEntity(
                     groupId = payload.groupId,
@@ -199,11 +215,22 @@ class GroupHandler(
 
             val now = System.currentTimeMillis()
 
+            val memberContact = contactDao.getByRemoteIdentityId(payload.memberIdentity)
+            if (memberContact == null || memberContact.relationshipId.isBlank()) {
+                Log.w(TAG, "Rejecting member joined: no pairwise relationship for ${payload.memberIdentity.take(8)}")
+                return false
+            }
+            if (payload.memberIdentity == envelope.senderIdentity &&
+                memberContact.relationshipId != connection.relationshipId) {
+                Log.w(TAG, "Rejecting member joined: authenticated relationship does not match contact")
+                return false
+            }
+
             val memberEntity = GroupMemberEntity(
                 groupId = payload.groupId,
                 memberIdentityId = payload.memberIdentity,
-                contactId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else "",
-                relationshipId = if (payload.memberIdentity == envelope.senderIdentity) connection.relationshipId else "",
+                contactId = memberContact.contactId,
+                relationshipId = memberContact.relationshipId,
                 role = payload.role.name,
                 state = GroupMemberState.ACTIVE.name,
                 joinedEpoch = payload.epoch,

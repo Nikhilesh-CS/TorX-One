@@ -197,7 +197,8 @@ fun ContactInviteDialog(
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(200.dp)
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(20.dp))
                             )
 
                             Text(

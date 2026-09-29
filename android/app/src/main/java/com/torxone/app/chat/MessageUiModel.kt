@@ -21,6 +21,7 @@ data class MediaUiModel(
     val mediaId: String,
     val type: MediaType,
     val fileName: String,
+    val mimeType: String,
     val fileSize: Long,
     val localPath: String? = null,
     val thumbnailData: ByteArray? = null,

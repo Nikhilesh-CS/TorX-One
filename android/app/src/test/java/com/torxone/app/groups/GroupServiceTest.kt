@@ -29,6 +29,7 @@ class GroupServiceTest {
     private val groupDao = TestGroupDao()
     private val groupMemberDao = TestGroupMemberDao()
     private val groupMessageDeliveryDao = TestGroupMessageDeliveryDao()
+    private val groupControlDao = TestGroupControlDao()
     private val conversationDao = TestConversationDao()
     private val messageDao = TestMessageDao()
     private val reactionDao = TestReactionDao()
@@ -91,6 +92,7 @@ class GroupServiceTest {
             groupDao = groupDao,
             groupMemberDao = groupMemberDao,
             groupMessageDeliveryDao = groupMessageDeliveryDao,
+            groupControlDao = groupControlDao,
             conversationDao = conversationDao,
             messageDao = messageDao,
             reactionDao = reactionDao,
@@ -444,10 +446,15 @@ class GroupServiceTest {
         val bobGroupDao = TestGroupDao()
         val bobGroupMemberDao = TestGroupMemberDao()
         val bobConversationDao = TestConversationDao()
+        val bobContactDao = TestContactDao().also { dao ->
+            dao.contacts["alice-on-bob"] = ContactEntity(contactId = "alice-on-bob", relationshipId = "rel_alice_bob", displayName = "Alice", signingPublicKey = ByteArray(32), conversationId = "alice-on-bob", remoteIdentityId = aliceIdentityId)
+            dao.contacts["charlie-on-bob"] = ContactEntity(contactId = "charlie-on-bob", relationshipId = "rel_bob_charlie", displayName = "Charlie", signingPublicKey = ByteArray(32), conversationId = "charlie-on-bob", remoteIdentityId = charlieIdentityId)
+        }
         val bobHandler = GroupHandler(
             groupDao = bobGroupDao,
             groupMemberDao = bobGroupMemberDao,
             conversationDao = bobConversationDao,
+            contactDao = bobContactDao,
             localIdentityIdProvider = { bobIdentityId },
             transactionRunner = { it() }
         )
@@ -479,5 +486,78 @@ class GroupServiceTest {
         assertEquals(charlieIdentityId, bobViewOfCharlie?.memberIdentityId)
         // Alice's local contact ID was never leaked or assigned as Charlie's identity on Bob's device
         assertNotEquals(charlieContactId, bobViewOfCharlie?.contactId)
+    }
+
+    @Test
+    fun testGroupCreationDurablyJournalsEveryControlRecipient() = runBlocking {
+        val group = groupService.createGroup(
+            "Journaled Group",
+            listOf(contactDao.getById(bobContactId)!!, contactDao.getById(charlieContactId)!!)
+        )
+
+        val operation = groupControlDao.operations.values.single { it.groupId == group.groupId }
+        assertEquals(1L, operation.newEpoch)
+        assertEquals("QUEUED", operation.status)
+        val deliveries = groupControlDao.deliveries.values.filter { it.operationId == operation.operationId }
+        assertEquals(setOf(bobIdentityId, charlieIdentityId), deliveries.map { it.recipientIdentityId }.toSet())
+        assertTrue(deliveries.all { it.status == "QUEUED" && it.outboxDeliveryId != null })
+    }
+
+    @Test
+    fun testUnfinishedControlOperationBlocksNextEpoch() = runBlocking {
+        val group = groupService.createGroup("Ordered Group", listOf(contactDao.getById(bobContactId)!!))
+        val pendingId = "pending-epoch-2"
+        groupControlDao.insertOperation(
+            GroupControlOperationEntity(pendingId, group.groupId, 1L, 2L)
+        )
+        groupControlDao.insertDeliveries(
+            listOf(
+                GroupControlDeliveryEntity(
+                    operationId = pendingId,
+                    recipientIdentityId = bobIdentityId,
+                    relationshipId = "rel_alice_bob",
+                    messageType = MessageType.GROUP_NAME_CHANGE.name,
+                    payload = byteArrayOf(1),
+                    envelopeEpoch = 2L
+                )
+            )
+        )
+
+        assertFalse(groupService.updateGroupTitle(group.groupId, "Must Wait"))
+        assertEquals(1L, groupDao.getById(group.groupId)?.epoch)
+        assertEquals("Ordered Group", groupDao.getById(group.groupId)?.title)
+    }
+
+    @Test
+    fun testStartupRecoveryQueuesPendingControlOperation() = runBlocking {
+        val group = groupService.createGroup("Recovery Group", listOf(contactDao.getById(bobContactId)!!))
+        val operationId = "recover-epoch-2"
+        val payload = GroupProtocolCodec.encodeNameChange(
+            GroupNameChangePayload(group.groupId, "Recovered Name", aliceIdentityId, 1L, 2L)
+        )
+        groupControlDao.insertOperation(
+            GroupControlOperationEntity(operationId, group.groupId, 1L, 2L)
+        )
+        groupControlDao.insertDeliveries(
+            listOf(
+                GroupControlDeliveryEntity(
+                    operationId = operationId,
+                    recipientIdentityId = bobIdentityId,
+                    relationshipId = "rel_alice_bob",
+                    messageType = MessageType.GROUP_NAME_CHANGE.name,
+                    payload = payload,
+                    envelopeEpoch = 2L
+                )
+            )
+        )
+        groupDao.updateTitle(group.groupId, "Recovered Name")
+        groupDao.updateEpoch(group.groupId, 2L)
+
+        groupService.recoverPendingFanout()
+
+        assertEquals("QUEUED", groupControlDao.getOperation(operationId)?.status)
+        val delivery = groupControlDao.deliveries[operationId to bobIdentityId]
+        assertEquals("QUEUED", delivery?.status)
+        assertNotNull(delivery?.outboxDeliveryId)
     }
 }

@@ -231,11 +231,15 @@ fun TorXOneApp() {
         }
     }
 
-    // Core Transport & Notification runtime permissions
-    val startupPermissionsLauncher = rememberLauncherForActivityResult(
+    // Nearby transport permissions and notification permission have independent
+    // lifecycles. A notification denial must never block encrypted networking.
+    val nearbyPermissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.values.all { it }) {
+        val nearbyGranted = PermissionHelper.arePermissionsGranted(
+            context, PermissionHelper.getNearbyPermissions()
+        )
+        if (nearbyGranted) {
             app.nearbyTransport.start()
             coroutineScope.launch {
                 runCatching { app.torXRadioManager.start() }
@@ -244,11 +248,26 @@ fun TorXOneApp() {
         }
     }
 
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { /* Notifications remain optional; transport state is untouched. */ }
+
     LaunchedEffect(resolved) {
         if (resolved) {
-            val perms = PermissionHelper.getStartupPermissions()
-            if (!PermissionHelper.arePermissionsGranted(context, perms)) {
-                startupPermissionsLauncher.launch(perms)
+            val nearbyPermissions = PermissionHelper.getNearbyPermissions()
+            if (PermissionHelper.arePermissionsGranted(context, nearbyPermissions)) {
+                app.nearbyTransport.start()
+                runCatching { app.torXRadioManager.start() }
+                    .onFailure { android.util.Log.w("MainActivity", "TorX Radio discovery unavailable", it) }
+            } else {
+                nearbyPermissionsLauncher.launch(nearbyPermissions)
+            }
+
+            val notificationPermissions = PermissionHelper.getNotificationPermissions()
+            if (notificationPermissions.isNotEmpty() &&
+                !PermissionHelper.arePermissionsGranted(context, notificationPermissions)
+            ) {
+                notificationPermissionLauncher.launch(notificationPermissions)
             }
         }
     }
@@ -298,6 +317,17 @@ fun TorXOneApp() {
                     app.callNotificationManager.cancelIncomingNotification()
                 }
                 navigateTo(Screen.ActiveCall)
+            } else {
+                coroutineScope.launch {
+                    app.callManager.declineCall(id)
+                    app.callNotificationManager.cancelIncomingNotification()
+                }
+                android.widget.Toast.makeText(
+                    context,
+                    if (!audioOk) "Microphone permission is required to answer this call."
+                    else "Camera permission is required to answer this video call.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
             pendingAnswerCallId = null
         }
@@ -486,6 +516,7 @@ fun TorXOneApp() {
                 }
             } else if (conversation != null && localIdentity != null) {
                 if (conversation!!.type == ConversationType.GROUP) {
+                    val groupVoiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
                     val groupViewModel: com.torxone.app.groups.GroupChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
                         key = "group_${screen.conversationId}"
                     ) {
@@ -501,7 +532,8 @@ fun TorXOneApp() {
                             contactDao = app.database.contactDao(),
                             conversationDao = app.database.conversationDao(),
                             mediaDao = app.database.mediaDao(),
-                            mediaService = app.mediaService
+                            mediaService = app.mediaService,
+                            voiceNoteRecorder = groupVoiceRecorder
                         )
                     }
 
@@ -752,12 +784,13 @@ fun TorXOneApp() {
 
             NewGroupScreen(
                 contacts = contactsState.value,
-                onCreateGroup = { title, selectedMembers ->
+                onCreateGroup = { title, selectedMembers, avatarHash ->
                     coroutineScope.launch {
                         try {
                             val group = app.groupService.createGroup(
                                 title = title,
-                                initialMembers = selectedMembers
+                                initialMembers = selectedMembers,
+                                avatarHash = avatarHash
                             )
                             navigateTo(Screen.Chat(group.groupId, group.title))
                         } catch (e: Exception) {
@@ -873,8 +906,8 @@ fun TorXOneApp() {
                 avatarUri = currentSettingsState.avatarUri,
                 identityId = identity?.identityId ?: "",
                 signingPublicKey = identity?.signingPublicKey,
-                onUpdateProfile = { name, about ->
-                    settingsViewModel.updateProfile(name, about)
+                onUpdateProfile = { name, about, avatarUpdate ->
+                    settingsViewModel.updateProfile(name, about, avatarUpdate)
                 },
                 onBackClick = { navigateBack() },
                 onShowQr = { showInviteDialog = true }

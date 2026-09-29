@@ -11,6 +11,8 @@ import android.media.RingtoneManager
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 
 /**
  * CallNotificationManager — Dedicated call notification channel and notifications.
@@ -87,6 +89,10 @@ class CallNotificationManager(private val context: Context) {
         callerName: String,
         callType: CallType
     ) {
+        if (!canPostNotifications()) {
+            Log.w(TAG, "Incoming call notification unavailable because notifications are disabled")
+            return
+        }
         val typeLabel = when (callType) {
             CallType.VOICE -> "voice"
             CallType.VIDEO -> "video"
@@ -126,7 +132,7 @@ class CallNotificationManager(private val context: Context) {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_INCOMING)
+        val builder = NotificationCompat.Builder(context, CHANNEL_INCOMING)
             .setSmallIcon(com.torxone.app.R.drawable.ic_notification_torx)
             .setContentTitle("Incoming TorX $typeLabel call")
             .setContentText(callerName)
@@ -135,12 +141,16 @@ class CallNotificationManager(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
             .addAction(android.R.drawable.ic_delete, "Decline", declinePending)
             .addAction(android.R.drawable.ic_menu_call, "Answer", answerPending)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
-            .build()
+        val canUseFullScreen = if (Build.VERSION.SDK_INT >= 34) {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .canUseFullScreenIntent()
+        } else true
+        if (canUseFullScreen) builder.setFullScreenIntent(fullScreenPendingIntent, true)
+        val notification = builder.build()
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(INCOMING_NOTIFICATION_ID, notification)
@@ -202,8 +212,19 @@ class CallNotificationManager(private val context: Context) {
         callType: CallType,
         durationText: String? = null
     ) {
+        if (!canPostNotifications()) {
+            Log.w(TAG, "Active call notification unavailable because notifications are disabled")
+            return
+        }
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(ACTIVE_NOTIFICATION_ID, buildActiveCallNotification(callId, peerName, callType, durationText))
+    }
+
+    fun canPostNotifications(): Boolean {
+        val runtimeGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        return runtimeGranted && NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
     fun cancelIncomingNotification() {

@@ -1,6 +1,11 @@
 package com.torxone.app.ui.screens
 
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -18,11 +23,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.torxone.app.profile.FounderIdentity
+import com.torxone.app.profile.ProfileAvatarUpdate
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Profile screen — view/edit display name, about, and profile photo.
@@ -37,13 +50,65 @@ fun ProfileScreen(
     avatarUri: String?,
     identityId: String,
     signingPublicKey: ByteArray?,
-    onUpdateProfile: (name: String, about: String) -> Unit,
+    onUpdateProfile: (name: String, about: String, avatarUpdate: ProfileAvatarUpdate) -> Unit,
     onBackClick: () -> Unit,
     onShowQr: () -> Unit
 ) {
     var isEditing by remember { mutableStateOf(false) }
     var editName by remember(displayName) { mutableStateOf(displayName) }
     var editAbout by remember(about) { mutableStateOf(about) }
+    var editAvatarUri by remember(avatarUri) { mutableStateOf(avatarUri) }
+    var avatarUpdate by remember { mutableStateOf<ProfileAvatarUpdate>(ProfileAvatarUpdate.Unchanged) }
+    var avatarError by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val stored = runCatching { withContext(Dispatchers.IO) {
+                    val profileDir = File(context.filesDir, "profile").apply { mkdirs() }
+                    val target = File(profileDir, "avatar_${System.currentTimeMillis()}.img")
+                    try {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            target.outputStream().use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                var total = 0L
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    total += count
+                                    require(total <= 10L * 1024L * 1024L) { "Profile image exceeds 10 MB" }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
+                        } ?: error("Unable to read selected image")
+                        Uri.fromFile(target).toString()
+                    } catch (error: Exception) {
+                        target.delete()
+                        throw error
+                    }
+                } }.onFailure { avatarError = it.message ?: "Unable to use selected image" }.getOrNull()
+                if (stored != null) {
+                    editAvatarUri = stored
+                    avatarUpdate = ProfileAvatarUpdate.Changed(stored)
+                    avatarError = null
+                }
+            }
+        }
+    }
+
+    val avatarBitmap = remember(editAvatarUri) {
+        editAvatarUri?.let { value ->
+            runCatching {
+                val uri = Uri.parse(value)
+                when (uri.scheme) {
+                    "file" -> BitmapFactory.decodeFile(uri.path)
+                    else -> context.contentResolver.openInputStream(uri)?.use(BitmapFactory::decodeStream)
+                }?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
 
     val isFounder = remember(signingPublicKey) {
         FounderIdentity.isFounderIdentity(signingPublicKey)
@@ -85,6 +150,7 @@ fun ProfileScreen(
                 modifier = Modifier
                     .size(120.dp)
                     .clip(CircleShape)
+                    .clickable(enabled = isEditing) { photoPicker.launch("image/*") }
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
@@ -95,13 +161,35 @@ fun ProfileScreen(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                val initials = displayName.take(2).uppercase()
-                Text(
-                    text = if (initials.isNotEmpty()) initials else "?",
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                if (avatarBitmap != null) {
+                    Image(
+                        bitmap = avatarBitmap,
+                        contentDescription = "Profile photo",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    val initials = displayName.take(2).uppercase()
+                    Text(
+                        text = if (initials.isNotEmpty()) initials else "?",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            if (isEditing) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { photoPicker.launch("image/*") }) { Text("Change photo") }
+                    if (editAvatarUri != null) {
+                        TextButton(onClick = {
+                            editAvatarUri = null
+                            avatarUpdate = ProfileAvatarUpdate.Removed
+                        }) { Text("Remove photo") }
+                    }
+                }
+                avatarError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -174,6 +262,8 @@ fun ProfileScreen(
                         onClick = {
                             editName = displayName
                             editAbout = about
+                            editAvatarUri = avatarUri
+                            avatarUpdate = ProfileAvatarUpdate.Unchanged
                             isEditing = false
                         },
                         shape = RoundedCornerShape(24.dp)
@@ -183,7 +273,8 @@ fun ProfileScreen(
 
                     Button(
                         onClick = {
-                            onUpdateProfile(editName.trim(), editAbout.trim())
+                            onUpdateProfile(editName.trim(), editAbout.trim(), avatarUpdate)
+                            avatarUpdate = ProfileAvatarUpdate.Unchanged
                             isEditing = false
                         },
                         shape = RoundedCornerShape(24.dp),

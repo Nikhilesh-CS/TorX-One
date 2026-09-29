@@ -201,6 +201,7 @@ class ChatViewModel(
                     mediaId = m.mediaId,
                     type = try { MediaType.valueOf(m.mediaType) } catch (_: Exception) { MediaType.IMAGE },
                     fileName = m.fileName,
+                    mimeType = m.mimeType,
                     fileSize = m.fileSize,
                     localPath = m.localPath,
                     thumbnailData = m.thumbnailData,

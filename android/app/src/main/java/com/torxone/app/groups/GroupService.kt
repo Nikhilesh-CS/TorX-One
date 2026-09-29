@@ -23,6 +23,7 @@ class GroupService(
     private val groupDao: GroupDao,
     private val groupMemberDao: GroupMemberDao,
     private val groupMessageDeliveryDao: GroupMessageDeliveryDao,
+    private val groupControlDao: GroupControlDao,
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao,
     private val reactionDao: ReactionDao,
@@ -137,14 +138,7 @@ class GroupService(
             )
         }
 
-        // 3. Atomically persist group, conversation, and members
-        transactionRunner {
-            conversationDao.upsert(conversationEntity)
-            groupDao.upsert(groupEntity)
-            groupMemberDao.upsertAll(memberEntities)
-        }
-
-        // 4. Build roster snapshot for invitation payload (never expose local database contactId on wire)
+        // 3. Build roster snapshot for invitation payload (never expose local database contactId on wire)
         val memberSnapshots = memberEntities.map {
             GroupMemberSnapshot(
                 identityId = it.memberIdentityId,
@@ -165,23 +159,19 @@ class GroupService(
         )
         val payloadBytes = GroupProtocolCodec.encodeInvite(invitePayload)
 
-        // 5. Fan-out GROUP_CREATE invitation over pairwise relationships
-        initialMembers.forEach { contact ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = contact.remoteIdentityId,
-                    relationshipId = contact.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_CREATE,
-                    payload = payloadBytes,
-                    epoch = 1L,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send group invite to ${contact.contactId}: ${e.message}")
+        val operationId = persistControlTransition(
+            groupId = groupId,
+            previousEpoch = 0L,
+            newEpoch = 1L,
+            targets = initialMembers.map { contact ->
+                ControlTarget(contact.remoteIdentityId, contact.relationshipId, MessageType.GROUP_CREATE, payloadBytes)
             }
+        ) {
+            conversationDao.upsert(conversationEntity)
+            groupDao.upsert(groupEntity)
+            groupMemberDao.upsertAll(memberEntities)
         }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return groupEntity
     }
@@ -583,6 +573,7 @@ class GroupService(
     ): Boolean {
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId)
             ?: return false
@@ -621,13 +612,8 @@ class GroupService(
             joinedAt = now
         )
 
-        transactionRunner {
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            groupMemberDao.upsert(newMemberEntity)
-        }
-
-        // 1. Send GROUP_MEMBER_INVITE to the new member with current roster
-        val allMembers = groupMemberDao.getActiveMembers(groupId)
+        // Build the exact post-transition roster before changing local state.
+        val allMembers = groupMemberDao.getActiveMembers(groupId) + newMemberEntity
         val rosterSnapshot = allMembers.map {
             GroupMemberSnapshot(
                 identityId = it.memberIdentityId,
@@ -646,18 +632,7 @@ class GroupService(
             members = rosterSnapshot
         )
         val inviteBytes = GroupProtocolCodec.encodeInvite(invitePayload)
-        fanoutControlEnvelope(
-            groupId = groupId,
-            recipientIdentityId = contact.remoteIdentityId,
-            relationshipId = contact.relationshipId,
-            localIdentityId = localIdentityId,
-            messageType = MessageType.GROUP_MEMBER_INVITE,
-            payload = inviteBytes,
-            epoch = newEpoch,
-            priority = DeliveryPriority.HIGH
-        )
-
-        // 2. Notify existing members of new member joined
+        // Existing members receive the joined event at the same epoch.
         val joinedPayload = GroupMemberJoinedPayload(
             groupId = groupId,
             memberIdentity = contact.remoteIdentityId,
@@ -670,22 +645,16 @@ class GroupService(
             it.memberIdentityId != localIdentityId && it.memberIdentityId != contact.remoteIdentityId
         }
 
-        existingPeers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_MEMBER_ACCEPT,
-                    payload = joinedBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to notify member ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = listOf(
+            ControlTarget(contact.remoteIdentityId, contact.relationshipId, MessageType.GROUP_MEMBER_INVITE, inviteBytes)
+        ) + existingPeers.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_MEMBER_ACCEPT, joinedBytes)
         }
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            groupMemberDao.upsert(newMemberEntity)
+        }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -700,6 +669,7 @@ class GroupService(
     ): Boolean {
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         val selfRole = GroupMemberRole.fromString(selfMember.role)
@@ -728,17 +698,6 @@ class GroupService(
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
 
-        transactionRunner {
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            groupMemberDao.updateState(
-                groupId = groupId,
-                memberIdentityId = targetIdentityId,
-                state = GroupMemberState.REMOVED.name,
-                removedEpoch = newEpoch,
-                removedAt = now
-            )
-        }
-
         // Notify remaining active peers and the removed member
         val removePayload = GroupMemberRemovePayload(
             groupId = groupId,
@@ -749,42 +708,16 @@ class GroupService(
         )
         val removeBytes = GroupProtocolCodec.encodeRemove(removePayload)
 
-        val activeMembers = groupMemberDao.getActiveMembers(groupId)
+        val recipients = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
-
-        // Send to remaining active members
-        activeMembers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_MEMBER_REMOVE,
-                    payload = removeBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send remove notice to ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = recipients.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_MEMBER_REMOVE, removeBytes)
         }
-
-        // Also inform the removed member over their pairwise connection
-        try {
-            fanoutControlEnvelope(
-                groupId = groupId,
-                recipientIdentityId = targetMember.memberIdentityId,
-                relationshipId = targetMember.relationshipId,
-                localIdentityId = localIdentityId,
-                messageType = MessageType.GROUP_MEMBER_REMOVE,
-                payload = removeBytes,
-                epoch = newEpoch,
-                priority = DeliveryPriority.HIGH
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to notify removed member: ${e.message}")
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            groupMemberDao.updateState(groupId, targetIdentityId, GroupMemberState.REMOVED.name, newEpoch, now)
         }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -795,6 +728,7 @@ class GroupService(
     suspend fun leaveGroup(groupId: String): Boolean {
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         if (GroupMemberRole.fromString(selfMember.role) == GroupMemberRole.OWNER &&
@@ -803,17 +737,6 @@ class GroupService(
         val previousEpoch = group.epoch
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
-
-        transactionRunner {
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            groupMemberDao.updateState(
-                groupId = groupId,
-                memberIdentityId = localIdentityId,
-                state = GroupMemberState.LEFT.name,
-                removedEpoch = newEpoch,
-                removedAt = now
-            )
-        }
 
         val leavePayload = GroupMemberRemovePayload(
             groupId = groupId,
@@ -827,22 +750,14 @@ class GroupService(
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
 
-        activeMembers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_MEMBER_REMOVE,
-                    payload = leaveBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send leave notice to ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = activeMembers.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_MEMBER_REMOVE, leaveBytes)
         }
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            groupMemberDao.updateState(groupId, localIdentityId, GroupMemberState.LEFT.name, newEpoch, now)
+        }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -857,6 +772,7 @@ class GroupService(
     ): Boolean {
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         if (GroupMemberRole.fromString(selfMember.role) != GroupMemberRole.OWNER) {
@@ -875,11 +791,6 @@ class GroupService(
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
 
-        transactionRunner {
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            groupMemberDao.updateRole(groupId, targetIdentityId, newRole.name)
-        }
-
         val rolePayload = GroupRoleChangePayload(
             groupId = groupId,
             targetIdentity = targetIdentityId,
@@ -893,22 +804,14 @@ class GroupService(
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
 
-        activeMembers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_ROLE_CHANGE,
-                    payload = roleBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send role change to ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = activeMembers.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_ROLE_CHANGE, roleBytes)
         }
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            groupMemberDao.updateRole(groupId, targetIdentityId, newRole.name)
+        }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -920,6 +823,7 @@ class GroupService(
         require(newTitle.isNotBlank()) { "Title cannot be blank" }
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         val selfRole = GroupMemberRole.fromString(selfMember.role)
@@ -928,14 +832,6 @@ class GroupService(
         val previousEpoch = group.epoch
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
-
-        transactionRunner {
-            groupDao.updateTitle(groupId, newTitle.trim(), now)
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            conversationDao.getById(groupId)?.let { conv ->
-                conversationDao.upsert(conv.copy(title = newTitle.trim()))
-            }
-        }
 
         val namePayload = GroupNameChangePayload(
             groupId = groupId,
@@ -949,22 +845,15 @@ class GroupService(
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
 
-        activeMembers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_NAME_CHANGE,
-                    payload = nameBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send name change to ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = activeMembers.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_NAME_CHANGE, nameBytes)
         }
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateTitle(groupId, newTitle.trim(), now)
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            conversationDao.getById(groupId)?.let { conversationDao.upsert(it.copy(title = newTitle.trim())) }
+        }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -975,6 +864,7 @@ class GroupService(
     suspend fun updateGroupAvatar(groupId: String, avatarHash: String?): Boolean {
         val localIdentityId = localIdentityIdProvider() ?: return false
         val group = groupDao.getById(groupId) ?: return false
+        if (groupControlDao.countPendingOperations(groupId) > 0) return false
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         val selfRole = GroupMemberRole.fromString(selfMember.role)
@@ -983,14 +873,6 @@ class GroupService(
         val previousEpoch = group.epoch
         val newEpoch = previousEpoch + 1
         val now = System.currentTimeMillis()
-
-        transactionRunner {
-            groupDao.updateAvatar(groupId, avatarHash, now)
-            groupDao.updateEpoch(groupId, newEpoch, now)
-            conversationDao.getById(groupId)?.let { conv ->
-                conversationDao.upsert(conv.copy(avatarHash = avatarHash))
-            }
-        }
 
         val avatarPayload = GroupAvatarChangePayload(
             groupId = groupId,
@@ -1004,22 +886,15 @@ class GroupService(
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
 
-        activeMembers.forEach { member ->
-            try {
-                fanoutControlEnvelope(
-                    groupId = groupId,
-                    recipientIdentityId = member.memberIdentityId,
-                    relationshipId = member.relationshipId,
-                    localIdentityId = localIdentityId,
-                    messageType = MessageType.GROUP_AVATAR_CHANGE,
-                    payload = avatarBytes,
-                    epoch = newEpoch,
-                    priority = DeliveryPriority.HIGH
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send avatar change to ${member.memberIdentityId}: ${e.message}")
-            }
+        val targets = activeMembers.map { member ->
+            ControlTarget(member.memberIdentityId, member.relationshipId, MessageType.GROUP_AVATAR_CHANGE, avatarBytes)
         }
+        val operationId = persistControlTransition(groupId, previousEpoch, newEpoch, targets) {
+            groupDao.updateAvatar(groupId, avatarHash, now)
+            groupDao.updateEpoch(groupId, newEpoch, now)
+            conversationDao.getById(groupId)?.let { conversationDao.upsert(it.copy(avatarHash = avatarHash)) }
+        }
+        dispatchControlOperation(operationId, localIdentityId)
 
         return true
     }
@@ -1083,10 +958,11 @@ class GroupService(
      */
     suspend fun recoverPendingFanout() {
         val localIdentityId = localIdentityIdProvider() ?: return
+        recoverPendingControlOperations(localIdentityId)
         val pendingDeliveries = groupMessageDeliveryDao.getPendingDeliveries()
-        if (pendingDeliveries.isEmpty()) return
-
-        Log.i(TAG, "[RECOVERY] Resuming ${pendingDeliveries.size} pending group message deliveries")
+        if (pendingDeliveries.isNotEmpty()) {
+            Log.i(TAG, "[RECOVERY] Resuming ${pendingDeliveries.size} pending group message deliveries")
+        }
 
         pendingDeliveries.forEach { delivery ->
             try {
@@ -1114,6 +990,106 @@ class GroupService(
     }
 
     // ─── Internal Fan-Out Helpers ──────────────────────────────────────────────
+
+    private data class ControlTarget(
+        val recipientIdentityId: String,
+        val relationshipId: String,
+        val messageType: MessageType,
+        val payload: ByteArray
+    )
+
+    private suspend fun persistControlTransition(
+        groupId: String,
+        previousEpoch: Long,
+        newEpoch: Long,
+        targets: List<ControlTarget>,
+        mutation: suspend () -> Unit
+    ): String {
+        require(groupControlDao.countPendingOperations(groupId) == 0) {
+            "Group $groupId has an unfinished control operation; recover it before advancing the epoch"
+        }
+        require(targets.map { it.recipientIdentityId }.distinct().size == targets.size) {
+            "A control transition cannot contain duplicate recipients"
+        }
+        targets.forEach {
+            require(it.relationshipId.isNotBlank() && it.relationshipId != "self") {
+                "No pairwise relationship for group member ${it.recipientIdentityId}"
+            }
+        }
+        val operationId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val operation = GroupControlOperationEntity(
+            operationId = operationId,
+            groupId = groupId,
+            previousEpoch = previousEpoch,
+            newEpoch = newEpoch,
+            createdAt = now,
+            updatedAt = now
+        )
+        val deliveries = targets.map {
+            GroupControlDeliveryEntity(
+                operationId = operationId,
+                recipientIdentityId = it.recipientIdentityId,
+                relationshipId = it.relationshipId,
+                messageType = it.messageType.name,
+                payload = it.payload,
+                envelopeEpoch = newEpoch,
+                updatedAt = now
+            )
+        }
+        transactionRunner {
+            groupControlDao.insertOperation(operation)
+            if (deliveries.isNotEmpty()) groupControlDao.insertDeliveries(deliveries)
+            mutation()
+            if (deliveries.isEmpty()) groupControlDao.markOperationQueued(operationId, now)
+        }
+        return operationId
+    }
+
+    private suspend fun recoverPendingControlOperations(localIdentityId: String) {
+        val blockedGroups = mutableSetOf<String>()
+        for (operation in groupControlDao.getPendingOperations()) {
+            if (operation.groupId in blockedGroups) continue
+            dispatchControlOperation(operation.operationId, localIdentityId)
+            if (groupControlDao.countPendingDeliveries(operation.operationId) > 0) {
+                blockedGroups += operation.groupId
+            }
+        }
+    }
+
+    private suspend fun dispatchControlOperation(operationId: String, localIdentityId: String) {
+        val operation = groupControlDao.getOperation(operationId) ?: return
+        for (delivery in groupControlDao.getPendingDeliveries(operationId)) {
+            try {
+                val logicalId = UUID.nameUUIDFromBytes(
+                    "torx-control:$operationId:${delivery.recipientIdentityId}".toByteArray(Charsets.UTF_8)
+                ).toString()
+                fanoutControlEnvelope(
+                    groupId = operation.groupId,
+                    recipientIdentityId = delivery.recipientIdentityId,
+                    relationshipId = delivery.relationshipId,
+                    localIdentityId = localIdentityId,
+                    messageType = MessageType.valueOf(delivery.messageType),
+                    payload = delivery.payload,
+                    epoch = delivery.envelopeEpoch,
+                    logicalMessageId = logicalId,
+                    onPersisted = { outboxId ->
+                        groupControlDao.markDeliveryQueued(
+                            operationId, delivery.recipientIdentityId, outboxId, System.currentTimeMillis()
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                groupControlDao.markDeliveryFailed(
+                    operationId, delivery.recipientIdentityId, e.message ?: e.javaClass.simpleName, System.currentTimeMillis()
+                )
+                Log.e(TAG, "Control fan-out remains pending for ${delivery.recipientIdentityId}: ${e.message}")
+            }
+        }
+        if (groupControlDao.countPendingDeliveries(operationId) == 0) {
+            groupControlDao.markOperationQueued(operationId, System.currentTimeMillis())
+        }
+    }
 
     private suspend fun encryptAndEnqueueGroupMessage(
         groupId: String,
@@ -1197,7 +1173,9 @@ class GroupService(
         payload: ByteArray,
         epoch: Long,
         priority: Int = DeliveryPriority.HIGH,
-        expectsAck: Boolean = true
+        expectsAck: Boolean = true,
+        logicalMessageId: String = UUID.randomUUID().toString(),
+        onPersisted: suspend (outboxDeliveryId: String) -> Unit = {}
     ) {
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
@@ -1211,7 +1189,7 @@ class GroupService(
             buildEnvelope = { seq ->
                 SecureEnvelope(
                     protocolVersion = 1,
-                    logicalMessageId = UUID.randomUUID().toString(),
+                    logicalMessageId = logicalMessageId,
                     conversationId = groupId,
                     senderIdentity = localIdentityId,
                     recipientBinding = recipientIdentityId,
@@ -1242,6 +1220,7 @@ class GroupService(
                     relationshipId = connection.relationshipId
                 )
                 outboxDao.insert(outboxItem)
+                onPersisted(outboxDeliveryId)
             }
         )
     }

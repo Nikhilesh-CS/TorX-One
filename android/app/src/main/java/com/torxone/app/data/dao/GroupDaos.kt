@@ -4,6 +4,8 @@ import androidx.room.*
 import com.torxone.app.data.entity.GroupEntity
 import com.torxone.app.data.entity.GroupMemberEntity
 import com.torxone.app.data.entity.GroupMessageDeliveryEntity
+import com.torxone.app.data.entity.GroupControlOperationEntity
+import com.torxone.app.data.entity.GroupControlDeliveryEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -146,4 +148,37 @@ interface GroupMessageDeliveryDao {
 
     @Query("DELETE FROM group_message_deliveries WHERE logical_message_id = :logicalMessageId")
     suspend fun deleteForMessage(logicalMessageId: String)
+}
+
+@Dao
+interface GroupControlDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertOperation(operation: GroupControlOperationEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertDeliveries(deliveries: List<GroupControlDeliveryEntity>)
+
+    @Query("SELECT * FROM group_control_operations WHERE status = 'PENDING' ORDER BY group_id ASC, new_epoch ASC, created_at ASC")
+    suspend fun getPendingOperations(): List<GroupControlOperationEntity>
+
+    @Query("SELECT * FROM group_control_operations WHERE operation_id = :operationId")
+    suspend fun getOperation(operationId: String): GroupControlOperationEntity?
+
+    @Query("SELECT * FROM group_control_deliveries WHERE operation_id = :operationId AND status = 'PENDING' ORDER BY recipient_identity_id ASC")
+    suspend fun getPendingDeliveries(operationId: String): List<GroupControlDeliveryEntity>
+
+    @Query("SELECT COUNT(*) FROM group_control_operations WHERE group_id = :groupId AND status = 'PENDING'")
+    suspend fun countPendingOperations(groupId: String): Int
+
+    @Query("UPDATE group_control_deliveries SET status = 'QUEUED', outbox_delivery_id = :outboxDeliveryId, attempt_count = attempt_count + 1, last_error = NULL, updated_at = :updatedAt WHERE operation_id = :operationId AND recipient_identity_id = :recipientIdentityId")
+    suspend fun markDeliveryQueued(operationId: String, recipientIdentityId: String, outboxDeliveryId: String, updatedAt: Long)
+
+    @Query("UPDATE group_control_deliveries SET attempt_count = attempt_count + 1, last_error = :error, updated_at = :updatedAt WHERE operation_id = :operationId AND recipient_identity_id = :recipientIdentityId")
+    suspend fun markDeliveryFailed(operationId: String, recipientIdentityId: String, error: String, updatedAt: Long)
+
+    @Query("SELECT COUNT(*) FROM group_control_deliveries WHERE operation_id = :operationId AND status = 'PENDING'")
+    suspend fun countPendingDeliveries(operationId: String): Int
+
+    @Query("UPDATE group_control_operations SET status = 'QUEUED', updated_at = :updatedAt WHERE operation_id = :operationId")
+    suspend fun markOperationQueued(operationId: String, updatedAt: Long)
 }
