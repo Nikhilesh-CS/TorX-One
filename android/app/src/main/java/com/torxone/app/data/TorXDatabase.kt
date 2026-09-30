@@ -34,9 +34,10 @@ import com.torxone.app.calls.CallHistoryDao
         ConsumedInviteEntity::class,
         BootstrapStateEntity::class,
         RelayPacketEntity::class,
-        RelayReceiptEntity::class
+        RelayReceiptEntity::class,
+        PeerTorEndpointEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -62,6 +63,7 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun consumedInviteDao(): ConsumedInviteDao
     abstract fun bootstrapStateDao(): BootstrapStateDao
     abstract fun relayQueueDao(): RelayQueueDao
+    abstract fun peerTorEndpointDao(): PeerTorEndpointDao
 
     companion object {
         @Volatile
@@ -194,6 +196,21 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_13_14 = object : androidx.room.migration.Migration(13, 14) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `peer_tor_endpoints` (
+                        `relationship_id` TEXT NOT NULL, `onion_address` TEXT NOT NULL,
+                        `port` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `source` TEXT NOT NULL,
+                        PRIMARY KEY(`relationship_id`),
+                        FOREIGN KEY(`relationship_id`) REFERENCES `pair_relationships`(`relationship_id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                // Repair pending legacy bootstrap IDs while retaining the exact wire delivery ID.
+                db.execSQL("UPDATE outbox SET logical_message_id = substr(queue_address, 8), expects_ack = 1, relationship_id = COALESCE((SELECT relationship_id FROM connections WHERE connections.connection_id = outbox.connection_id), relationship_id) WHERE queue_address LIKE 'invite-%'")
+            }
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider
@@ -211,7 +228,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
 
             val provider = passphraseProvider
             try {

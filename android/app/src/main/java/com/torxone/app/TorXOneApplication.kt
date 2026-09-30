@@ -30,6 +30,7 @@ import com.torxone.app.transport.tor.TorTransport
 import androidx.room.withTransaction
 import com.torxone.app.crypto.AndroidKeystoreKeyProtector
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 
@@ -105,6 +106,7 @@ class TorXOneApplication : Application() {
     lateinit var nearbyTransport: NearbyTransport
         private set
 
+    lateinit var peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository
     lateinit var torRouteManager: TorRouteManager
         private set
     lateinit var onionEndpointManager: OnionEndpointManager
@@ -265,7 +267,8 @@ class TorXOneApplication : Application() {
         agent = TorXAgent(
             transportRouter = transportRouter,
             outboxStore = createOutboxStore(),
-            processedStore = createProcessedStore()
+            processedStore = createProcessedStore(),
+            relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId }
         )
 
         // 7. Direct Route Table & Presence Service
@@ -437,6 +440,7 @@ class TorXOneApplication : Application() {
         // Route persistence must exist before bootstrap dispatch so the responder
         // can bind its authenticated permanent reverse route before sending ACK.
         torRouteManager = TorRouteManager(this)
+        peerTorEndpoints = com.torxone.app.transport.tor.PeerTorEndpointRepository(database.peerTorEndpointDao())
 
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
@@ -456,7 +460,8 @@ class TorXOneApplication : Application() {
             bootstrapStateDao = database.bootstrapStateDao(),
             connectionDao = database.connectionDao(),
             pairRelationshipDao = database.pairRelationshipDao(),
-            transactionRunner = { block -> database.withTransaction { block() } }
+            transactionRunner = { block -> database.withTransaction { block() } },
+            onBootstrapConfirmed = { torRouteManager.remove("invite-$it") }
         )
         val incomingDispatcher = IncomingDispatcher(
             connectionManager = connectionManager,
@@ -488,6 +493,8 @@ class TorXOneApplication : Application() {
             pairRelationshipDao = database.pairRelationshipDao(),
             keyProtector = keyProtector,
             torRouteManager = torRouteManager,
+            peerTorEndpointDao = database.peerTorEndpointDao(),
+            peerTorEndpoints = peerTorEndpoints,
             consolidateDirectChats = { com.torxone.app.contacts.consolidateDirectConversations(database) }
         )
         incomingTransportHub = IncomingTransportHub(
@@ -521,7 +528,9 @@ class TorXOneApplication : Application() {
         torController = TorController(this, onionEndpointManager)
         torBootstrapManager = TorBootstrapManager(torController)
         torHealthMonitor = TorHealthMonitor(torController)
-        torTransport = TorTransport(torController, torRouteManager)
+        torTransport = TorTransport(torController, torRouteManager,
+            peerTorEndpoints = peerTorEndpoints,
+            relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId })
         transportRouter.registerTransport(torTransport)
 
         // 9b. Nearby Transport
@@ -721,18 +730,24 @@ class TorXOneApplication : Application() {
                 }
                 com.torxone.app.contacts.consolidateDirectConversations(database)
                 connectionManager.restoreFromDatabase(database.connectionDao())
+                peerTorEndpoints.restore(database.connectionDao(), torRouteManager)
 
                 // Start background agent and transport only AFTER async initialization completes
                 agent.start()
                 torBootstrapManager.start()
                 com.torxone.app.transport.tor.NetworkRecoveryMonitor(
                     this@TorXOneApplication, applicationScope, torTransport,
-                    retry = { agent.triggerImmediateRetry() }
+                    retry = { agent.triggerImmediateRetry() },
+                    closeIncoming = { onionEndpointManager.closePeerConnections() }
                 ).start()
                 applicationScope.launch {
                     torController.state.collect { state ->
                         if (state is com.torxone.app.transport.tor.TorConnectionState.Ready) {
+                            recoverIncompleteBootstraps()
                             agent.triggerImmediateRetry()
+                        } else {
+                            torTransport.closePendingConnections()
+                            onionEndpointManager.closePeerConnections()
                         }
                     }
                 }
@@ -767,7 +782,9 @@ class TorXOneApplication : Application() {
         }
     }
 
-    private suspend fun recoverIncompleteBootstraps() {
+    private val bootstrapRecoveryMutex = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun recoverIncompleteBootstraps() = bootstrapRecoveryMutex.withLock {
         try {
             val incomplete = database.bootstrapStateDao().getIncompleteBootstraps()
             for (state in incomplete) {
@@ -776,12 +793,47 @@ class TorXOneApplication : Application() {
                 // the resumed peer even though all durable crypto state is present.
                 if (state.isInitiator) {
                     nearbyTransport.registerScannedInvite(state.inviteId)
+                    // Older versions discarded the bootstrap after a TCP write. Reconstruct
+                    // only its signed public handshake using the persisted session, never
+                    // a new DH secret or a replacement relationship. If the ratchet has
+                    // advanced, the responder necessarily already has the relationship and
+                    // the consumed-invite path only confirms it without reinitialization.
+                    val pending = database.outboxDao().getPending()
+                    val onion = (torController.state.value as? com.torxone.app.transport.tor.TorConnectionState.Ready)?.onionAddress
+                    val connection = connectionManager.getConnectionByRelationship(state.relationshipId)
+                    val session = sessionStore.loadSession(state.relationshipId)
+                    val identity = identityRepository.loadIdentity()
+                    val relationship = database.pairRelationshipDao().getById(state.relationshipId)
+                    if (state.status != com.torxone.app.data.entity.BootstrapStatus.REMOTE_CONFIRMED &&
+                        pending.none { it.queueAddress == "invite-${state.inviteId}" } &&
+                        onion != null && connection != null && session != null && identity != null &&
+                        relationship?.localIdentityId == identity.identityId) {
+                        val wire = com.torxone.app.contacts.signedBootstrapPayload(identity, state.inviteId,
+                            session.localRatchetPublicKey, onion)
+                        val contact = database.contactDao().getByRelationshipId(state.relationshipId)
+                        val item = com.torxone.app.contacts.bootstrapOutboxItem(state.inviteId, connection,
+                            contact?.conversationId ?: state.relationshipId, wire.toByteArray())
+                        database.withTransaction {
+                            if (database.bootstrapStateDao().getByRelationshipId(state.relationshipId)?.status !=
+                                com.torxone.app.data.entity.BootstrapStatus.ACTIVE) {
+                                database.outboxDao().insert(item)
+                                database.bootstrapStateDao().updateStatus(state.relationshipId,
+                                    com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED)
+                            }
+                        }
+                        agent.wake()
+                    }
                 }
-                when (state.status) {
+                val currentState = database.bootstrapStateDao().getByRelationshipId(state.relationshipId) ?: continue
+                when (currentState.status) {
                     com.torxone.app.data.entity.BootstrapStatus.LOCAL_ESTABLISHED -> {
                         val session = sessionStore.loadSession(state.relationshipId)
                         if (session != null) {
-                            database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY)
+                            database.withTransaction {
+                                if (database.bootstrapStateDao().getByRelationshipId(state.relationshipId)?.status ==
+                                    com.torxone.app.data.entity.BootstrapStatus.LOCAL_ESTABLISHED)
+                                    database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY)
+                            }
                         } else {
                             database.bootstrapStateDao().updateStatus(
                                 state.relationshipId,
@@ -793,8 +845,10 @@ class TorXOneApplication : Application() {
                     com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY -> {
                         val outbox = database.outboxDao().getPending()
                         val hasItem = outbox.any { it.queueAddress == "invite-${state.inviteId}" }
-                        if (hasItem) {
-                            database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED)
+                        if (hasItem) database.withTransaction {
+                            if (database.bootstrapStateDao().getByRelationshipId(state.relationshipId)?.status ==
+                                com.torxone.app.data.entity.BootstrapStatus.CRYPTO_READY)
+                                database.bootstrapStateDao().updateStatus(state.relationshipId, com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED)
                         }
                     }
                     com.torxone.app.data.entity.BootstrapStatus.BOOTSTRAP_QUEUED -> {
@@ -811,6 +865,7 @@ class TorXOneApplication : Application() {
                 }
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             android.util.Log.e("TorXOneApplication", "Error during bootstrap restart recovery: ${e.message}", e)
         }
     }

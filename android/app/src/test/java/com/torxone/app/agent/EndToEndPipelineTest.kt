@@ -57,6 +57,10 @@ class EndToEndPipelineTest {
             items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
         }
 
+        override suspend fun removeByDeliveryId(deliveryId: String) {
+            items.remove(deliveryId)
+            insertOrder.remove(deliveryId)
+        }
         override suspend fun removeByMessageId(logicalMessageId: String) {
             val keys = items.values.filter { it.logicalMessageId == logicalMessageId }.map { it.deliveryId }
             for (key in keys) {
@@ -373,6 +377,24 @@ class EndToEndPipelineTest {
             pendingInviteDao.getById(inviteId)?.ephemeralPrivateKey
     }
 
+    class MemoryBootstrapStates : BootstrapStateDao {
+        val states = ConcurrentHashMap<String, BootstrapStateEntity>()
+        override suspend fun getByRelationshipId(relationshipId: String) = states[relationshipId]
+        override suspend fun getByInviteId(inviteId: String) = states.values.firstOrNull { it.inviteId == inviteId }
+        override suspend fun getIncompleteBootstraps() = states.values.filter { it.status != BootstrapStatus.ACTIVE }
+        override suspend fun upsert(entity: BootstrapStateEntity) { states[entity.relationshipId] = entity }
+        override suspend fun updateStatus(relationshipId: String, status: BootstrapStatus, updatedAt: Long, error: String?) {
+            states.computeIfPresent(relationshipId) { _, old -> old.copy(status = status, updatedAt = updatedAt, errorMessage = error) }
+        }
+        override suspend fun delete(relationshipId: String) { states.remove(relationshipId) }
+    }
+    class MemoryConsumedInvites : ConsumedInviteDao {
+        val invites = ConcurrentHashMap<String, ConsumedInviteEntity>()
+        override suspend fun getAllConsumedInviteIds() = invites.keys.toList()
+        override suspend fun getById(inviteId: String) = invites[inviteId]
+        override suspend fun insert(entity: ConsumedInviteEntity) { invites[entity.inviteId] = entity }
+    }
+
     class Node(val name: String) {
         val identity: TorXIdentity
         val messageDao = InMemoryMessageDao()
@@ -385,6 +407,8 @@ class EndToEndPipelineTest {
         val connectionDao = InMemoryConnectionDao()
         val contactDao = InMemoryContactDao()
         val pendingInviteDao = InMemoryPendingInviteDao()
+        val bootstrapStateDao = MemoryBootstrapStates()
+        val consumedInviteDao = MemoryConsumedInvites()
         val identityRepo: InMemoryIdentityRepository
         val connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val activeTracker = ActiveConversationTracker()
@@ -417,7 +441,8 @@ class EndToEndPipelineTest {
                 outboxPollIntervalMs = 50L
             )
             chatReceiver = ChatReceiver(messageDao, conversationDao, activeTracker)
-            receiptHandler = DeliveryReceiptHandler(messageDao, outboxDao, agent)
+            receiptHandler = DeliveryReceiptHandler(messageDao, outboxDao, agent,
+                bootstrapStateDao = bootstrapStateDao, connectionDao = connectionDao)
             dispatcher = IncomingDispatcher(
             keyProtector = com.torxone.app.crypto.NoOpKeyProtector(),
                 connectionManager = connectionManager,
@@ -431,7 +456,8 @@ class EndToEndPipelineTest {
                 identityRepository = identityRepo,
                 connectionDao = connectionDao,
                 contactDao = contactDao,
-                conversationDao = conversationDao
+                conversationDao = conversationDao,
+                bootstrapStateDao = bootstrapStateDao, consumedInviteDao = consumedInviteDao
             )
             incomingHub = IncomingTransportHub(dispatcher)
             transportRouter.registerTransport(fakeTransport)
@@ -964,19 +990,14 @@ class EndToEndPipelineTest {
             signature = bootstrapSig
         )
 
-        alice.agent.enqueue(
-            DeliveryItem(
-                deliveryId = UUID.randomUUID().toString(),
-                logicalMessageId = UUID.randomUUID().toString(),
-                conversationId = conversationId,
-                connectionId = aliceConn.connectionId,
-                queueAddress = "invite-${scannedInvite.inviteId}",
-                ciphertext = bootstrapWire.toByteArray(),
-                queueAuthenticator = ByteArray(0),
-                status = DeliveryStatus.QUEUED,
-                priority = DeliveryPriority.HIGH
-            )
-        )
+        alice.bootstrapStateDao.upsert(BootstrapStateEntity(aliceConn.relationshipId,
+            scannedInvite.inviteId, BootstrapStatus.BOOTSTRAP_QUEUED, true))
+        bob.fakeTransport.packetLossRate = 1.0 // TCP acceptance is not pairing confirmation.
+        val bootstrapItem = com.torxone.app.contacts.bootstrapOutboxItem(scannedInvite.inviteId,
+            aliceConn, conversationId, bootstrapWire.toByteArray())
+        alice.outboxDao.insert(bootstrapItem)
+        alice.agent.wake()
+
 
         // 5. Wait for Bob's Stage 3 incoming dispatcher to process bootstrap and establish responder relationship
         val relationshipId = bootstrap.relationship.relationshipId
@@ -987,6 +1008,32 @@ class EndToEndPipelineTest {
         assertNotNull("Bob must have registered matching connection", bobConn)
         assertEquals("Bob's send queue must equal Alice's recv queue", aliceConn.recvQueueId, bobConn!!.sendQueueId)
         assertEquals("Bob's recv queue must equal Alice's send queue", aliceConn.sendQueueId, bobConn.recvQueueId)
+
+        waitFor(5000) { bob.bootstrapStateDao.getByInviteId(scannedInvite.inviteId)?.status == BootstrapStatus.ACTIVE }
+        waitFor(5000) { bob.outboxStore.items.isEmpty() }
+        assertEquals(BootstrapStatus.BOOTSTRAP_QUEUED,
+            alice.bootstrapStateDao.getByInviteId(scannedInvite.inviteId)?.status)
+        assertTrue(alice.outboxStore.items.containsKey(bootstrapItem.deliveryId))
+        // Simulate an older sender that deleted the bootstrap on transport acceptance.
+        alice.outboxStore.removeByDeliveryId(bootstrapItem.deliveryId)
+        val savedSession = alice.sessionStore.loadSession(relationshipId)!!
+        val recoveryWire = com.torxone.app.contacts.signedBootstrapPayload(alice.identity,
+            scannedInvite.inviteId, savedSession.localRatchetPublicKey, "a".repeat(56) + ".onion")
+        val recoveredItem = com.torxone.app.contacts.bootstrapOutboxItem(scannedInvite.inviteId,
+            aliceConn, conversationId, recoveryWire.toByteArray())
+        bob.fakeTransport.packetLossRate = 0.0
+        alice.outboxDao.insert(recoveredItem)
+        alice.agent.triggerImmediateRetry()
+        waitFor(5000) { alice.bootstrapStateDao.getByInviteId(scannedInvite.inviteId)?.status == BootstrapStatus.ACTIVE }
+        waitFor(5000) { !alice.outboxStore.items.containsKey(recoveredItem.deliveryId) }
+        assertEquals("Retry must preserve the responder connection", bobConn.connectionId,
+            bob.connectionManager.getConnectionByRelationship(relationshipId)?.connectionId)
+        assertEquals(1, bob.contactDao.contacts.size)
+        val tampered = bootstrapWire.copy(signature = ByteArray(64)).toByteArray()
+        val invalidRetry = ProtocolCodec.encodeTransportEnvelope(OpaqueTransportEnvelope(1,
+            bootstrapItem.deliveryId, "invite-${scannedInvite.inviteId}", tampered, ByteArray(32)))
+        assertFalse("Consumed invite retries must authenticate the existing peer",
+            bob.dispatcher.dispatch(invalidRetry, TransportType.FAKE))
 
         // 6. Alice sends first message to Bob
         val msgAliceToBobId = "msg-alice-1"
@@ -1013,6 +1060,22 @@ class EndToEndPipelineTest {
         // Bob receives Alice's ACK
         waitFor(5000) { bob.messageDao.getById(msgBobToAliceId)?.status == DeliveryStatus.DELIVERED.name }
         assertEquals(DeliveryStatus.DELIVERED.name, bob.messageDao.getById(msgBobToAliceId)?.status)
+
+        // An already advanced ratchet can confirm a legacy pending bootstrap without reset.
+        val advanced = alice.sessionStore.loadSession(relationshipId)!!
+        val responderSessionId = bob.sessionStore.loadSession(relationshipId)!!.sessionId
+        alice.bootstrapStateDao.updateStatus(relationshipId, BootstrapStatus.BOOTSTRAP_QUEUED)
+        val advancedWire = com.torxone.app.contacts.signedBootstrapPayload(alice.identity,
+            scannedInvite.inviteId, advanced.localRatchetPublicKey, "a".repeat(56) + ".onion")
+        val advancedItem = com.torxone.app.contacts.bootstrapOutboxItem(scannedInvite.inviteId,
+            aliceConn, conversationId, advancedWire.toByteArray())
+        alice.outboxDao.insert(advancedItem)
+        alice.agent.wake()
+        waitFor(5000) { alice.bootstrapStateDao.getByInviteId(scannedInvite.inviteId)?.status == BootstrapStatus.ACTIVE }
+        waitFor(5000) { !alice.outboxStore.items.containsKey(advancedItem.deliveryId) }
+        assertEquals(advanced.sessionId, alice.sessionStore.loadSession(relationshipId)?.sessionId)
+        assertEquals(responderSessionId, bob.sessionStore.loadSession(relationshipId)?.sessionId)
+        assertEquals(bobConn.connectionId, bob.connectionManager.getConnectionByRelationship(relationshipId)?.connectionId)
 
         alice.stop()
         bob.stop()

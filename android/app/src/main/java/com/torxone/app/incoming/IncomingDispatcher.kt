@@ -1,6 +1,7 @@
 package com.torxone.app.incoming
 
 import android.util.Log
+import kotlinx.coroutines.sync.withLock
 import com.torxone.app.agent.DeliveryItem
 import com.torxone.app.agent.DeliveryPriority
 import com.torxone.app.agent.DeliveryStatus
@@ -66,7 +67,9 @@ class IncomingDispatcher(
     private val keyProtector: com.torxone.app.crypto.KeyProtector,
     private val authenticatedRemoteIdentityProvider: suspend (String) -> String? = { null },
     private val torRouteManager: com.torxone.app.transport.tor.TorRouteManager? = null,
-    private val consolidateDirectChats: suspend () -> Unit = {}
+    private val consolidateDirectChats: suspend () -> Unit = {},
+    private val peerTorEndpointDao: com.torxone.app.data.dao.PeerTorEndpointDao? = null,
+    private val peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository? = null
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -77,7 +80,20 @@ class IncomingDispatcher(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 4096
     }
 
+    private val bootstrapLocks = Array(32) { kotlinx.coroutines.sync.Mutex() }
+
     suspend fun dispatch(rawBytes: ByteArray, transportType: TransportType): Boolean {
+        if (rawBytes.size > ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) return false
+        val queue = runCatching { ProtocolCodec.decodeTransportEnvelope(rawBytes).queueAddress }.getOrNull()
+        if (queue?.startsWith("invite-") == true) {
+            return bootstrapLocks[(queue.hashCode() and Int.MAX_VALUE) % bootstrapLocks.size].withLock {
+                dispatchInternal(rawBytes, transportType)
+            }
+        }
+        return dispatchInternal(rawBytes, transportType)
+    }
+
+    private suspend fun dispatchInternal(rawBytes: ByteArray, transportType: TransportType): Boolean {
         // Stage 1: Validate transport frame length
         if (rawBytes.size > ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) {
             Log.e(TAG, "[STAGE 1 FAIL] Frame size ${rawBytes.size} exceeds maximum ${ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES}")
@@ -101,8 +117,7 @@ class IncomingDispatcher(
             if (opaqueEnvelope.queueAddress.startsWith("invite-") && pendingInviteDao != null && identityRepository != null) {
                 val inviteId = opaqueEnvelope.queueAddress.removePrefix("invite-")
                 if (consumedInviteDao?.getById(inviteId) != null) {
-                    Log.e(TAG, "[BOOTSTRAP REJECT] Invite $inviteId has already been consumed")
-                    return false
+                    return confirmBootstrapRetry(inviteId, opaqueEnvelope)
                 }
                 val pendingInvite = pendingInviteDao.getById(inviteId)
                 if (pendingInvite == null) {
@@ -140,6 +155,9 @@ class IncomingDispatcher(
                         return false
                     }
 
+                    val verifiedTorRoute = bootstrapPayload.initiatorTorOnionAddress?.let {
+                        com.torxone.app.transport.tor.TorRoute(it)
+                    }
                     val invitePrivateKey = identityRepository.getPendingInviteEphemeralPrivateKey(inviteId)
                         ?: return false
                     // Establish responder 3DH
@@ -185,6 +203,10 @@ class IncomingDispatcher(
                                 cryptoFormatVersion = 3
                             )
                         )
+
+                        verifiedTorRoute?.let { route ->
+                            peerTorEndpointDao?.upsert(com.torxone.app.transport.tor.PeerTorEndpointRepository.entity(conn.relationshipId, route))
+                        }
 
                         connectionDao?.upsert(
                             com.torxone.app.data.entity.ConnectionDbEntity(
@@ -255,17 +277,10 @@ class IncomingDispatcher(
 
                     connectionManager.registerConnection(conn)
 
-                    // The bootstrap packet arrived on invite-<id>, which cannot be
-                    // looked up as the permanent receive queue. Bind the signed return
-                    // route directly to the newly authenticated permanent send queue
-                    // before the ACK is queued.
-                    bootstrapPayload.initiatorTorOnionAddress?.let { onion ->
-                        torRouteManager?.bind(
-                            conn.sendQueueId,
-                            com.torxone.app.transport.tor.TorRoute(onion)
-                        )
-                        Log.i(TAG, "[BOOTSTRAP ROUTE] Bound permanent reverse Tor route for relationship ${conn.relationshipId.take(8)}")
-                    }
+                    peerTorEndpoints?.refresh(conn.relationshipId)
+                    // Legacy test wiring may omit the Room repository; production never does.
+                    if (peerTorEndpoints == null && verifiedTorRoute != null)
+                        torRouteManager?.bind(conn.sendQueueId, verifiedTorRoute)
 
                     sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorIdentityId)
 
@@ -559,6 +574,31 @@ class IncomingDispatcher(
             sendAck(connection, env.logicalMessageId, opaqueEnvelope.envelopeId, env.senderIdentity)
         }
 
+        return true
+    }
+
+    /** Retransmission after a lost ACK must confirm, never initialize or reset the ratchet. */
+    private suspend fun confirmBootstrapRetry(inviteId: String, opaque: OpaqueTransportEnvelope): Boolean {
+        val state = bootstrapStateDao?.getByInviteId(inviteId) ?: return false
+        if (state.isInitiator || state.status != com.torxone.app.data.entity.BootstrapStatus.ACTIVE) return false
+        val contact = contactDao?.getByRelationshipId(state.relationshipId) ?: return false
+        val conn = connectionManager.getConnectionByRelationship(state.relationshipId) ?: return false
+        val payload = runCatching {
+            com.torxone.app.relationship.ContactBootstrapPayload.fromByteArray(opaque.opaqueCiphertext)
+        }.getOrNull() ?: return false
+        if (payload.inviteId != inviteId || payload.initiatorIdentityId != contact.remoteIdentityId ||
+            !MessageDigest.isEqual(payload.initiatorSigningPublicKey, contact.signingPublicKey)) return false
+        val signed = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
+            payload.inviteId, payload.initiatorIdentityId, payload.initiatorDisplayName,
+            payload.initiatorSigningPublicKey, payload.initiatorEncryptionPublicKey,
+            payload.initiatorEphemeralPublicKey, payload.initiatorTorOnionAddress)
+        if (!IdentityCrypto.verifyEd25519(contact.signingPublicKey, signed, payload.signature)) return false
+        payload.initiatorTorOnionAddress?.let { onion ->
+            val route = com.torxone.app.transport.tor.TorRoute(onion)
+            peerTorEndpoints?.bindVerified(conn.relationshipId, route)
+            if (peerTorEndpoints == null) torRouteManager?.bind(conn.sendQueueId, route)
+        }
+        sendAck(conn, inviteId, opaque.envelopeId, contact.remoteIdentityId)
         return true
     }
 

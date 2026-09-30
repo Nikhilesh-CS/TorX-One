@@ -18,7 +18,8 @@ class DeliveryReceiptHandler(
     private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null,
     private val transactionRunner: (suspend (suspend () -> Unit) -> Unit)? = null,
     private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
-    private val authenticatedContactProvider: suspend (String) -> Pair<String, String>? = { null }
+    private val authenticatedContactProvider: suspend (String) -> Pair<String, String>? = { null },
+    private val onBootstrapConfirmed: (String) -> Unit = {}
 ) {
     companion object {
         private const val TAG = "DeliveryReceiptHandler"
@@ -48,6 +49,7 @@ class DeliveryReceiptHandler(
                     pairRelationshipDao?.updateState(bootstrapState.relationshipId, "ACTIVE")
                     bootstrapStateDao.updateStatus(bootstrapState.relationshipId, com.torxone.app.data.entity.BootstrapStatus.ACTIVE)
                 }
+                onBootstrapConfirmed(bootstrapState.inviteId)
             }
         }
 

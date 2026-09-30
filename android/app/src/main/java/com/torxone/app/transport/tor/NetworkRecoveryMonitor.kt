@@ -14,7 +14,8 @@ class NetworkRecoveryMonitor(
     context: Context,
     private val scope: CoroutineScope,
     private val transport: TorTransport,
-    private val retry: suspend () -> Unit
+    private val retry: suspend () -> Unit,
+    private val closeIncoming: () -> Unit = {}
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private var retryJob: Job? = null
@@ -26,6 +27,7 @@ class NetworkRecoveryMonitor(
             if (validated && validatedNetwork != network) {
                 validatedNetwork = network
                 transport.closePendingConnections()
+                closeIncoming()
                 retryJob?.cancel()
                 retryJob = scope.launch {
                     delay(750)
@@ -36,6 +38,7 @@ class NetworkRecoveryMonitor(
                 validatedNetwork = null
                 retryJob?.cancel()
                 transport.closePendingConnections()
+                closeIncoming()
             }
         }
 
@@ -44,6 +47,7 @@ class NetworkRecoveryMonitor(
                 validatedNetwork = null
                 retryJob?.cancel()
                 transport.closePendingConnections()
+                closeIncoming()
             }
         }
     }

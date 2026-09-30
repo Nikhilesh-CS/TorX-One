@@ -3,8 +3,6 @@ package com.torxone.app.transport.tor
 import android.content.Context
 import android.util.Log
 import com.torxone.app.incoming.IncomingTransportHub
-import com.torxone.app.protocol.ProtocolLimits
-import com.torxone.app.protocol.ProtocolCodec
 import com.torxone.app.connection.ConnectionManager
 import com.torxone.app.transport.TransportType
 import kotlinx.coroutines.*
@@ -27,6 +25,7 @@ class OnionEndpointManager(
 
     private var scope = CoroutineScope(SupervisorJob() + dispatcher)
     private var serverSocket: ServerSocket? = null
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
 
     val hiddenServiceDirectory = context.getDir("torx_onion_v3", Context.MODE_PRIVATE)
     val localPort: Int get() = serverSocket?.localPort ?: 0
@@ -46,6 +45,8 @@ class OnionEndpointManager(
                     if (!server.isClosed) Log.e(TAG, "Tor listener accept failed", error)
                     break
                 }
+                if (clients.size >= 32) { socket.close(); continue }
+                clients.add(socket)
                 launch {
                     try {
                         receive(socket)
@@ -56,6 +57,9 @@ class OnionEndpointManager(
                         // A disconnected/malformed client must not cancel the accepting loop.
                         socket.close()
                         Log.w(TAG, "Tor frame rejected: ${error.javaClass.simpleName}")
+                    } finally {
+                        clients.remove(socket)
+                        runCatching { socket.close() }
                     }
                 }
             }
@@ -65,7 +69,7 @@ class OnionEndpointManager(
 
     private suspend fun receive(socket: Socket) = withContext(dispatcher) {
         socket.use {
-            it.soTimeout = 15_000
+            it.soTimeout = 120_000
             val stream = java.io.PushbackInputStream(it.getInputStream(), 4)
             val input = DataInputStream(stream)
             val prefix = ByteArray(4)
@@ -83,19 +87,14 @@ class OnionEndpointManager(
                 return@withContext
             }
             stream.unread(prefix)
-            val returnOnion = input.readUTF()
-            require(returnOnion.matches(Regex("[a-z2-7]{56}\\.onion")))
-            val length = input.readInt()
-            require(length in 1..ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES)
-            val payload = ByteArray(length)
-            input.readFully(payload)
-            require(input.read() == -1) { "Trailing bytes in Tor frame" }
-            val accepted = incomingTransportHub.onRawFrameReceived(payload, TransportType.TOR)
-            Log.i("TORX_DIAG", "tor_rx queue=${ProtocolCodec.decodeTransportEnvelope(payload).queueAddress.take(8)} accepted=$accepted bytes=$length")
-            if (accepted) {
-                val incomingQueue = ProtocolCodec.decodeTransportEnvelope(payload).queueAddress
-                val connection = connectionManager.getConnectionByRecvQueue(incomingQueue)
-                if (connection != null) routeManager.bind(connection.sendQueueId, TorRoute(returnOnion))
+            // This header is framing metadata, not proof of peer identity. Only signed
+            // pairing payloads may update the durable relationship endpoint.
+            TorStreamFraming.readHeader(input)
+            while (currentCoroutineContext().isActive) {
+                val payload = TorStreamFraming.readFrame(input) ?: break
+                val accepted = incomingTransportHub.onRawFrameReceived(payload, TransportType.TOR)
+                Log.i("TORX_DIAG", "tor_rx accepted=$accepted bytes=${payload.size}")
+                if (!accepted) break
             }
         }
     }
@@ -117,7 +116,10 @@ class OnionEndpointManager(
         return hostname.readText().trim().takeIf { it.matches(Regex("[a-z2-7]{56}\\.onion")) }
     }
 
+    fun closePeerConnections() { clients.forEach { runCatching { it.close() } } }
+
     fun stop() {
+        closePeerConnections()
         serverSocket?.close()
         serverSocket = null
         scope.cancel()

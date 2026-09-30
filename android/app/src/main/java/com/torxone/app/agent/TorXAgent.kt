@@ -33,7 +33,8 @@ class TorXAgent(
     private val processedStore: ProcessedEnvelopeStore? = null,
     private val coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val baseRetryDelayMs: Long = 3_000L,
-    private val outboxPollIntervalMs: Long = 1_000L
+    private val outboxPollIntervalMs: Long = 1_000L,
+    private val relationshipForQueue: (String) -> String? = { null }
 ) {
     companion object {
         private const val TAG = "TorXAgent"
@@ -127,7 +128,8 @@ class TorXAgent(
             queueAuthenticator = authenticator
         )
         val rawPayload = ProtocolCodec.encodeTransportEnvelope(envelope)
-        val destination = TransportDestination(address = item.queueAddress)
+        val destination = TransportDestination(address = item.queueAddress,
+            relationshipId = item.relationshipId.takeIf(String::isNotBlank) ?: relationshipForQueue(item.queueAddress))
 
         val result = transportRouter.send(destination, rawPayload)
         Log.d(TAG, "[EPHEMERAL SEND] item=${item.deliveryId.take(8)} result=$result")
@@ -354,7 +356,8 @@ class TorXAgent(
             queueAuthenticator = authenticator
         )
         val rawPayload = ProtocolCodec.encodeTransportEnvelope(envelope)
-        val destination = TransportDestination(address = item.queueAddress)
+        val destination = TransportDestination(address = item.queueAddress,
+            relationshipId = item.relationshipId.takeIf(String::isNotBlank) ?: relationshipForQueue(item.queueAddress))
 
         val result = transportRouter.send(destination, rawPayload)
 

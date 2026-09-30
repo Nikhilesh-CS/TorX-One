@@ -67,3 +67,16 @@ direct connectivity require a working TURN relay.
 The Tor dependency upgrade and a green unit suite do not close those gates.
 The public Open Relay probe timed out for UDP/TCP/TLS from this computer; no public
 relay was enabled. Supply a working relay via the documented TURN build settings.
+
+## Persistent peer transport and migration
+
+Upgrade both phones: old receivers require EOF after one frame and cannot consume
+persistent streams. Schema 14 stores signed Tor endpoints by relationship in
+encrypted Room; old queue preferences are imported once and marked as legacy.
+Run `python android/tools/verify_peer_endpoint_migration.py` from the repository
+root to check the actual migration against both exported Room schemas and prove
+fixture preservation. See `docs/PHASE_3_TOR_TRANSPORT.md` for the framing contract.
+
+Raw PING/PONG still checks one diagnostic connection. It does not prove stream
+reuse or encrypted delivery: verify repeated chat messages, exact ACKs, process
+restart and Wi-Fi/cellular recovery on upgraded devices afterward.

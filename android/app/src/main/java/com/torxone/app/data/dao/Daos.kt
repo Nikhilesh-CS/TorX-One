@@ -201,7 +201,7 @@ interface PairRelationshipDao {
     @Query("SELECT * FROM pair_relationships WHERE contact_id = :contactId")
     suspend fun getByContactId(contactId: String): PairRelationshipEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @androidx.room.Upsert
     suspend fun upsert(relationship: PairRelationshipEntity)
 
     @Query("UPDATE pair_relationships SET state = :state WHERE relationship_id = :id")

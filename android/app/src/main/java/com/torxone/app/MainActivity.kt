@@ -145,6 +145,7 @@ fun TorXOneApp() {
             agent = app.agent,
             nearbyTransport = app.nearbyTransport,
             torRouteManager = app.torRouteManager,
+            peerTorEndpoints = app.peerTorEndpoints,
             localOnionAddress = { app.onionEndpointManager.onionAddress() },
             keyProtector = app.keyProtector
         )

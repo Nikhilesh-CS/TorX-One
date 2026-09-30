@@ -803,7 +803,7 @@ class MediaService(
                 val media = mediaDao.getById(mediaId) ?: error("Missing media record")
                 val connection = connectionManager.getConnectionByRelationship(relationshipId)
                     ?: error("No active connection for media transfer")
-                val destination = TransportDestination(connection.sendQueueId)
+                val destination = TransportDestination(connection.sendQueueId, relationshipId = connection.relationshipId)
                 val transfer = mediaTransferDao.getByTransferId(transferId) ?: error("Missing transfer record")
                 val alreadySent = transfer.chunkBitmask.split(',').mapNotNull(String::toIntOrNull).toMutableSet()
                 val indices = requestedIndices ?: (0 until totalChunks).filterNot(alreadySent::contains)

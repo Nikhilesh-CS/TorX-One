@@ -41,7 +41,8 @@ class ContactsViewModel(
     private val nearbyTransport: com.torxone.app.transport.nearby.NearbyTransport? = null,
     private val torRouteManager: com.torxone.app.transport.tor.TorRouteManager? = null,
     private val localOnionAddress: () -> String? = { null },
-    private val keyProtector: com.torxone.app.crypto.KeyProtector
+    private val keyProtector: com.torxone.app.crypto.KeyProtector,
+    private val peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ContactsUiState())
@@ -120,6 +121,10 @@ class ContactsViewModel(
                         val hasSession = sessionCrypto.hasSession(existing.relationshipId)
                         when (existingContactScanAction(conversation != null, relationship != null, connection != null, hasSession)) {
                             ExistingContactScanAction.ALREADY_OPEN -> {
+                            invite.torOnionAddress?.let { onion ->
+                                peerTorEndpoints?.bindVerified(existing.relationshipId, com.torxone.app.transport.tor.TorRoute(onion))
+                            }
+                            agent?.triggerImmediateRetry()
                             _uiState.update { it.copy(error = "Contact already exists with this peer") }
                             return@launch
                             }
@@ -139,7 +144,7 @@ class ContactsViewModel(
                             )
                         )
                         invite.torOnionAddress?.let { onion ->
-                            torRouteManager?.bind(connection.sendQueueId, com.torxone.app.transport.tor.TorRoute(onion))
+                            peerTorEndpoints?.bindVerified(connection.relationshipId, com.torxone.app.transport.tor.TorRoute(onion))
                         }
                         _uiState.update { it.copy(reopenedContact = existing, error = null) }
                         agent?.triggerImmediateRetry()
@@ -252,6 +257,10 @@ class ContactsViewModel(
                         )
                     )
                     database.pairRelationshipDao().upsert(relationshipEntity)
+                    valid.invite.torOnionAddress?.let { onion ->
+                        database.peerTorEndpointDao().upsert(com.torxone.app.transport.tor.PeerTorEndpointRepository.entity(
+                            connection.relationshipId, com.torxone.app.transport.tor.TorRoute(onion)))
+                    }
                     database.contactDao().upsert(contactEntity)
                     database.connectionDao().upsert(connectionDbEntity)
                     database.conversationDao().upsert(conversationEntity)
@@ -266,7 +275,7 @@ class ContactsViewModel(
                 // the authenticated bootstrap ACK use the derived permanent send queue.
                 // Bind that queue to the already verified invite onion before bootstrap
                 // is sent, then persist it through TorRouteManager for process restarts.
-                bindPermanentTorRoute(torRouteManager, connection, valid.invite.torOnionAddress)
+                peerTorEndpoints?.refresh(connection.relationshipId)
 
                 sessionCrypto.initializeSession(
                     relationshipId = bootstrap.relationship.relationshipId,
@@ -309,19 +318,8 @@ class ContactsViewModel(
                     initiatorTorOnionAddress = initiatorOnion
                 )
 
-                val outboxEntity = com.torxone.app.data.entity.OutboxEntity(
-                    deliveryId = UUID.randomUUID().toString(),
-                    logicalMessageId = UUID.randomUUID().toString(),
-                    conversationId = conversationId,
-                    connectionId = connection.connectionId,
-                    queueAddress = "invite-${valid.invite.inviteId}",
-                    ciphertext = bootstrapWire.toByteArray(),
-                    queueAuthenticator = ByteArray(0),
-                    status = com.torxone.app.agent.DeliveryStatus.QUEUED.name,
-                    priority = com.torxone.app.agent.DeliveryPriority.HIGH,
-                    expectsAck = false,
-                    createdAt = System.currentTimeMillis()
-                )
+                val outboxEntity = bootstrapOutboxItem(valid.invite.inviteId, connection,
+                    conversationId, bootstrapWire.toByteArray())
 
                 // 5. Persist outbox item and advance state to BOOTSTRAP_QUEUED atomically
                 database.withTransaction {

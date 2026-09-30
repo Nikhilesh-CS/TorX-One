@@ -21,7 +21,8 @@ sealed class TransportAvailability {
 
 data class TransportDestination(
     val address: String,
-    val hints: Map<String, String> = emptyMap()
+    val hints: Map<String, String> = emptyMap(),
+    val relationshipId: String? = null
 )
 
 sealed class TransportResult {
