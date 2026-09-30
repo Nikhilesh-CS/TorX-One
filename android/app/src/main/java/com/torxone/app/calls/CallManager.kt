@@ -30,7 +30,8 @@ class CallManager(
     companion object {
         private const val TAG = "CallManager"
         private const val RINGING_TIMEOUT_MS = 45_000L
-        private const val RECONNECT_TIMEOUT_MS = 15_000L
+        private const val SIGNAL_DELIVERY_TIMEOUT_MS = 150_000L
+        private const val RECONNECT_TIMEOUT_MS = 150_000L
     }
 
     private val _activeCall = MutableStateFlow<CallSession?>(null)
@@ -41,6 +42,17 @@ class CallManager(
 
     /** Listener for events that require WebRTC or system-level actions */
     var callEventListener: CallEventListener? = null
+
+    init {
+        callService.observeOfferAcceptance(::onOfferTransportAccepted)
+    }
+
+    fun onOfferTransportAccepted(callId: String) {
+        val session = _activeCall.value ?: return
+        if (session.callId == callId && session.state == CallState.OUTGOING_SENDING) {
+            transition(callId, CallState.OUTGOING_CALLING)
+        }
+    }
 
     // ─── Outgoing Call ───────────────────────────────────────────────────
 
@@ -92,12 +104,28 @@ class CallManager(
         val session = _activeCall.value ?: return
         if (session.callId != callId || session.state != CallState.OUTGOING_PREPARING) return
 
-        callService.sendCallOffer(session, sdpOffer)
-        transition(callId, CallState.OUTGOING_CALLING)
+        transition(callId, CallState.OUTGOING_SENDING)
+        try {
+            callService.sendCallOffer(session, sdpOffer)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            onCallFailed(callId, "Could not queue the call request")
+            return
+        }
         startRingingTimeout(callId)
     }
 
     // ─── Incoming Call ───────────────────────────────────────────────────
+
+    suspend fun onLocalRestartOfferReady(callId: String, sdp: String) {
+        val session = _activeCall.value ?: return
+        if (session.callId == callId && session.state == CallState.RECONNECTING) callService.sendCallOffer(session, sdp)
+    }
+
+    suspend fun onLocalRestartAnswerReady(callId: String, sdp: String) {
+        val session = _activeCall.value ?: return
+        if (session.callId == callId && session.state == CallState.RECONNECTING) callService.sendCallAnswer(session, sdp)
+    }
 
     /**
      * Called by CallHandler when a CALL_OFFER is received from the peer.
@@ -112,12 +140,20 @@ class CallManager(
         sdpOffer: String
     ): Boolean {
         val existing = _activeCall.value
+        if (existing?.callId == callId && existing.relationshipId == relationshipId &&
+            existing.peerIdentityId == peerIdentityId && existing.type == type &&
+            existing.state in setOf(CallState.CONNECTED, CallState.RECONNECTING)) {
+            transition(callId, CallState.RECONNECTING)
+            startReconnectTimeout(callId)
+            callEventListener?.onRestartOffer(existing, sdpOffer)
+            return true
+        }
 
         // Busy — already in a call with someone else or same person
         if (existing != null && existing.state != CallState.OUTGOING_PREPARING) {
             // Check for simultaneous-call collision
             if (existing.peerIdentityId == peerIdentityId &&
-                (existing.state == CallState.OUTGOING_CALLING || existing.state == CallState.OUTGOING_RINGING || existing.state == CallState.OUTGOING_PREPARING)
+                (existing.state == CallState.OUTGOING_SENDING || existing.state == CallState.OUTGOING_CALLING || existing.state == CallState.OUTGOING_RINGING || existing.state == CallState.OUTGOING_PREPARING)
             ) {
                 return handleCollision(existing, callId, conversationId, relationshipId, peerIdentityId, type, sdpOffer)
             }
@@ -196,17 +232,18 @@ class CallManager(
 
     fun onRemoteRinging(callId: String) {
         val session = _activeCall.value ?: return
-        if (session.callId != callId || session.state != CallState.OUTGOING_CALLING) return
+        if (session.callId != callId || session.state !in setOf(CallState.OUTGOING_SENDING, CallState.OUTGOING_CALLING)) return
         transition(callId, CallState.OUTGOING_RINGING)
+        startRingingTimeout(callId)
         Log.d(TAG, "[CALL] Remote ringing for call=$callId")
     }
 
     suspend fun onRemoteAnswer(callId: String, sdpAnswer: String) {
         val session = _activeCall.value ?: return
-        if (session.callId != callId || session.state !in setOf(CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING)) return
+        if (session.callId != callId || session.state !in setOf(CallState.OUTGOING_SENDING, CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING, CallState.RECONNECTING)) return
 
         cancelRingingTimeout()
-        transition(callId, CallState.CONNECTING)
+        if (session.state != CallState.RECONNECTING) transition(callId, CallState.CONNECTING)
         callEventListener?.onRemoteAnswer(session, sdpAnswer)
     }
 
@@ -275,6 +312,7 @@ class CallManager(
         if (session.state == CallState.CONNECTED) {
             transition(callId, CallState.RECONNECTING)
             startReconnectTimeout(callId)
+            if (session.direction == CallDirection.OUTGOING) callEventListener?.onRestartRequested(session)
         }
     }
 
@@ -317,6 +355,7 @@ class CallManager(
         val session = _activeCall.value ?: return
         if (session.callId != callId) return
         Log.e(TAG, "[CALL FAILED] Call $callId failed: $error")
+        _activeCall.value = session.copy(failureMessage = error)
         cancelRingingTimeout()
         cancelReconnectTimeout()
         transition(callId, CallState.FAILED)
@@ -367,7 +406,8 @@ class CallManager(
         if (from == to) return true
         return when (from) {
             CallState.IDLE -> to in setOf(CallState.OUTGOING_PREPARING, CallState.INCOMING_RINGING)
-            CallState.OUTGOING_PREPARING -> to in setOf(CallState.OUTGOING_CALLING, CallState.ENDING, CallState.FAILED, CallState.ENDED)
+            CallState.OUTGOING_PREPARING -> to in setOf(CallState.OUTGOING_SENDING, CallState.ENDING, CallState.FAILED, CallState.ENDED)
+            CallState.OUTGOING_SENDING -> to in setOf(CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING, CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.OUTGOING_CALLING -> to in setOf(CallState.OUTGOING_RINGING, CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.MISSED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.OUTGOING_RINGING -> to in setOf(CallState.CONNECTING, CallState.BUSY, CallState.DECLINED, CallState.MISSED, CallState.ENDING, CallState.ENDED, CallState.FAILED)
             CallState.INCOMING_RINGING -> to in setOf(CallState.CONNECTING, CallState.DECLINED, CallState.MISSED, CallState.BUSY, CallState.ENDING, CallState.ENDED, CallState.FAILED)
@@ -488,12 +528,19 @@ class CallManager(
     private fun startRingingTimeout(callId: String) {
         cancelRingingTimeout()
         ringingTimeoutJob = scope.launch {
-            delay(RINGING_TIMEOUT_MS)
+            delay(if (_activeCall.value?.state in setOf(CallState.OUTGOING_SENDING, CallState.OUTGOING_CALLING)) SIGNAL_DELIVERY_TIMEOUT_MS else RINGING_TIMEOUT_MS)
             val session = _activeCall.value ?: return@launch
             if (session.callId != callId) return@launch
 
+            // Timeout cleanup must not cancel the coroutine performing it.
+            ringingTimeoutJob = null
+
             when (session.state) {
-                CallState.OUTGOING_CALLING, CallState.OUTGOING_RINGING -> {
+                CallState.OUTGOING_SENDING, CallState.OUTGOING_CALLING -> {
+                    Log.i(TAG, "[TIMEOUT] Peer did not confirm incoming call presentation")
+                    onCallFailed(callId, "Could not reach the peer")
+                }
+                CallState.OUTGOING_RINGING -> {
                     Log.i(TAG, "[TIMEOUT] No answer for outgoing call=$callId")
                     callService.sendEnd(session, CallEndReason.NO_ANSWER)
                     transition(callId, CallState.MISSED)
@@ -521,6 +568,7 @@ class CallManager(
             val session = _activeCall.value ?: return@launch
             if (session.callId == callId && session.state == CallState.RECONNECTING) {
                 Log.i(TAG, "[TIMEOUT] Reconnect failed for call=$callId")
+                reconnectTimeoutJob = null
                 endCall(callId, CallEndReason.NETWORK_LOST)
             }
         }
@@ -544,6 +592,8 @@ class CallManager(
  * Implemented by the component owning the WebRTC peer connection and audio routing.
  */
 interface CallEventListener {
+    fun onRestartRequested(session: CallSession) {}
+    fun onRestartOffer(session: CallSession, sdpOffer: String) {}
     fun onCreateOffer(session: CallSession)
     fun onCreateAnswer(session: CallSession)
     fun onRemoteAnswer(session: CallSession, sdpAnswer: String)

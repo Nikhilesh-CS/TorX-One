@@ -57,8 +57,7 @@ class TorTransport(
                     socket.connect(InetSocketAddress.createUnresolved(route.onionHost, route.port), 120_000)
                     socket.soTimeout = 15_000
                     DataOutputStream(socket.getOutputStream()).use { output ->
-                        val returnOnion = state.onionAddress ?: controller.onionAddress()
-                            ?: return@withContext TransportResult.Failed(type, "Local onion service is not published")
+                        val returnOnion = state.onionAddress
                         output.writeUTF(returnOnion)
                         output.writeInt(payload.size)
                         output.write(payload)

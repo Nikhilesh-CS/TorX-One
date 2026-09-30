@@ -33,6 +33,8 @@ import com.torxone.app.TorXOneApplication
 import com.torxone.app.calls.*
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /**
  * CallScreen — State-of-the-art Call interface for TorX 1-to-1 secure calls.
@@ -53,6 +55,30 @@ fun CallScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val app = context.applicationContext as TorXOneApplication
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
+    val notificationManager = context.getSystemService(android.app.NotificationManager::class.java)
+    val notificationsEnabled = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+        notificationManager.getNotificationChannel(CallNotificationManager.CHANNEL_INCOMING)?.importance != android.app.NotificationManager.IMPORTANCE_NONE
+    val fullScreenAllowed = android.os.Build.VERSION.SDK_INT < 34 || notificationManager.canUseFullScreenIntent()
+
+    // A foreground incoming call remains visible and audible when notification
+    // permission is unavailable. Honor the phone's silent/vibrate ringer mode.
+    DisposableEffect(uiState.state, lifecycleState) {
+        val audio = context.getSystemService(android.media.AudioManager::class.java)
+        val ringtone = if (uiState.state == CallState.INCOMING_RINGING && !notificationsEnabled &&
+            lifecycleState.isAtLeast(Lifecycle.State.STARTED) &&
+            audio.ringerMode == android.media.AudioManager.RINGER_MODE_NORMAL) {
+            runCatching {
+                android.media.RingtoneManager.getRingtone(context,
+                    android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE))
+                    ?.apply {
+                        if (android.os.Build.VERSION.SDK_INT >= 28) isLooping = true
+                        play()
+                    }
+            }.getOrNull()
+        } else null
+        onDispose { ringtone?.stop() }
+    }
 
     // Back button minimizes call screen without hanging up
     BackHandler {
@@ -89,6 +115,21 @@ fun CallScreen(
                 )
             )
     ) {
+        if (!notificationsEnabled || !fullScreenAllowed) {
+            TextButton(
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 48.dp),
+                onClick = {
+                    val intent = if (!notificationsEnabled) android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    else android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                        android.net.Uri.parse("package:${context.packageName}"))
+                    runCatching { context.startActivity(intent) }
+                }
+            ) {
+                Text(if (!notificationsEnabled) "Background ringing is disabled. Enable call notifications."
+                    else "Enable full-screen calls for the lock screen.")
+            }
+        }
         if (isVideo && uiState.state == CallState.CONNECTED) {
             // ── Video Call Layout ──
             VideoCallLayout(
@@ -179,6 +220,7 @@ private fun VoiceCallLayout(
             CallAvatar(
                 name = uiState.peerName,
                 isPulsing = uiState.state == CallState.INCOMING_RINGING ||
+                    uiState.state == CallState.OUTGOING_SENDING ||
                     uiState.state == CallState.OUTGOING_CALLING ||
                     uiState.state == CallState.OUTGOING_RINGING ||
                     uiState.state == CallState.CONNECTED

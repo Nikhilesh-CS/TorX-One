@@ -47,9 +47,10 @@ class SettingsViewModel(
         combine(
             settingsRepo.themeMode,
             settingsRepo.dynamicColorsEnabled,
-            settingsRepo.autoDownloadMedia
-        ) { theme, dynamic, autoDownload ->
-            PartialState4(theme, dynamic, autoDownload)
+            settingsRepo.autoDownloadMedia,
+            settingsRepo.relayOnlyCalls
+        ) { theme, dynamic, autoDownload, relayOnly ->
+            PartialState4(theme, dynamic, autoDownload, relayOnly)
         }
     ) { p1, p2, p3, p4 ->
         SettingsUiState(
@@ -70,7 +71,8 @@ class SettingsViewModel(
             lowBandwidthMode = p3.lowBandwidthMode,
             themeMode = p4.themeMode,
             dynamicColorsEnabled = p4.dynamicColorsEnabled,
-            autoDownloadMedia = p4.autoDownloadMedia
+            autoDownloadMedia = p4.autoDownloadMedia,
+            relayOnlyCalls = p4.relayOnlyCalls
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
@@ -81,6 +83,7 @@ class SettingsViewModel(
                 "lastSeen" -> settingsRepo.setLastSeenVisible(value)
                 "online" -> settingsRepo.setOnlineVisible(value)
                 "readReceipts" -> settingsRepo.setReadReceiptsEnabled(value)
+                "relayOnlyCalls" -> settingsRepo.setRelayOnlyCalls(value)
             }
         }
     }
@@ -158,6 +161,7 @@ class SettingsViewModel(
 }
 
 data class SettingsUiState(
+    val relayOnlyCalls: Boolean = false,
     val displayName: String = "",
     val about: String = "",
     val avatarUri: String? = null,
@@ -206,5 +210,6 @@ private data class PartialState3(
 private data class PartialState4(
     val themeMode: String,
     val dynamicColorsEnabled: Boolean,
-    val autoDownloadMedia: Boolean
+    val autoDownloadMedia: Boolean,
+    val relayOnlyCalls: Boolean
 )

@@ -12,6 +12,9 @@ import com.torxone.app.data.dao.OutboxDao
 import com.torxone.app.data.entity.OutboxEntity
 import com.torxone.app.protocol.*
 import java.util.UUID
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * CallService — Encrypts and sends call signaling through the existing
@@ -40,6 +43,23 @@ open class CallService(
 ) : CallSignaling {
     companion object {
         private const val TAG = "CallService"
+    }
+
+    private val offerIds = ConcurrentHashMap<String, String>()
+    private val deliveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var acceptanceObserver: Job? = null
+
+    override fun observeOfferAcceptance(listener: (String) -> Unit) {
+        acceptanceObserver?.cancel()
+        acceptanceObserver = deliveryScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            agent.deliveryUpdates.collect { update ->
+                if (update.status in setOf(DeliveryStatus.TRANSPORT_ACCEPTED, DeliveryStatus.DELIVERED)) {
+                    offerIds.remove(update.logicalMessageId)?.let(listener)
+                } else if (update.status in setOf(DeliveryStatus.FAILED, DeliveryStatus.EXPIRED)) {
+                    offerIds.remove(update.logicalMessageId)
+                }
+            }
+        }
     }
 
     // ─── Outgoing Signaling ──────────────────────────────────────────────
@@ -157,6 +177,7 @@ open class CallService(
     // ─── Call History ────────────────────────────────────────────────────
 
     override suspend fun persistCallHistory(session: CallSession, outcome: CallOutcome, durationMs: Long?) {
+        if (session.type == CallType.DATA) return
         callHistoryDao.upsert(
             CallHistoryEntity(
                 callId = session.callId,
@@ -192,6 +213,13 @@ open class CallService(
             messageType = messageType,
             payload = payload
         )
+
+        if (messageType == MessageType.CALL_OFFER) {
+            offerIds.entries.removeIf { it.value == session.callId }
+            // One live call; discard mappings from abandoned calls.
+            offerIds.clear()
+            offerIds[envelope.logicalMessageId] = session.callId
+        }
 
         relationshipSendCoordinator.sendDurableUnsequenced(
             relationshipId = connection.relationshipId,

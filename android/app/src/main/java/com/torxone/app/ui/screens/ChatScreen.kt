@@ -161,11 +161,36 @@ fun ChatScreen(
         }
     }
 
+    var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val callNotificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) android.widget.Toast.makeText(context,
+            "Calls cannot ring in the background while notifications are disabled.",
+            android.widget.Toast.LENGTH_LONG).show()
+        pendingCallAction?.invoke()
+        pendingCallAction = null
+    }
+    fun startWithCallNotificationSetup(action: () -> Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && androidx.core.content.ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingCallAction = action
+            callNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                android.widget.Toast.makeText(context,
+                    "Calls cannot ring in the background while notifications are disabled.",
+                    android.widget.Toast.LENGTH_LONG).show()
+            }
+            action()
+        }
+    }
+
     val callAudioLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            onStartVoiceCall?.invoke()
+            onStartVoiceCall?.let { startWithCallNotificationSetup(it) }
         }
     }
 
@@ -173,7 +198,7 @@ fun ChatScreen(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         if (results.values.all { it }) {
-            onStartVideoCall?.invoke()
+            onStartVideoCall?.let { startWithCallNotificationSetup(it) }
         }
     }
 
@@ -217,7 +242,7 @@ fun ChatScreen(
         onStartVoiceCall = onStartVoiceCall?.let {
             {
                 if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
-                    onStartVoiceCall()
+                    startWithCallNotificationSetup(onStartVoiceCall)
                 } else {
                     callAudioLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                 }
@@ -227,7 +252,7 @@ fun ChatScreen(
             {
                 val perms = arrayOf(android.Manifest.permission.RECORD_AUDIO, android.Manifest.permission.CAMERA)
                 if (com.torxone.app.ui.permissions.PermissionHelper.arePermissionsGranted(context, perms)) {
-                    onStartVideoCall()
+                    startWithCallNotificationSetup(onStartVideoCall)
                 } else {
                     videoCallPermissionsLauncher.launch(perms)
                 }

@@ -106,6 +106,7 @@ class CallViewModel(
             isRemoteCameraOn = session.isRemoteCameraOn,
             isActive = session.state in setOf(
                 CallState.OUTGOING_PREPARING,
+                CallState.OUTGOING_SENDING,
                 CallState.OUTGOING_CALLING,
                 CallState.OUTGOING_RINGING,
                 CallState.INCOMING_RINGING,
@@ -119,7 +120,8 @@ class CallViewModel(
     private fun deriveStatusText(session: CallSession): String {
         return when (session.state) {
             CallState.IDLE -> ""
-            CallState.OUTGOING_PREPARING -> "Calling…"
+            CallState.OUTGOING_PREPARING -> "Preparing call…"
+            CallState.OUTGOING_SENDING -> "Sending call request…"
             CallState.OUTGOING_CALLING -> "Calling…"
             CallState.OUTGOING_RINGING -> "Ringing…"
             CallState.INCOMING_RINGING -> {
@@ -134,7 +136,7 @@ class CallViewModel(
             CallState.DECLINED -> "Call declined"
             CallState.BUSY -> "User is busy"
             CallState.MISSED -> "No answer"
-            CallState.FAILED -> "Couldn't connect call"
+            CallState.FAILED -> session.failureMessage ?: "Couldn't connect call"
         }
     }
 

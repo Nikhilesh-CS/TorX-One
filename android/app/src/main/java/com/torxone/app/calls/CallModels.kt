@@ -7,7 +7,7 @@ import androidx.room.*
  * Every transition is owned exclusively by CallManager.
  *
  * State graph:
- *   IDLE → OUTGOING_PREPARING → OUTGOING_CALLING → OUTGOING_RINGING → CONNECTING → CONNECTED → ENDING → ENDED
+ *   IDLE → OUTGOING_PREPARING → OUTGOING_SENDING → OUTGOING_CALLING → OUTGOING_RINGING → CONNECTING → CONNECTED → ENDING → ENDED
  *   IDLE → INCOMING_RINGING → CONNECTING → CONNECTED → ENDING → ENDED
  *   CONNECTED → RECONNECTING → CONNECTED (or FAILED)
  *   INCOMING_RINGING → DECLINED
@@ -21,7 +21,10 @@ enum class CallState {
     /** Local user initiated, preparing SDP offer */
     OUTGOING_PREPARING,
 
-    /** Offer durably queued; waiting for the remote device to confirm presentation */
+    /** Offer queued; the transport has not yet accepted it. */
+    OUTGOING_SENDING,
+
+    /** Transport accepted the offer; awaiting authenticated remote ringing. */
     OUTGOING_CALLING,
 
     /** Authenticated CALL_RINGING received from the remote device */
@@ -60,7 +63,9 @@ enum class CallState {
 
 enum class CallType {
     VOICE,
-    VIDEO
+    VIDEO,
+    /** Authenticated, silent file-transfer session; never owns microphone/camera/UI. */
+    DATA
 }
 
 enum class CallDirection {
@@ -115,7 +120,8 @@ data class CallSession(
     val isSpeakerOn: Boolean = false,
     val hasExplicitAudioRouteSelection: Boolean = false,
     val isCameraOn: Boolean = false,
-    val isRemoteCameraOn: Boolean = true
+    val isRemoteCameraOn: Boolean = true,
+    val failureMessage: String? = null
 )
 
 /**

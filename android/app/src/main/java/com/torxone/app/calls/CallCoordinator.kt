@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.torxone.app.data.dao.ContactDao
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collect
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -18,7 +19,8 @@ class CallCoordinator(
     private val webRtcClient: WebRtcClient,
     private val audioRouteManager: AudioRouteManager,
     private val callNotificationManager: CallNotificationManager,
-    private val contactDao: ContactDao
+    private val contactDao: ContactDao,
+    private val relayOnlyProvider: suspend () -> Boolean = { false }
 ) : CallEventListener {
 
     companion object {
@@ -30,16 +32,50 @@ class CallCoordinator(
 
     init {
         callManager.callEventListener = this
+        scope.launch {
+            callManager.activeCall.collect { session ->
+                if (session == null || session.direction != CallDirection.OUTGOING) return@collect
+                val status = when (session.state) {
+                    CallState.OUTGOING_PREPARING -> "Preparing call…"
+                    CallState.OUTGOING_SENDING -> "Sending call request…"
+                    CallState.OUTGOING_CALLING -> "Calling…"
+                    CallState.OUTGOING_RINGING -> "Ringing…"
+                    CallState.CONNECTING -> "Connecting…"
+                    CallState.RECONNECTING -> "Reconnecting…"
+                    else -> return@collect
+                }
+                val contact = contactDao.getByRelationshipId(session.relationshipId)
+                if (callManager.activeCall.value?.callId == session.callId && callManager.activeCall.value?.state == session.state)
+                    callNotificationManager.showActiveCallNotification(session.callId,
+                        contact?.displayName ?: session.peerIdentityId.take(8), session.type, status)
+            }
+        }
+    }
+
+    private suspend fun prepareMedia(session: CallSession): Boolean {
+        return try {
+            val relayOnly = relayOnlyProvider()
+            if (callManager.activeCall.value?.callId != session.callId) return false
+            webRtcClient.createPeerConnection(session.callId, relayOnly)
+            TorXCallService.start(context)
+            webRtcClient.createAudioTrack()
+            if (session.type == CallType.VIDEO) webRtcClient.createVideoTrack()
+            true
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            scope.launch {
+                callManager.onCallFailed(session.callId,
+                    if (error.message == "Maximum Call Privacy requires a configured TURN relay")
+                        error.message!! else "Could not prepare call media")
+            }
+            false
+        }
     }
 
     override fun onCreateOffer(session: CallSession) {
+        scope.launch {
         Log.d(TAG, "onCreateOffer: callId=${session.callId}")
-        TorXCallService.start(context)
-        webRtcClient.createPeerConnection(session.callId)
-        webRtcClient.createAudioTrack()
-        if (session.type == CallType.VIDEO) {
-            webRtcClient.createVideoTrack()
-        }
+        if (!prepareMedia(session)) return@launch
         webRtcClient.createOffer { sdp ->
             scope.launch {
                 callManager.onLocalOfferReady(session.callId, sdp)
@@ -48,7 +84,8 @@ class CallCoordinator(
         scope.launch {
             val contact = contactDao.getByRelationshipId(session.relationshipId)
             val peerName = contact?.displayName ?: session.peerIdentityId.take(8)
-            callNotificationManager.showActiveCallNotification(session.callId, peerName, session.type, "Calling…")
+            callNotificationManager.showActiveCallNotification(session.callId, peerName, session.type, "Preparing call…")
+        }
         }
     }
 
@@ -63,14 +100,10 @@ class CallCoordinator(
     }
 
     override fun onCreateAnswer(session: CallSession) {
+        scope.launch {
         Log.d(TAG, "onCreateAnswer: callId=${session.callId}")
         callNotificationManager.cancelIncomingNotification()
-        TorXCallService.start(context)
-        webRtcClient.createPeerConnection(session.callId)
-        webRtcClient.createAudioTrack()
-        if (session.type == CallType.VIDEO) {
-            webRtcClient.createVideoTrack()
-        }
+        if (!prepareMedia(session)) return@launch
         val sdpOffer = remoteOffers.remove(session.callId)
         if (sdpOffer != null) {
             webRtcClient.createAnswer(sdpOffer) { sdp ->
@@ -85,12 +118,13 @@ class CallCoordinator(
             audioRouteManager.stopCallAudio()
             callNotificationManager.cancelIncomingNotification()
             TorXCallService.stop(context)
-            return
+            return@launch
         }
         scope.launch {
             val contact = contactDao.getByRelationshipId(session.relationshipId)
             val peerName = contact?.displayName ?: session.peerIdentityId.take(8)
             callNotificationManager.showActiveCallNotification(session.callId, peerName, session.type, "Connecting…")
+        }
         }
     }
 
@@ -101,6 +135,18 @@ class CallCoordinator(
 
     override fun onRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
         webRtcClient.addRemoteIceCandidate(sdpMid, sdpMLineIndex, candidate)
+    }
+
+    override fun onRestartRequested(session: CallSession) {
+        webRtcClient.createOffer(iceRestart = true) { sdp ->
+            scope.launch { callManager.onLocalRestartOfferReady(session.callId, sdp) }
+        }
+    }
+
+    override fun onRestartOffer(session: CallSession, sdpOffer: String) {
+        webRtcClient.createAnswer(sdpOffer) { sdp ->
+            scope.launch { callManager.onLocalRestartAnswerReady(session.callId, sdp) }
+        }
     }
 
     override fun onCallConnected(session: CallSession) {

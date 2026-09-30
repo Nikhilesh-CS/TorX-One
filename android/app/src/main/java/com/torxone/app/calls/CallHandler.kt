@@ -22,13 +22,30 @@ import com.torxone.app.protocol.MessageType
  */
 class CallHandler(
     private val callManager: CallManager,
-    private val contactDao: com.torxone.app.data.dao.ContactDao
+    private val contactDao: com.torxone.app.data.dao.ContactDao,
+    private val dataHandler: CallHandler? = null,
+    private val authorizeDataOffer: suspend (String) -> Boolean = { true }
 ) {
     companion object {
         private const val TAG = "CallHandler"
     }
 
     suspend fun handleCallSignal(connection: Connection, envelope: SecureEnvelope) {
+        if (dataHandler != null) {
+            val isDataOffer = envelope.messageType == MessageType.CALL_OFFER &&
+                CallProtocolCodec.decodeOffer(envelope.payload).callType == CallType.DATA
+            val dataCallId = dataHandler.callManager.activeCall.value?.callId
+            val targetsDataSession = dataCallId != null && java.io.DataInputStream(
+                java.io.ByteArrayInputStream(envelope.payload)).use { input -> input.readInt(); input.readUTF() == dataCallId }
+            if (isDataOffer || targetsDataSession) {
+                dataHandler.handleCallSignal(connection, envelope)
+                return
+            }
+        }
+        if (envelope.messageType != MessageType.CALL_OFFER) {
+            val session = callManager.activeCall.value ?: return
+            if (session.relationshipId != connection.relationshipId || session.peerIdentityId != envelope.senderIdentity) return
+        }
         try {
             when (envelope.messageType) {
                 MessageType.CALL_OFFER -> handleOffer(connection, envelope)
@@ -49,6 +66,15 @@ class CallHandler(
 
     private suspend fun handleOffer(connection: Connection, envelope: SecureEnvelope) {
         val payload = CallProtocolCodec.decodeOffer(envelope.payload)
+        if (payload.callType == CallType.DATA && !authorizeDataOffer(connection.relationshipId)) return
+        if (payload.callType == CallType.DATA && Regex("^m=(audio|video) ", RegexOption.MULTILINE).containsMatchIn(payload.sdpOffer)) {
+            throw IllegalArgumentException("File sessions must not negotiate microphone or camera media")
+        }
+        val age = System.currentTimeMillis() - payload.createdAt
+        if (age > 150_000 || age < -30_000) {
+            Log.i(TAG, "Ignored expired call offer")
+            return
+        }
         val conversationId = contactDao.getByRelationshipId(connection.relationshipId)?.conversationId
             ?: throw IllegalStateException("No authenticated conversation for incoming call")
         Log.d(TAG, "[RX] CALL_OFFER call=${payload.callId.take(8)} type=${payload.callType} from=${envelope.senderIdentity.take(8)}")
@@ -71,6 +97,10 @@ class CallHandler(
 
     private suspend fun handleAnswer(envelope: SecureEnvelope) {
         val payload = CallProtocolCodec.decodeAnswer(envelope.payload)
+        if (callManager.activeCall.value?.type == CallType.DATA &&
+            Regex("^m=(audio|video) ", RegexOption.MULTILINE).containsMatchIn(payload.sdpAnswer)) {
+            throw IllegalArgumentException("File sessions must not negotiate audio or video")
+        }
         Log.d(TAG, "[RX] CALL_ANSWER call=${payload.callId.take(8)}")
         callManager.onRemoteAnswer(payload.callId, payload.sdpAnswer)
     }

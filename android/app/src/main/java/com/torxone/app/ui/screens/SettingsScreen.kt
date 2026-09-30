@@ -40,6 +40,7 @@ fun SettingsScreen(
     lastSeenVisible: Boolean,
     onlineVisible: Boolean,
     readReceiptsEnabled: Boolean,
+    relayOnlyCalls: Boolean,
     // Notifications
     notificationsEnabled: Boolean,
     soundEnabled: Boolean,
@@ -175,6 +176,14 @@ fun SettingsScreen(
                 subtitle = if (readReceiptsEnabled) "Contacts see when you read" else "Disabled",
                 checked = readReceiptsEnabled,
                 onCheckedChange = { onPrivacyChange("readReceipts", it) }
+            )
+
+            SettingsToggle(
+                title = "Maximum Call Privacy",
+                subtitle = if (relayOnlyCalls) "Relay only for calls and files; requires working TURN. Applies to new sessions."
+                    else "Standard: LAN, STUN and optional TURN. Peers can learn your network address. Applies to new sessions.",
+                checked = relayOnlyCalls,
+                onCheckedChange = { onPrivacyChange("relayOnlyCalls", it) }
             )
 
             SettingsDivider()

@@ -30,6 +30,7 @@ import com.torxone.app.transport.tor.TorTransport
 import androidx.room.withTransaction
 import com.torxone.app.crypto.AndroidKeystoreKeyProtector
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -128,6 +129,7 @@ class TorXOneApplication : Application() {
 
     lateinit var webRtcClient: com.torxone.app.calls.WebRtcClient
         private set
+    private lateinit var fileRtcClient: com.torxone.app.media.FileRtcClient
 
     lateinit var audioRouteManager: com.torxone.app.calls.AudioRouteManager
         private set
@@ -322,7 +324,20 @@ class TorXOneApplication : Application() {
             contactDao = database.contactDao(),
             relationshipSendCoordinator = relationshipSendCoordinator,
             sessionStore = sessionStore,
-            dedicatedMediaTransport = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter),
+            dedicatedMediaTransport = com.torxone.app.media.HybridDedicatedMediaTransport(
+                rtcSend = { destination, frame ->
+                    if (!::webRtcClient.isInitialized || !::callManager.isInitialized) false
+                    else {
+                        val session = callManager.activeCall.value
+                        val connection = session?.let { connectionManager.getConnectionByRelationship(it.relationshipId) }
+                        val callLaneAccepted = if (session == null || connection?.sendQueueId != destination.address) false
+                            else webRtcClient.sendDedicatedMedia(session.relationshipId, frame)
+                        if (callLaneAccepted) true else if (::fileRtcClient.isInitialized)
+                            fileRtcClient.send(destination.address, frame) else false
+                    }
+                },
+                fallback = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter)
+            ),
             groupMessageDeliveryDao = database.groupMessageDeliveryDao()
         )
         val mediaHandler = MediaHandler(
@@ -361,6 +376,8 @@ class TorXOneApplication : Application() {
 
         // 7d. Call Subsystem
         callNotificationManager = com.torxone.app.calls.CallNotificationManager(this)
+        // Live calls are not restored after process death; remove stale answer/hangup actions.
+        callNotificationManager.cancelAll()
         audioRouteManager = com.torxone.app.calls.AudioRouteManager(this)
         val callService = com.torxone.app.calls.CallService(
             sessionCrypto = sessionCrypto,
@@ -379,6 +396,9 @@ class TorXOneApplication : Application() {
             localIdentityIdProvider = { getLocalIdentityId() }
         )
         webRtcClient = com.torxone.app.calls.WebRtcClient(this, callManager)
+        webRtcClient.onMediaFrameReceived = { relationshipId, frame ->
+            mediaService.handleDedicatedMediaFrame(frame, com.torxone.app.transport.TransportType.WEBRTC, relationshipId)
+        }
         webRtcClient.initialize()
         val callCoordinator = com.torxone.app.calls.CallCoordinator(
             context = this,
@@ -386,9 +406,33 @@ class TorXOneApplication : Application() {
             webRtcClient = webRtcClient,
             audioRouteManager = audioRouteManager,
             callNotificationManager = callNotificationManager,
-            contactDao = database.contactDao()
+            contactDao = database.contactDao(),
+            relayOnlyProvider = { settingsRepository.relayOnlyCalls.first() }
         )
-        val callHandler = com.torxone.app.calls.CallHandler(callManager, database.contactDao())
+        val fileSignaling = com.torxone.app.calls.CallService(
+            sessionCrypto = sessionCrypto,
+            connectionManager = connectionManager,
+            agent = agent,
+            conversationDao = database.conversationDao(),
+            callHistoryDao = database.callHistoryDao(),
+            localIdentityIdProvider = { getLocalIdentityId() },
+            relationshipSendCoordinator = relationshipSendCoordinator,
+            outboxDao = database.outboxDao()
+        )
+        fileRtcClient = com.torxone.app.media.FileRtcClient(
+            this, fileSignaling, { getLocalIdentityId() }, database.contactDao(),
+            connectionManager::getConnectionBySendQueue,
+            acceptFrame = { relationshipId, frame ->
+                mediaService.handleDedicatedMediaFrame(frame, com.torxone.app.transport.TransportType.WEBRTC, relationshipId)
+            },
+            relayOnlyProvider = { settingsRepository.relayOnlyCalls.first() },
+            authorizeOffer = { relationshipId ->
+                database.mediaTransferDao().getPendingTransfers().any {
+                    it.relationshipId == relationshipId && it.status == com.torxone.app.media.TransferStatus.ACTIVE.name
+                }
+            }
+        )
+        val callHandler = com.torxone.app.calls.CallHandler(callManager, database.contactDao(), fileRtcClient.handler)
 
         // Route persistence must exist before bootstrap dispatch so the responder
         // can bind its authenticated permanent reverse route before sending ACK.

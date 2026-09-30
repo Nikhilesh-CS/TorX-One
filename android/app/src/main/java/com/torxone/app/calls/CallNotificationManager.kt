@@ -94,6 +94,7 @@ class CallNotificationManager(private val context: Context) {
             return
         }
         val typeLabel = when (callType) {
+            CallType.DATA -> return
             CallType.VOICE -> "voice"
             CallType.VIDEO -> "video"
         }
@@ -168,6 +169,7 @@ class CallNotificationManager(private val context: Context) {
         durationText: String? = null
     ): Notification {
         val typeLabel = when (callType) {
+            CallType.DATA -> "file transfer"
             CallType.VOICE -> "voice"
             CallType.VIDEO -> "video"
         }

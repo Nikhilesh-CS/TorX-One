@@ -20,11 +20,9 @@ import org.webrtc.audio.JavaAudioDeviceModule
  * Invariant: No UI component manipulates PeerConnection directly.
  * TorX treats WebRTC purely as a media engine underneath CallManager.
  *
- * Privacy: no third-party ICE service is used by default. STUN/TURN endpoints
- * must be supplied by the operator through Gradle properties or environment
- * variables. Without that configuration calls are explicitly direct/LAN only.
- * TURN operators can observe relay metadata, so TorX-controlled infrastructure
- * is preferred and credentials must be rotated outside source control.
+ * Standard mode uses LAN/STUN with optional TURN fallback. Direct peers can learn
+ * network addresses. Maximum Call Privacy uses relay candidates only and omits
+ * STUN. Tor carries authenticated signaling for both modes.
  */
 class WebRtcClient(
     private val context: Context,
@@ -49,6 +47,10 @@ class WebRtcClient(
     private var localEglBase: EglBase? = null
     private var activeCallId: String? = null
     private var remoteVideoTrack: VideoTrack? = null
+    private var mediaChannel: DataChannel? = null
+    private var mediaPipe: com.torxone.app.media.RtcMediaPipe? = null
+    private var relayOnly = false
+    var onMediaFrameReceived: (suspend (String, ByteArray) -> Boolean)? = null
 
     var remoteVideoSink: VideoSink? = null
         set(value) {
@@ -110,18 +112,20 @@ class WebRtcClient(
 
     /**
      * Create a PeerConnection from operator-supplied ICE configuration.
-     * Empty configuration deliberately produces direct/LAN-only host candidates.
+     * The policy is captured for this session; Maximum Call Privacy requires TURN.
      */
-    fun createPeerConnection(callId: String) {
+    fun createPeerConnection(callId: String, relayOnly: Boolean = false) {
+        this.relayOnly = relayOnly
         activeCallId = callId
         val factory = peerConnectionFactory
             ?: throw IllegalStateException("PeerConnectionFactory not initialized")
 
         val iceServers = buildIceServers()
-        if (iceServers.isEmpty()) {
-            Log.w(TAG, "No STUN/TURN configuration: calls are direct/LAN-only")
+        require(!relayOnly || iceServers.any { server -> server.urls.any { it.startsWith("turn:") || it.startsWith("turns:") } }) {
+            "Maximum Call Privacy requires a configured TURN relay"
         }
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
+            iceTransportsType = if (relayOnly) PeerConnection.IceTransportsType.RELAY else PeerConnection.IceTransportsType.ALL
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -130,6 +134,7 @@ class WebRtcClient(
 
         peerConnection = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
+                if (!RtcIcePolicy.allowsCandidate(candidate.sdp, relayOnly)) return
                 val cid = activeCallId ?: return
                 scope.launch {
                     callManager.onLocalIceCandidate(cid, candidate.sdpMid, candidate.sdpMLineIndex, candidate.sdp)
@@ -143,6 +148,7 @@ class WebRtcClient(
                     when (state) {
                         PeerConnection.IceConnectionState.CONNECTED,
                         PeerConnection.IceConnectionState.COMPLETED -> {
+                            auditRelaySelection(cid)
                             callManager.onIceConnected(cid)
                         }
                         PeerConnection.IceConnectionState.DISCONNECTED -> {
@@ -180,12 +186,84 @@ class WebRtcClient(
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {}
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {}
             override fun onRemoveStream(stream: MediaStream) {}
-            override fun onDataChannel(channel: DataChannel) {}
+            override fun onDataChannel(channel: DataChannel) { attachMediaChannel(callId, channel) }
             override fun onRenegotiationNeeded() {}
             override fun onAddStream(stream: MediaStream) {}
         })
 
-        Log.i(TAG, "PeerConnection created for call=$callId (host ICE only)")
+        checkNotNull(peerConnection) { "Could not create WebRTC peer connection" }
+        if (callManager.activeCall.value?.direction == CallDirection.OUTGOING) {
+            val channel = peerConnection!!.createDataChannel("torx-media-v1", DataChannel.Init())
+            if (channel != null) attachMediaChannel(callId, channel)
+        }
+
+        Log.i(TAG, "PeerConnection created; ICE=${if (relayOnly) "RELAY" else "ALL"}")
+    }
+
+    private fun attachMediaChannel(callId: String, channel: DataChannel) {
+        val session = callManager.activeCall.value
+        if (session?.callId != callId || channel.label() != "torx-media-v1" || mediaChannel != null) {
+            channel.close()
+            channel.dispose()
+            return
+        }
+        mediaChannel = channel
+        val pipe = com.torxone.app.media.RtcMediaPipe(
+            scope,
+            sendPacket = { packet ->
+                channel.state() == DataChannel.State.OPEN &&
+                    channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(packet), true))
+            },
+            bufferedBytes = { channel.bufferedAmount() },
+            acceptFrame = { frame ->
+                if (activeCallId == callId && callManager.activeCall.value?.callId == callId)
+                    onMediaFrameReceived?.invoke(session.relationshipId, frame) ?: false else false
+            }
+        )
+        mediaPipe = pipe
+        channel.registerObserver(object : DataChannel.Observer {
+            override fun onBufferedAmountChange(previousAmount: Long) {}
+            override fun onStateChange() {
+                if (channel.state() == DataChannel.State.CLOSED) pipe.close()
+            }
+            override fun onMessage(buffer: DataChannel.Buffer) {
+                val data = buffer.data
+                if (!buffer.binary || data.remaining() > com.torxone.app.media.RtcMediaPipe.FRAGMENT_BYTES + 21) {
+                    pipe.close()
+                    return
+                }
+                val packet = ByteArray(data.remaining())
+                data.get(packet)
+                pipe.receive(packet)
+            }
+        })
+    }
+
+    suspend fun sendDedicatedMedia(relationshipId: String, frame: ByteArray): Boolean {
+        val session = callManager.activeCall.value ?: return false
+        if (session.relationshipId != relationshipId || session.state != CallState.CONNECTED ||
+            mediaChannel?.state() != DataChannel.State.OPEN) return false
+        return mediaPipe?.send(frame) ?: false
+    }
+
+    private fun auditRelaySelection(callId: String) {
+        peerConnection?.getStats(object : RTCStatsCollectorCallback {
+            override fun onStatsDelivered(report: RTCStatsReport) {
+            report.statsMap.values.filter {
+                it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true
+            }.forEach { pair ->
+                val local = report.statsMap[pair.members["localCandidateId"] as? String]
+                val remote = report.statsMap[pair.members["remoteCandidateId"] as? String]
+                if (local?.members?.get("candidateType") == "relay" && remote?.members?.get("candidateType") == "relay") {
+                    Log.i(TAG, "Selected ICE pair: relay/relay")
+                } else if (relayOnly && local != null && remote != null) {
+                    scope.launch { callManager.onCallFailed(callId, "Non-relay media path rejected") }
+                } else if (local != null && remote != null) {
+                    Log.i(TAG, "Selected ICE pair: ${local.members["candidateType"]}/${remote.members["candidateType"]}")
+                }
+            }
+            }
+        })
     }
 
     // ─── Audio Track ─────────────────────────────────────────────────────
@@ -264,10 +342,12 @@ class WebRtcClient(
 
     // ─── SDP Negotiation ─────────────────────────────────────────────────
 
-    fun createOffer(callback: (String) -> Unit) {
+    fun createOffer(iceRestart: Boolean = false, callback: (String) -> Unit) {
         val constraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+            if (iceRestart) mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+            val receiveMedia = (callManager.activeCall.value?.type != CallType.DATA).toString()
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", receiveMedia))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", receiveMedia))
         }
         peerConnection?.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription) {
@@ -297,14 +377,16 @@ class WebRtcClient(
     }
 
     fun createAnswer(sdpOffer: String, callback: (String) -> Unit) {
+        if (!allowsOnlyRelayCandidates(sdpOffer)) return
         val offerSdp = SessionDescription(SessionDescription.Type.OFFER, sdpOffer)
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
                 isRemoteDescriptionSet = true
                 drainPendingIceCandidates()
                 val constraints = MediaConstraints().apply {
-                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+                    val receiveMedia = (callManager.activeCall.value?.type != CallType.DATA).toString()
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", receiveMedia))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", receiveMedia))
                 }
                 peerConnection?.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(sdp: SessionDescription) {
@@ -344,6 +426,7 @@ class WebRtcClient(
     }
 
     fun setRemoteAnswer(sdpAnswer: String) {
+        if (!allowsOnlyRelayCandidates(sdpAnswer)) return
         val answerSdp = SessionDescription(SessionDescription.Type.ANSWER, sdpAnswer)
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
@@ -362,6 +445,7 @@ class WebRtcClient(
     }
 
     fun addRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
+        if (!RtcIcePolicy.allowsCandidate(candidate, relayOnly)) return
         val iceCandidate = IceCandidate(sdpMid ?: "", sdpMLineIndex, candidate)
         synchronized(pendingIceCandidates) {
             val pc = peerConnection
@@ -372,6 +456,12 @@ class WebRtcClient(
                 pendingIceCandidates.add(iceCandidate)
             }
         }
+    }
+
+    private fun allowsOnlyRelayCandidates(sdp: String): Boolean {
+        val valid = RtcIcePolicy.allowsSdp(sdp, relayOnly)
+        if (!valid) scope.launch { activeCallId?.let { callManager.onCallFailed(it, "Non-relay media offer rejected") } }
+        return valid
     }
 
     // ─── Media Controls ──────────────────────────────────────────────────
@@ -408,7 +498,7 @@ class WebRtcClient(
             .filter(String::isNotBlank)
 
         val servers = mutableListOf<PeerConnection.IceServer>()
-        urls(com.torxone.app.BuildConfig.TORX_STUN_URLS).forEach { url ->
+        RtcIcePolicy.stunUrls(com.torxone.app.BuildConfig.TORX_STUN_URLS, relayOnly).forEach { url ->
             require(url.startsWith("stun:") || url.startsWith("stuns:")) {
                 "Invalid STUN URL scheme"
             }
@@ -419,12 +509,14 @@ class WebRtcClient(
         if (turnUrls.isNotEmpty()) {
             val username = com.torxone.app.BuildConfig.TORX_TURN_USERNAME
             val credential = com.torxone.app.BuildConfig.TORX_TURN_CREDENTIAL
-            require(username.isNotBlank() && credential.isNotBlank()) {
-                "TURN URLs require both TORX_TURN_USERNAME and TORX_TURN_CREDENTIAL"
+            if (username.isBlank() || credential.isBlank()) {
+                Log.w(TAG, "TURN fallback disabled: client credentials are missing")
+                return servers
             }
             turnUrls.forEach { url ->
-                require(url.startsWith("turn:") || url.startsWith("turns:")) {
-                    "Invalid TURN URL scheme"
+                if (!url.startsWith("turn:") && !url.startsWith("turns:")) {
+                    Log.w(TAG, "Ignoring TURN endpoint with invalid URL scheme")
+                    return@forEach
                 }
                 servers += PeerConnection.IceServer.builder(url)
                     .setUsername(username)
@@ -442,6 +534,12 @@ class WebRtcClient(
      * Must be called on every call end path.
      */
     fun release() {
+        mediaPipe?.close()
+        mediaPipe = null
+        mediaChannel?.unregisterObserver()
+        mediaChannel?.close()
+        mediaChannel?.dispose()
+        mediaChannel = null
         activeCallId = null
         synchronized(pendingIceCandidates) {
             pendingIceCandidates.clear()

@@ -22,7 +22,9 @@ jobs:
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
       - name: Build, unit tests and Android lint
         working-directory: android
-        run: bash ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:securityInventory
+        run: |
+          sdkmanager "platforms;android-37.1"
+          bash ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:securityInventory
       - name: Protocol, state machine and bounded fuzz gates
         working-directory: android
         run: >-

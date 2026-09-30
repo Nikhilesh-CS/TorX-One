@@ -144,6 +144,7 @@ class MessageActionsTest {
 
         override fun observeById(id: String): Flow<ConversationEntity?> = flowOf(convs[id])
 
+        override suspend fun upsertPreservingMessages(conversation: ConversationEntity) = upsert(conversation)
         override suspend fun upsert(conversation: ConversationEntity) {
             convs[conversation.conversationId] = conversation
         }

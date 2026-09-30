@@ -76,6 +76,7 @@ class AppSettingsRepository(context: Context) {
 
     // ─── Connection Keys ─────────────────────────────────────────────
     private object ConnectionKeys {
+        val RELAY_ONLY_CALLS = booleanPreferencesKey("conn_relay_only_calls")
         val AUTO_CONNECT_NEARBY = booleanPreferencesKey("conn_auto_nearby")
         val LOW_BANDWIDTH_MODE = booleanPreferencesKey("conn_low_bandwidth")
     }
@@ -88,6 +89,12 @@ class AppSettingsRepository(context: Context) {
     // =========================================================================
     //  Onboarding
     // =========================================================================
+
+    val relayOnlyCalls: Flow<Boolean> = store.data.map { it[ConnectionKeys.RELAY_ONLY_CALLS] ?: false }
+
+    suspend fun setRelayOnlyCalls(enabled: Boolean) {
+        store.edit { it[ConnectionKeys.RELAY_ONLY_CALLS] = enabled }
+    }
 
     val isOnboardingComplete: Flow<Boolean> = store.data.map { prefs ->
         prefs[ProfileKeys.ONBOARDING_COMPLETE] ?: false

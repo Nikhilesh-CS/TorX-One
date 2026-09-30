@@ -17,7 +17,11 @@ fun buildConfigString(name: String): String {
 
 android {
     namespace = "com.torxone.app"
-    compileSdk = 36
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 1
+        }
+    }
 
     defaultConfig {
         applicationId = "com.torxone.app"
@@ -115,7 +119,7 @@ dependencies {
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
 
     // ── Embedded Tor runtime ──
-    implementation(files("libs/tor-android-0.4.8.12.aar"))
+    implementation("info.guardianproject:tor-android:0.4.9.13")
     implementation("info.guardianproject:jtorctl:0.4.5.7")
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
@@ -154,33 +158,38 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
 
-// Resolve the actual release graph, including the separately vendored native Tor binary.
+// Resolve the actual release graph and hash the selected Tor Android artifact.
 tasks.register("securityInventory") {
     val inventoryDir = layout.buildDirectory.dir("reports/security")
     outputs.dir(inventoryDir)
     outputs.upToDateWhen { false }
     doLast {
         val destination = inventoryDir.get().asFile.apply { mkdirs() }
-        val modules = configurations.getByName("releaseRuntimeClasspath")
-            .resolvedConfiguration.resolvedArtifacts.map { it.moduleVersion.id }
+        val artifacts = configurations.getByName("releaseRuntimeClasspath")
+            .resolvedConfiguration.resolvedArtifacts
+        val modules = artifacts.map { it.moduleVersion.id }
             .distinctBy { "${it.group}:${it.name}:${it.version}" }
             .sortedBy { "${it.group}:${it.name}:${it.version}" }
         fun escaped(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"")
+        val torArtifact = artifacts.single {
+            it.moduleVersion.id.group == "info.guardianproject" && it.name == "tor-android"
+        }
+        val torVersion = torArtifact.moduleVersion.id.version
+        val hash = MessageDigest.getInstance("SHA-256")
+            .digest(torArtifact.file.readBytes()).joinToString("") { "%02x".format(it) }
         val components = modules.map { id ->
             val purl = "pkg:maven/${id.group}/${id.name}@${id.version}"
-            """{"type":"library","group":"${escaped(id.group)}","name":"${escaped(id.name)}","version":"${escaped(id.version)}","purl":"${escaped(purl)}"}"""
+            val hashes = if (id == torArtifact.moduleVersion.id)
+                """, "hashes":[{"alg":"SHA-256","content":"$hash"}]""" else ""
+            """{"type":"library","group":"${escaped(id.group)}","name":"${escaped(id.name)}","version":"${escaped(id.version)}","purl":"${escaped(purl)}"$hashes}"""
         }.toMutableList()
-        val tor = file("libs/tor-android-0.4.8.12.aar")
-        val hash = MessageDigest.getInstance("SHA-256")
-            .digest(tor.readBytes()).joinToString("") { "%02x".format(it) }
-        components += """{"type":"library","name":"tor-android","version":"0.4.8.12","hashes":[{"alg":"SHA-256","content":"$hash"}]}"""
-        components += """{"type":"library","name":"tor","version":"0.4.8.12","purl":"pkg:generic/tor@0.4.8.12"}"""
+        components += """{"type":"library","name":"tor","version":"${escaped(torVersion)}","purl":"pkg:generic/tor@${escaped(torVersion)}"}"""
         destination.resolve("sbom.cdx.json").writeText(
             """{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[${components.joinToString(",")}]}"""
         )
         destination.resolve("dependencies.txt").writeText(
             modules.joinToString("\n") { "${it.group}:${it.name}:${it.version}" } +
-                "\ntor-android:0.4.8.12 SHA-256=$hash\n"
+                "\ntor-android:$torVersion SHA-256=$hash\n"
         )
     }
 }

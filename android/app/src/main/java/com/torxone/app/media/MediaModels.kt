@@ -41,6 +41,7 @@ enum class TransferDirection {
  */
 enum class TransferStatus {
     IDLE,
+    QUEUED,
     ACTIVE,
     PAUSED,
     COMPLETED,

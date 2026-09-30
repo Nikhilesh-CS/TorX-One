@@ -2,6 +2,10 @@
 
 Prepared deployment files. No relay has been deployed or verified yet.
 
+Standard mode uses LAN/STUN and optional TURN fallback. TURN is required for
+Maximum Call Privacy and networks where direct ICE cannot connect. Enable
+Maximum Call Privacy in Settings when verifying relay-only media.
+
 ## VPS prerequisites
 
 Use a Linux VPS with a static public IPv4 address, Docker Compose, and a DNS name such as `turn.your-domain.example`. Point its DNS A record directly to the VPS, without an HTTP/CDN proxy. Obtain a trusted TLS certificate for this name and arrange automatic renewal. TURN media is outside Tor; the relay sees client IPs and call traffic metadata.

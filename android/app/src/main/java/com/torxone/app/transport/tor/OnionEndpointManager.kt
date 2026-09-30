@@ -66,7 +66,23 @@ class OnionEndpointManager(
     private suspend fun receive(socket: Socket) = withContext(dispatcher) {
         socket.use {
             it.soTimeout = 15_000
-            val input = DataInputStream(it.getInputStream())
+            val stream = java.io.PushbackInputStream(it.getInputStream(), 4)
+            val input = DataInputStream(stream)
+            val prefix = ByteArray(4)
+            input.readFully(prefix)
+            // Debug-only transport proof; bypass contacts, crypto, Room and dispatcher.
+            if (com.torxone.app.BuildConfig.DEBUG && java.nio.ByteBuffer.wrap(prefix).int == 0x54585031) {
+                val nonce = ByteArray(16)
+                input.readFully(nonce)
+                java.io.DataOutputStream(it.getOutputStream()).apply {
+                    writeInt(0x54585032)
+                    write(nonce)
+                    flush()
+                }
+                Log.i("TORX_DIAG", "PING received; PONG sent")
+                return@withContext
+            }
+            stream.unread(prefix)
             val returnOnion = input.readUTF()
             require(returnOnion.matches(Regex("[a-z2-7]{56}\\.onion")))
             val length = input.readInt()

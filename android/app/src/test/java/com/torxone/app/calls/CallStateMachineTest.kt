@@ -32,6 +32,19 @@ class CallStateMachineTest {
     }
 
     @Test
+    fun `transport acceptance advances queued offer only for active call`() = runTest {
+        val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
+        callManager.onLocalOfferReady(session.callId, "sdp")
+        callManager.onOfferTransportAccepted("stale-call")
+        assertEquals(CallState.OUTGOING_SENDING, callManager.activeCall.value!!.state)
+        callManager.onOfferTransportAccepted(session.callId)
+        assertEquals(CallState.OUTGOING_CALLING, callManager.activeCall.value!!.state)
+        callManager.onRemoteRinging(session.callId)
+        callManager.onOfferTransportAccepted(session.callId)
+        assertEquals(CallState.OUTGOING_RINGING, callManager.activeCall.value!!.state)
+    }
+
+    @Test
     fun `startOutgoingCall transitions to OUTGOING_PREPARING`() = runTest {
         val session = callManager.startOutgoingCall("conv-1", "rel-1", "bob-identity", CallType.VOICE)
         assertNotNull(session)
@@ -42,12 +55,46 @@ class CallStateMachineTest {
     }
 
     @Test
-    fun `onLocalOfferReady transitions to OUTGOING_CALLING and sends offer`() = runTest {
+    fun `network disconnect requests restart without presenting a new call`() = runTest {
+        var restartRequested = false
+        callManager.callEventListener = object : CallEventListener by fakeListener {
+            override fun onRestartRequested(session: CallSession) { restartRequested = true }
+        }
+        val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
+        callManager.onLocalOfferReady(session.callId, "offer")
+        callManager.onRemoteAnswer(session.callId, "answer")
+        callManager.onIceConnected(session.callId)
+        callManager.onIceDisconnected(session.callId)
+        assertTrue(restartRequested)
+        assertEquals(CallState.RECONNECTING, callManager.activeCall.value!!.state)
+        callManager.onRemoteAnswer(session.callId, "restart-answer")
+        assertEquals(CallState.RECONNECTING, callManager.activeCall.value!!.state)
+        callManager.onIceConnected(session.callId)
+        assertEquals(CallState.CONNECTED, callManager.activeCall.value!!.state)
+    }
+
+    @Test
+    fun `authenticated restart offer reuses active session without ringing`() = runTest {
+        var restartOffer = false
+        callManager.callEventListener = object : CallEventListener by fakeListener {
+            override fun onRestartOffer(session: CallSession, sdpOffer: String) { restartOffer = true }
+        }
+        val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
+        callManager.onLocalOfferReady(session.callId, "offer")
+        callManager.onRemoteAnswer(session.callId, "answer")
+        callManager.onIceConnected(session.callId)
+        assertTrue(callManager.onIncomingOffer(session.callId, "c1", "r1", "bob", CallType.VOICE, "restart-offer"))
+        assertTrue(restartOffer)
+        assertEquals(CallState.RECONNECTING, callManager.activeCall.value!!.state)
+    }
+
+    @Test
+    fun `onLocalOfferReady queues offer without claiming transport acceptance`() = runTest {
         val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
         callManager.onLocalOfferReady(session.callId, "sdp-offer-data")
 
         val current = callManager.activeCall.value!!
-        assertEquals(CallState.OUTGOING_CALLING, current.state)
+        assertEquals(CallState.OUTGOING_SENDING, current.state)
         assertTrue(fakeSignaling.sentOffer)
     }
 
@@ -327,7 +374,7 @@ class CallStateMachineTest {
     fun `onRemoteRinging changes authenticated caller state to OUTGOING_RINGING`() = runTest {
         val session = callManager.startOutgoingCall("c1", "r1", "bob", CallType.VOICE)!!
         callManager.onLocalOfferReady(session.callId, "sdp")
-        assertEquals(CallState.OUTGOING_CALLING, callManager.activeCall.value!!.state)
+        assertEquals(CallState.OUTGOING_SENDING, callManager.activeCall.value!!.state)
 
         callManager.onRemoteRinging(session.callId)
         assertEquals(CallState.OUTGOING_RINGING, callManager.activeCall.value!!.state)

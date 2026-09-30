@@ -333,6 +333,14 @@ fun TorXOneApp() {
         }
     }
 
+    LaunchedEffect(app.callManager) {
+        app.callManager.activeCall.collect { session ->
+            if (session?.state == com.torxone.app.calls.CallState.INCOMING_RINGING && currentScreen != Screen.ActiveCall) {
+                navigateTo(Screen.ActiveCall)
+            }
+        }
+    }
+
     LaunchedEffect(currentIntent) {
         val targetIntent = currentIntent ?: return@LaunchedEffect
         when (targetIntent.action) {
@@ -836,6 +844,7 @@ fun TorXOneApp() {
             val haLowState by app.haLowGatewayManager.state.collectAsState()
 
             SettingsScreen(
+                relayOnlyCalls = currentSettingsState.relayOnlyCalls,
                 displayName = currentSettingsState.displayName,
                 about = currentSettingsState.about,
                 lastSeenVisible = currentSettingsState.lastSeenVisible,

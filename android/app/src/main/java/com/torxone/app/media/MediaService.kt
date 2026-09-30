@@ -818,11 +818,25 @@ class MediaService(
                     val encryptedChunk = DedicatedMediaChunkCrypto.encrypt(
                         media.mediaKey, mediaId, relationshipId, chunkIndex, totalChunks, plaintextChunk
                     )
-                    val result = dedicatedMediaTransport!!.send(
-                        destination,
-                        DedicatedMediaFrame(mediaId, chunkIndex, totalChunks, encryptedChunk)
-                    )
-                    if (result is TransportResult.Failed) error("Dedicated media send failed: ${result.error}")
+                    var retryAttempt = 0
+                    while (true) {
+                        ensureActive()
+                        val pending = mediaTransferDao.getByTransferId(transferId) ?: return@launch
+                        if (pending.status in setOf(TransferStatus.PAUSED.name, TransferStatus.CANCELLED.name, TransferStatus.COMPLETED.name)) return@launch
+                        val result = dedicatedMediaTransport!!.send(
+                            destination,
+                            DedicatedMediaFrame(mediaId, chunkIndex, totalChunks, encryptedChunk)
+                        )
+                        if (result is TransportResult.Accepted) {
+                            mediaTransferDao.updateStatus(transferId, TransferStatus.ACTIVE.name)
+                            break
+                        }
+                        // Preserve the file and chunk bitmap while offline. Startup recovery
+                        // resumes QUEUED transfers; a network error is not a terminal failure.
+                        mediaTransferDao.updateStatus(transferId, TransferStatus.QUEUED.name)
+                        mediaDao.updateStatus(mediaId, MediaStatus.QUEUED.name, alreadySent.size.toFloat() / totalChunks)
+                        delay(minOf(60_000L, 1_000L shl minOf(retryAttempt++, 6)))
+                    }
                     alreadySent.add(chunkIndex)
                     val sentBytes = alreadySent.sumOf { index ->
                         minOf(chunkSize.toLong(), totalBytes - index.toLong() * chunkSize)
@@ -1139,7 +1153,10 @@ class MediaService(
         return true
     }
 
-    suspend fun handleDedicatedMediaFrame(rawBytes: ByteArray, transportType: TransportType): Boolean {
+    suspend fun handleDedicatedMediaFrame(rawBytes: ByteArray, transportType: TransportType): Boolean =
+        handleDedicatedMediaFrame(rawBytes, transportType, null)
+
+    suspend fun handleDedicatedMediaFrame(rawBytes: ByteArray, transportType: TransportType, authenticatedRelationshipId: String?): Boolean {
         val frame = try {
             DedicatedMediaFrameCodec.decode(rawBytes)
         } catch (error: Exception) {
@@ -1148,6 +1165,7 @@ class MediaService(
         }
         val media = mediaDao.getById(frame.mediaId) ?: return false
         val transfer = mediaTransferDao.getByMediaId(frame.mediaId) ?: return false
+        if (authenticatedRelationshipId != null && transfer.relationshipId != authenticatedRelationshipId) return false
         if (transfer.direction != TransferDirection.DOWNLOAD.name || frame.totalChunks != transfer.totalChunks ||
             transfer.status != TransferStatus.ACTIVE.name
         ) return false

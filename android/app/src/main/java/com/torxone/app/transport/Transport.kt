@@ -10,7 +10,8 @@ enum class TransportType {
     WIFI_HALOW,
     GATEWAY,
     WIFI_DIRECT,
-    FAKE
+    FAKE,
+    WEBRTC
 }
 
 sealed class TransportAvailability {

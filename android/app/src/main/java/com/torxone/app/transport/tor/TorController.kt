@@ -23,6 +23,7 @@ class TorController(
     @Volatile private var service: TorService? = null
     private var readySignal = CompletableDeferred<Unit>()
     @Volatile private var torReportedOn = false
+    @Volatile private var bootstrapComplete = false
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var readinessMonitor: Job? = null
 
@@ -33,6 +34,7 @@ class TorController(
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             service = null
+            bootstrapComplete = false
             bound.set(false)
             _state.value = TorConnectionState.Failed("Tor service disconnected")
         }
@@ -41,6 +43,7 @@ class TorController(
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == TorService.ACTION_ERROR) {
+                bootstrapComplete = false
                 val reason = intent.getStringExtra(Intent.EXTRA_TEXT) ?: "Embedded Tor failed to start"
                 android.util.Log.e("TorController", reason)
                 _state.value = TorConnectionState.Failed(reason)
@@ -55,6 +58,7 @@ class TorController(
                 }
                 TorService.STATUS_STOPPING, TorService.STATUS_OFF -> {
                     torReportedOn = false
+                    bootstrapComplete = false
                     _state.value = TorConnectionState.Stopped
                 }
             }
@@ -63,8 +67,13 @@ class TorController(
 
     private fun updateReady() {
         val socksPort = service?.socksPort ?: 0
-        if (torReportedOn && socksPort > 0) {
-            _state.value = TorConnectionState.Ready(socksPort, onionEndpointManager.onionAddress())
+        if (torReportedOn && bootstrapComplete && socksPort > 0) {
+            val onion = onionEndpointManager.onionAddress()
+            if (onion == null) {
+                _state.value = TorConnectionState.OnionPublishing
+                return
+            }
+            _state.value = TorConnectionState.Ready(socksPort, onion)
             readySignal.complete(Unit)
         }
     }
@@ -79,11 +88,12 @@ class TorController(
                         activeService.getInfo("status/bootstrap-phase").contains("PROGRESS=100")
                     }.getOrDefault(false)
                     if (bootstrapped) {
+                        bootstrapComplete = true
                         torReportedOn = true
                         updateReady()
                     }
                 }
-                delay(1_000)
+                delay(if (_state.value is TorConnectionState.Ready) 10_000 else 1_000)
             }
         }
     }
@@ -92,6 +102,7 @@ class TorController(
         if (bound.get()) return
         _state.value = TorConnectionState.Starting
         torReportedOn = false
+        bootstrapComplete = false
         readySignal = CompletableDeferred()
         val torrc = TorService.getTorrc(appContext)
         torrc.parentFile?.mkdirs()
@@ -109,7 +120,6 @@ class TorController(
             })
         val intent = Intent(appContext, TorService::class.java).apply {
             action = TorService.ACTION_START
-            putExtra(TorService.EXTRA_PACKAGE_NAME, appContext.packageName)
         }
         bound.set(appContext.bindService(intent, connection, Context.BIND_AUTO_CREATE))
         if (!bound.get()) _state.value = TorConnectionState.Failed("Unable to bind embedded Tor service")
@@ -128,6 +138,7 @@ class TorController(
         runCatching { LocalBroadcastManager.getInstance(appContext).unregisterReceiver(statusReceiver) }
         service = null
         torReportedOn = false
+        bootstrapComplete = false
         _state.value = TorConnectionState.Stopped
         onionEndpointManager.stop()
     }

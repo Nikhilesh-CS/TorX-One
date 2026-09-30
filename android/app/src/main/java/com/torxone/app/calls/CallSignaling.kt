@@ -6,6 +6,7 @@ package com.torxone.app.calls
  * without needing real SessionCrypto, ConnectionManager, etc.
  */
 interface CallSignaling {
+    fun observeOfferAcceptance(listener: (String) -> Unit) {}
     suspend fun sendCallOffer(session: CallSession, sdpOffer: String)
     suspend fun sendRinging(session: CallSession)
     suspend fun sendCallAnswer(session: CallSession, sdpAnswer: String)

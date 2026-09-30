@@ -32,6 +32,25 @@ class RoutedDedicatedMediaTransport(
         transportRouter.send(destination, DedicatedMediaFrameCodec.encode(frame))
 }
 
+/** Use an authenticated online RTC lane when available, otherwise the durable Tor path. */
+class HybridDedicatedMediaTransport(
+    private val rtcSend: suspend (TransportDestination, ByteArray) -> Boolean,
+    private val fallback: DedicatedMediaTransport
+) : DedicatedMediaTransport {
+    override suspend fun send(destination: TransportDestination, frame: DedicatedMediaFrame): TransportResult {
+        val rtcAccepted = try {
+            rtcSend(destination, DedicatedMediaFrameCodec.encode(frame))
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            false
+        }
+        if (rtcAccepted) {
+            return TransportResult.Accepted(com.torxone.app.transport.TransportType.WEBRTC)
+        }
+        return fallback.send(destination, frame)
+    }
+}
+
 /** Wire format for media payload frames that bypasses the chat outbox and ratchet. */
 object DedicatedMediaFrameCodec {
     const val MAGIC = 0x54584D53 // TXMS
