@@ -28,8 +28,18 @@ interface DedicatedMediaTransport {
 class RoutedDedicatedMediaTransport(
     private val transportRouter: TransportRouter
 ) : DedicatedMediaTransport {
-    override suspend fun send(destination: TransportDestination, frame: DedicatedMediaFrame): TransportResult =
-        transportRouter.send(destination, DedicatedMediaFrameCodec.encode(frame))
+    override suspend fun send(destination: TransportDestination, frame: DedicatedMediaFrame): TransportResult {
+        val payload = DedicatedMediaFrameCodec.encode(frame)
+        if (payload.size <= com.torxone.app.protocol.ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES)
+            return transportRouter.send(destination, payload)
+        // Preserve the negotiated geometry of legacy transfers; reassemble before AEAD verification.
+        var accepted: TransportResult = TransportResult.Failed(com.torxone.app.transport.TransportType.TOR, "No fragments sent")
+        for (fragment in DedicatedMediaFragments.encode(payload)) {
+            accepted = transportRouter.send(destination, fragment)
+            if (accepted is TransportResult.Failed) return accepted
+        }
+        return accepted
+    }
 }
 
 /** Use an authenticated online RTC lane when available, otherwise the durable Tor path. */

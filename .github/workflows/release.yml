@@ -24,6 +24,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platform-tools platforms;android-37.1 build-tools;36.0.0'
       - name: Build release and inventory
         working-directory: android
         env:
@@ -32,7 +34,6 @@ jobs:
           TORX_TURN_USERNAME: ${{ secrets.TORX_TURN_USERNAME }}
           TORX_TURN_CREDENTIAL: ${{ secrets.TORX_TURN_CREDENTIAL }}
         run: |
-          sdkmanager "platforms;android-37.1"
           version=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts)
           test "$GITHUB_REF_NAME" = "v$version"
           bash ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:securityInventory

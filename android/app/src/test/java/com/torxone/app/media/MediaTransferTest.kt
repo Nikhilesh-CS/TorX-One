@@ -45,12 +45,13 @@ class MediaTransferTest {
     //  In-Memory Test DAOs & Transport
     // ═══════════════════════════════════════════════════════════════
 
-    class DirectLoopbackTransport(val destinationHub: IncomingTransportHub) : Transport {
-        override val type: TransportType = TransportType.NEARBY
+    class DirectLoopbackTransport(val destinationHub: IncomingTransportHub, override val type: TransportType = TransportType.NEARBY) : Transport {
         override fun availability(): Flow<TransportAvailability> = flowOf(TransportAvailability.Available)
         override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult {
-            destinationHub.onRawFrameReceived(payload, TransportType.NEARBY)
-            return TransportResult.Accepted(TransportType.NEARBY)
+            if (payload.size > ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES)
+                return TransportResult.Failed(type, "Frame exceeds Tor transport ceiling")
+            return if (destinationHub.onRawFrameReceived(payload, type)) TransportResult.Accepted(type)
+                else TransportResult.Failed(type, "Receiver rejected frame")
         }
     }
 
@@ -517,7 +518,7 @@ class MediaTransferTest {
             mediaStorage = alice.mediaStorage,
             relationshipSendCoordinator = aliceSendCoordinator,
             sessionStore = alice.sessionStore,
-            dedicatedMediaTransport = if (dedicatedMedia) RoutedDedicatedMediaTransport(alice.router) else null
+            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(alice.router)) else null
         )
 
         bob.mediaService = MediaService(
@@ -533,7 +534,7 @@ class MediaTransferTest {
             mediaStorage = bob.mediaStorage,
             relationshipSendCoordinator = bobSendCoordinator,
             sessionStore = bob.sessionStore,
-            dedicatedMediaTransport = if (dedicatedMedia) RoutedDedicatedMediaTransport(bob.router) else null
+            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(bob.router)) else null
         )
 
         alice.chatService = ChatService(
@@ -603,8 +604,8 @@ class MediaTransferTest {
             if (dedicatedMedia) bob.mediaService!!::handleDedicatedMediaFrame else null
         )
 
-        alice.router.registerTransport(DirectLoopbackTransport(bob.incomingHub!!))
-        bob.router.registerTransport(DirectLoopbackTransport(alice.incomingHub!!))
+        alice.router.registerTransport(DirectLoopbackTransport(bob.incomingHub!!, if (dedicatedMedia) TransportType.TOR else TransportType.NEARBY))
+        bob.router.registerTransport(DirectLoopbackTransport(alice.incomingHub!!, if (dedicatedMedia) TransportType.TOR else TransportType.NEARBY))
 
         alice.agent.start()
         bob.agent.start()
@@ -661,7 +662,7 @@ class MediaTransferTest {
     @Test
     fun testDedicatedMediaOfferAcceptAndAuthenticatedStream() = runBlocking {
         val (alice, bob) = setupPair(dedicatedMedia = true)
-        val payload = ByteArray(700 * 1024) { (it * 17).toByte() }
+        val payload = ByteArray(4 * 1024 * 1024) { (it * 17).toByte() }
 
         alice.mediaService!!.sendMedia(
             conversationId = "conv_alice_bob",
@@ -681,7 +682,8 @@ class MediaTransferTest {
         }
         val received = bob.mediaDao.mediaMap.values.first { it.fileName == "phase7.bin" }
         val transfer = bob.mediaTransferDao.getByMediaId(received.mediaId)!!
-        assertEquals(3, transfer.totalChunks)
+        assertEquals(MediaService.DEFAULT_CHUNK_SIZE, transfer.chunkSize)
+        assertEquals((payload.size + 28 + transfer.chunkSize - 1) / transfer.chunkSize, transfer.totalChunks)
         assertArrayEquals(payload, File(received.localPath!!).readBytes())
 
         alice.agent.stop()

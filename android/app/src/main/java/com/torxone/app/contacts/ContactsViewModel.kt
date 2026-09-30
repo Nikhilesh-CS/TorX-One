@@ -112,8 +112,18 @@ class ContactsViewModel(
 
             when (result) {
                 is InviteValidationResult.Valid -> {
-                    val existing = database.contactDao().getAll()
-                        .firstOrNull { it.signingPublicKey.contentEquals(invite.identitySigningPublicKey) }
+                    val candidates = database.contactDao().getAll()
+                        .filter { it.signingPublicKey.contentEquals(invite.identitySigningPublicKey) }
+                        .map { contact ->
+                            val relationship = database.pairRelationshipDao().getById(contact.relationshipId)
+                            val connection = database.connectionDao().getByRelationshipId(contact.relationshipId)
+                            ExistingPeerCandidate(contact, relationship != null, connection != null,
+                                sessionCrypto.hasSession(contact.relationshipId),
+                                relationship?.state == "ACTIVE" && connection?.state == "ACTIVE",
+                                database.conversationDao().getById(contact.conversationId) != null,
+                                connection?.generation ?: 0)
+                        }
+                    val existing = selectExistingPeer(candidates)
                     if (existing != null) {
                         val conversation = database.conversationDao().getById(existing.conversationId)
                         val relationship = database.pairRelationshipDao().getById(existing.relationshipId)

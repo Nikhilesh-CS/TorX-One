@@ -80,3 +80,26 @@ fixture preservation. See `docs/PHASE_3_TOR_TRANSPORT.md` for the framing contra
 Raw PING/PONG still checks one diagnostic connection. It does not prove stream
 reuse or encrypted delivery: verify repeated chat messages, exact ACKs, process
 restart and Wi-Fi/cellular recovery on upgraded devices afterward.
+
+## Tor media fallback repair
+
+New transfers negotiate 16 KB chunks for every lane. Existing transfers keep
+their recorded geometry: dedicated ciphertext above the 64 KB transport ceiling
+is split into 16 KB pieces by the routed fallback and reassembled before the
+existing per-chunk AEAD checks. Assemblies are limited to 32, at most 256 KB plus
+framing each, with a 120-second expiry. The generic transport limit is unchanged.
+Both phones need this version to resume older 256 KB transfers through fallback.
+The JVM regression suite includes a 4 MB transfer with RTC unavailable, receiver
+completion, ciphertext SHA-256 and decrypted-byte equality. Live-phone proof
+remains separate.
+
+Security/release CI overrides setup-android's obsolete default `tools` package
+with platform-tools, platform 37.1 and build-tools 36.0.0. It retains the complete
+unit suite results before filtered protocol gates replace Gradle's report files.
+The next remote workflow run is required to verify CI execution itself.
+
+Run `python android/tools/verify_contact_selection.py` to exercise the actual
+Room lookup SQL in all 24 insertion orders. It checks that a healthy active
+connection outranks broken/newer rows and that a current connection generation
+wins before timestamps. Signing identities retain their separate secure lanes;
+QR selection additionally checks the session through SessionCrypto.

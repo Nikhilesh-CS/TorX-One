@@ -20,11 +20,22 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platform-tools platforms;android-37.1 build-tools;36.0.0'
       - name: Build, unit tests and Android lint
         working-directory: android
         run: |
-          sdkmanager "platforms;android-37.1"
           bash ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:securityInventory
+      - name: Verify database migration and deterministic contact selection
+        run: |
+          python3 android/tools/verify_peer_endpoint_migration.py
+          python3 android/tools/verify_contact_selection.py
+      - name: Preserve complete unit suite results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complete-unit-suite
+          path: android/app/build/test-results/testDebugUnitTest/
       - name: Protocol, state machine and bounded fuzz gates
         working-directory: android
         run: >-
@@ -61,6 +72,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platform-tools platforms;android-37.1 build-tools;36.0.0'
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -100,6 +114,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: 'platform-tools platforms;android-37.1 build-tools;36.0.0'
       - uses: github/codeql-action/init@87ef0dc97def48aa960fbf026a2563ee9dbdb470 # v3
         with:
           languages: java-kotlin

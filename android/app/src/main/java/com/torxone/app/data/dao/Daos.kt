@@ -138,13 +138,13 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE relationship_id = :relationshipId")
     suspend fun getByRelationshipId(relationshipId: String): ContactEntity?
 
-    @Query("SELECT * FROM contacts WHERE remote_identity_id = :remoteIdentityId LIMIT 1")
+    @Query("SELECT c.* FROM contacts c WHERE c.remote_identity_id = :remoteIdentityId ORDER BY CASE WHEN EXISTS (SELECT 1 FROM pair_relationships p WHERE p.relationship_id = c.relationship_id AND p.state = 'ACTIVE') AND EXISTS (SELECT 1 FROM connections n WHERE n.relationship_id = c.relationship_id AND n.state = 'ACTIVE') AND EXISTS (SELECT 1 FROM sessions s WHERE s.relationship_id = c.relationship_id) THEN 0 WHEN EXISTS (SELECT 1 FROM pair_relationships p WHERE p.relationship_id = c.relationship_id) AND EXISTS (SELECT 1 FROM connections n WHERE n.relationship_id = c.relationship_id) AND EXISTS (SELECT 1 FROM sessions s WHERE s.relationship_id = c.relationship_id) THEN 1 ELSE 2 END, (SELECT MAX(n.generation) FROM connections n WHERE n.relationship_id = c.relationship_id) DESC, c.created_at DESC, c.relationship_id ASC, c.contactId ASC LIMIT 1")
     suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity?
 
-    @Query("SELECT * FROM contacts WHERE conversation_id = :conversationId ORDER BY relationship_id ASC LIMIT 1")
+    @Query("SELECT c.* FROM contacts c WHERE c.conversation_id = :conversationId ORDER BY CASE WHEN EXISTS (SELECT 1 FROM pair_relationships p WHERE p.relationship_id = c.relationship_id AND p.state = 'ACTIVE') AND EXISTS (SELECT 1 FROM connections n WHERE n.relationship_id = c.relationship_id AND n.state = 'ACTIVE') AND EXISTS (SELECT 1 FROM sessions s WHERE s.relationship_id = c.relationship_id) THEN 0 WHEN EXISTS (SELECT 1 FROM pair_relationships p WHERE p.relationship_id = c.relationship_id) AND EXISTS (SELECT 1 FROM connections n WHERE n.relationship_id = c.relationship_id) AND EXISTS (SELECT 1 FROM sessions s WHERE s.relationship_id = c.relationship_id) THEN 1 ELSE 2 END, (SELECT MAX(n.generation) FROM connections n WHERE n.relationship_id = c.relationship_id) DESC, c.created_at DESC, c.relationship_id ASC, c.contactId ASC LIMIT 1")
     suspend fun getByConversationId(conversationId: String): ContactEntity?
 
-    @Query("SELECT * FROM contacts")
+    @Query("SELECT * FROM contacts ORDER BY created_at DESC, relationship_id ASC, contactId ASC")
     suspend fun getAll(): List<ContactEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

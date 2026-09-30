@@ -290,7 +290,7 @@ class MediaService(
         }
         val messageId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
-        val chunkSize = if (dedicatedMediaTransport != null) DedicatedMediaFrameCodec.MAX_PLAINTEXT_CHUNK_BYTES else DEFAULT_CHUNK_SIZE
+        val chunkSize = DEFAULT_CHUNK_SIZE
         val totalChunks = if (encryptedFileSize == 0L) 1 else ((encryptedFileSize + chunkSize - 1) / chunkSize).toInt()
         val protoMessageType = mediaMessageType(type)
         val descriptorBytes = MediaProtocolCodec.encodeDescriptor(
@@ -482,11 +482,7 @@ class MediaService(
 
         val messageId = UUID.randomUUID().toString()
         val deliveryId = UUID.randomUUID().toString()
-        val chunkSize = if (dedicatedMediaTransport != null) {
-            DedicatedMediaFrameCodec.MAX_PLAINTEXT_CHUNK_BYTES
-        } else {
-            DEFAULT_CHUNK_SIZE
-        }
+        val chunkSize = DEFAULT_CHUNK_SIZE
         val totalChunks = if (encryptedFileSize == 0L) 1 else ((encryptedFileSize + chunkSize - 1) / chunkSize).toInt()
 
         val mediaKeyBase64 = Base64.getEncoder().encodeToString(mediaKey)
