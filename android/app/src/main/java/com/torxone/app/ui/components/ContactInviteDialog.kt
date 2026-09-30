@@ -43,6 +43,14 @@ fun ContactInviteDialog(
         viewModel.generateMyInviteQr()
     }
 
+    LaunchedEffect(uiState.reopenedContact?.contactId) {
+        uiState.reopenedContact?.let { contact ->
+            viewModel.consumeReopenedContact()
+            onDismiss()
+            onContactAdded(contact.conversationId, contact.displayName)
+        }
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -181,8 +189,13 @@ fun ContactInviteDialog(
                                 Spacer(Modifier.width(8.dp))
                                 Text("Copy Invite Link")
                             }
-                        } else {
+                        } else if (uiState.generatingInvite) {
                             CircularProgressIndicator(modifier = Modifier.padding(24.dp))
+                            Text("Starting your Tor address…")
+                        } else {
+                            OutlinedButton(onClick = { viewModel.generateMyInviteQr() }) {
+                                Text("Retry")
+                            }
                         }
                     } else {
                         // Live CameraX QR Scanner View with manual paste fallback

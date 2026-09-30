@@ -1,5 +1,6 @@
 package com.torxone.app.transport.tor
 
+import android.util.Log
 import com.torxone.app.protocol.ProtocolLimits
 import com.torxone.app.transport.*
 import kotlinx.coroutines.CoroutineDispatcher
@@ -18,15 +19,23 @@ class TorTransport(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : Transport, AddressableTransport {
     override val type = TransportType.TOR
+    private val pendingSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+
+    fun closePendingConnections() {
+        pendingSockets.forEach { socket -> runCatching { socket.close() } }
+    }
 
     override fun availability(): Flow<TransportAvailability> = controller.state.map {
         if (it is TorConnectionState.Ready) TransportAvailability.Available
         else TransportAvailability.Unavailable("Tor is not ready")
     }
 
-    override fun canRoute(destination: TransportDestination): Boolean =
-        routeManager.resolve(destination.address) != null ||
+    override fun canRoute(destination: TransportDestination): Boolean {
+        val present = routeManager.resolve(destination.address) != null ||
             destination.hints["tor_onion"]?.let(::parseHint) != null
+        Log.i("TORX_DIAG", "route_lookup queue=${destination.address.take(8)} present=$present")
+        return present
+    }
 
     override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult =
         withContext(dispatcher) {
@@ -39,9 +48,13 @@ class TorTransport(
                 ?: destination.hints["tor_onion"]?.let { parseHint(it) }
                 ?: return@withContext TransportResult.Failed(type, "No Tor route for destination")
             try {
+                Log.i("TORX_DIAG", "tor_outbound queue=${destination.address.take(8)} routePresent=true")
                 val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", state.socksPort))
                 Socket(proxy).use { socket ->
-                    socket.connect(InetSocketAddress.createUnresolved(route.onionHost, route.port), 30_000)
+                    pendingSockets.add(socket)
+                    try {
+                    // Onion rendezvous can exceed 30 seconds on mobile networks (observed 89s).
+                    socket.connect(InetSocketAddress.createUnresolved(route.onionHost, route.port), 120_000)
                     socket.soTimeout = 15_000
                     DataOutputStream(socket.getOutputStream()).use { output ->
                         val returnOnion = state.onionAddress ?: controller.onionAddress()
@@ -51,9 +64,13 @@ class TorTransport(
                         output.write(payload)
                         output.flush()
                     }
+                    } finally {
+                        pendingSockets.remove(socket)
+                    }
                 }
                 TransportResult.Accepted(type)
             } catch (e: Exception) {
+                Log.w("TORX_DIAG", "tor_send_failed queue=${destination.address.take(8)} type=${e.javaClass.simpleName}")
                 TransportResult.Failed(type, e.message ?: e.javaClass.simpleName)
             }
         }

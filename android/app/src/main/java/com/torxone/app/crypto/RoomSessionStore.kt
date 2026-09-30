@@ -75,7 +75,11 @@ class RoomSessionStore(
         state
     }
 
-    override suspend fun saveSession(state: SessionState): Unit = withContext(Dispatchers.IO) {
+    override suspend fun saveSession(state: SessionState) {
+        // Keep the caller's Room transaction dispatcher. Switching to IO here
+        // makes nested transaction setup contend with invalidation trigger sync
+        // while the outer receive transaction still owns the SQLCipher writer.
+        // Suspend DAO methods dispatch themselves when no transaction is active.
         val entity = SessionDbEntity(
             sessionId = state.sessionId,
             relationshipId = state.relationshipId,

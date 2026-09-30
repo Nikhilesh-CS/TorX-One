@@ -390,6 +390,10 @@ class TorXOneApplication : Application() {
         )
         val callHandler = com.torxone.app.calls.CallHandler(callManager, database.contactDao())
 
+        // Route persistence must exist before bootstrap dispatch so the responder
+        // can bind its authenticated permanent reverse route before sending ACK.
+        torRouteManager = TorRouteManager(this)
+
         // 8. Incoming Dispatcher & Hub
         val chatReceiver = ChatReceiver(
             messageDao = database.messageDao(),
@@ -438,7 +442,9 @@ class TorXOneApplication : Application() {
             consumedInviteDao = database.consumedInviteDao(),
             bootstrapStateDao = database.bootstrapStateDao(),
             pairRelationshipDao = database.pairRelationshipDao(),
-            keyProtector = keyProtector
+            keyProtector = keyProtector,
+            torRouteManager = torRouteManager,
+            consolidateDirectChats = { com.torxone.app.contacts.consolidateDirectConversations(database) }
         )
         incomingTransportHub = IncomingTransportHub(
             dispatcher = incomingDispatcher,
@@ -465,7 +471,6 @@ class TorXOneApplication : Application() {
         }
 
         // 9. Tor transport: opaque TorX ciphertext over an embedded v3 onion service.
-        torRouteManager = TorRouteManager(this)
         onionEndpointManager = OnionEndpointManager(
             this, incomingTransportHub, torRouteManager, connectionManager
         )
@@ -670,11 +675,16 @@ class TorXOneApplication : Application() {
                         }
                     }
                 }
+                com.torxone.app.contacts.consolidateDirectConversations(database)
                 connectionManager.restoreFromDatabase(database.connectionDao())
 
                 // Start background agent and transport only AFTER async initialization completes
                 agent.start()
                 torBootstrapManager.start()
+                com.torxone.app.transport.tor.NetworkRecoveryMonitor(
+                    this@TorXOneApplication, applicationScope, torTransport,
+                    retry = { agent.triggerImmediateRetry() }
+                ).start()
                 applicationScope.launch {
                     torController.state.collect { state ->
                         if (state is com.torxone.app.transport.tor.TorConnectionState.Ready) {
@@ -698,6 +708,11 @@ class TorXOneApplication : Application() {
                 mediaService.recoverPendingTransfersOnStartup()
                 groupService.recoverPendingFanout()
                 recoverIncompleteBootstraps()
+
+                // Anchor Tor, Nearby, and outbox processing to a sticky foreground
+                // service after every successful process initialization.
+                runCatching { com.torxone.app.service.TorXCoreService.start(this@TorXOneApplication) }
+                    .onFailure { android.util.Log.w("TorXOneApplication", "Core foreground service start deferred", it) }
 
                 runtimeInitialized = true
                 _initState.value = AppInitState.Ready(cachedLocalIdentityId)

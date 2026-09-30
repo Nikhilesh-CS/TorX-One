@@ -219,7 +219,11 @@ class TorXAgent(
                                 // 1. High-priority non-sequenced traffic can jump ahead where protocol-safe
                                 val highPriorityNonSequenced = destinationItems
                                     .filter { it.applicationSequence == null && it.priority > DeliveryPriority.NORMAL }
+                                    .filter { it.nextAttemptAt <= System.currentTimeMillis() }
                                     .sortedWith(compareByDescending<DeliveryItem> { it.priority }.thenBy { it.createdAt })
+                                    // Bound each sweep so old control backlogs cannot keep
+                                    // supervisorScope waiting before it sees newly queued work.
+                                    .take(1)
 
                                 for (item in highPriorityNonSequenced) {
                                     if (!isActive) break
@@ -283,7 +287,9 @@ class TorXAgent(
                                 // 3. Remaining normal or low-priority non-sequenced items
                                 val remainingNonSequenced = destinationItems
                                     .filter { it.applicationSequence == null && it.priority <= DeliveryPriority.NORMAL }
+                                    .filter { it.nextAttemptAt <= System.currentTimeMillis() }
                                     .sortedWith(compareByDescending<DeliveryItem> { it.priority }.thenBy { it.createdAt })
+                                    .take(1)
 
                                 for (item in remainingNonSequenced) {
                                     if (!isActive) break
@@ -317,15 +323,9 @@ class TorXAgent(
     }
 
     private suspend fun processDeliveryItem(item: DeliveryItem): Boolean {
-        if (item.attemptCount >= MAX_RETRY_ATTEMPTS) {
-            if (item.applicationSequence != null) {
-                // Never abandon an allocated application sequence: doing so makes every later
-                // envelope permanently stale. Keep retrying the lane until transport accepts it.
-                val nextDelay = MAX_RETRY_DELAY_MS
-                outboxStore.updateRetry(item.deliveryId, item.attemptCount + 1, System.currentTimeMillis() + nextDelay)
-                emitUpdate(item.logicalMessageId, DeliveryStatus.RETRY_WAIT)
-                return false
-            }
+        // Allocated sequences must still attempt transport after the retry limit.
+        // Rescheduling them without sending permanently stalls the entire lane.
+        if (item.attemptCount >= MAX_RETRY_ATTEMPTS && item.applicationSequence == null) {
             Log.w(TAG, "Delivery ${item.deliveryId.take(8)} exceeded max retries, marking FAILED")
             outboxStore.updateStatus(item.deliveryId, DeliveryStatus.FAILED)
             emitUpdate(item.logicalMessageId, DeliveryStatus.FAILED)

@@ -17,7 +17,8 @@ data class ContactBootstrapPayload(
     val initiatorSigningPublicKey: ByteArray,
     val initiatorEncryptionPublicKey: ByteArray,
     val initiatorEphemeralPublicKey: ByteArray,
-    val signature: ByteArray
+    val signature: ByteArray,
+    val initiatorTorOnionAddress: String? = null
 ) {
     fun toByteArray(): ByteArray {
         val bos = ByteArrayOutputStream()
@@ -33,6 +34,9 @@ data class ContactBootstrapPayload(
         dos.write(initiatorEphemeralPublicKey)
         dos.writeInt(signature.size)
         dos.write(signature)
+        // Optional extension appended after the legacy payload so older persisted/bootstrap
+        // frames remain decodable. New peers authenticate it as part of the signature.
+        initiatorTorOnionAddress?.let { dos.writeUTF(it) }
         return bos.toByteArray()
     }
 
@@ -70,11 +74,13 @@ data class ContactBootstrapPayload(
             }
             val sig = ByteArray(sigLen).apply { dis.readFully(this) }
 
-            if (dis.available() != 0) {
-                throw IllegalArgumentException("Trailing bytes in ContactBootstrapPayload: ${dis.available()}")
+            val onion = if (dis.available() > 0) dis.readUTF() else null
+            if (dis.available() != 0) throw IllegalArgumentException("Trailing bytes in ContactBootstrapPayload: ${dis.available()}")
+            if (onion != null && !onion.matches(Regex("[a-z2-7]{56}\\.onion"))) {
+                throw IllegalArgumentException("Invalid initiator Tor onion address")
             }
 
-            return ContactBootstrapPayload(inviteId, initiatorIdentityId, name, signPub, encPub, ephPub, sig)
+            return ContactBootstrapPayload(inviteId, initiatorIdentityId, name, signPub, encPub, ephPub, sig, onion)
         }
 
         fun serializeForSigning(
@@ -83,7 +89,8 @@ data class ContactBootstrapPayload(
             displayName: String,
             signingPub: ByteArray,
             encryptionPub: ByteArray,
-            ephemeralPub: ByteArray
+            ephemeralPub: ByteArray,
+            initiatorTorOnionAddress: String? = null
         ): ByteArray {
             val bos = ByteArrayOutputStream()
             val dos = DataOutputStream(bos)
@@ -93,6 +100,7 @@ data class ContactBootstrapPayload(
             dos.write(signingPub)
             dos.write(encryptionPub)
             dos.write(ephemeralPub)
+            initiatorTorOnionAddress?.let { dos.writeUTF(it) }
             return bos.toByteArray()
         }
     }

@@ -15,13 +15,21 @@ import com.torxone.app.identity.InviteValidationResult
 import com.torxone.app.relationship.RelationshipService
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 data class ContactsUiState(
     val contacts: List<ContactEntity> = emptyList(),
     val myInviteQrString: String? = null,
+    val generatingInvite: Boolean = false,
     val pendingInviteValidation: InviteValidationResult.Valid? = null,
-    val error: String? = null
+    val error: String? = null,
+    val reopenedContact: ContactEntity? = null
 )
 
 class ContactsViewModel(
@@ -38,11 +46,12 @@ class ContactsViewModel(
 
     private val _uiState = MutableStateFlow(ContactsUiState())
     val uiState: StateFlow<ContactsUiState> = _uiState.asStateFlow()
+    private var inviteJob: Job? = null
 
     init {
         viewModelScope.launch {
             database.contactDao().observeAll().collect { list ->
-                _uiState.update { it.copy(contacts = list) }
+                _uiState.update { it.copy(contacts = list.sortedBy { contact -> contact.relationshipId }.distinctBy { contact -> contact.signingPublicKey.toList() }) }
             }
         }
     }
@@ -51,25 +60,36 @@ class ContactsViewModel(
      * Generate contact invite QR string for sharing.
      */
     fun generateMyInviteQr() {
-        viewModelScope.launch {
+        if (inviteJob?.isActive == true) return
+        inviteJob = viewModelScope.launch {
+            _uiState.update { it.copy(generatingInvite = true, error = null) }
             try {
+                val onion = withContext(Dispatchers.IO) { withTimeoutOrNull(120_000) {
+                    var address = localOnionAddress()
+                    while (address == null) {
+                        delay(500)
+                        address = localOnionAddress()
+                    }
+                    address
+                } } ?: throw IllegalStateException("Tor could not create your address. Check your connection and tap Retry.")
                 val baseInvite = identityRepository.createContactInvite()
-                val onion = localOnionAddress()
-                val invite = if (onion != null) {
-                    val unsigned = baseInvite.copy(protocolVersion = 2, torOnionAddress = onion)
-                    val signed = ContactInviteCodec.serializeForSigning(
-                        unsigned.protocolVersion, unsigned.inviteId, unsigned.identityId,
-                        unsigned.displayName, unsigned.identitySigningPublicKey,
-                        unsigned.identityEncryptionPublicKey, unsigned.bootstrapEphemeralPublicKey,
-                        unsigned.createdAt, unsigned.expiresAt, onion
-                    )
-                    unsigned.copy(signature = identityRepository.sign(signed))
-                } else baseInvite
+                val unsigned = baseInvite.copy(protocolVersion = 2, torOnionAddress = onion)
+                val signed = ContactInviteCodec.serializeForSigning(
+                    unsigned.protocolVersion, unsigned.inviteId, unsigned.identityId,
+                    unsigned.displayName, unsigned.identitySigningPublicKey,
+                    unsigned.identityEncryptionPublicKey, unsigned.bootstrapEphemeralPublicKey,
+                    unsigned.createdAt, unsigned.expiresAt, onion
+                )
+                val invite = unsigned.copy(signature = identityRepository.sign(signed))
                 nearbyTransport?.registerPendingInvite(invite.inviteId)
                 val qr = ContactInviteCodec.encodeToQrString(invite)
                 _uiState.update { it.copy(myInviteQrString = qr) }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to generate invite") }
+            } finally {
+                _uiState.update { it.copy(generatingInvite = false) }
             }
         }
     }
@@ -86,16 +106,45 @@ class ContactsViewModel(
 
         viewModelScope.launch {
             val localIdentity = identityRepository.loadIdentity()
-            val existingContacts = database.contactDao().getAll()
-            if (existingContacts.any { it.signingPublicKey.contentEquals(invite.identitySigningPublicKey) }) {
-                _uiState.update { it.copy(error = "Contact already exists with this peer") }
-                return@launch
-            }
             val consumedInviteIds = database.consumedInviteDao().getAllConsumedInviteIds().toSet()
             val result = ContactInviteCodec.validate(invite, localIdentity, consumedInviteIds)
 
             when (result) {
                 is InviteValidationResult.Valid -> {
+                    val existing = database.contactDao().getAll()
+                        .firstOrNull { it.signingPublicKey.contentEquals(invite.identitySigningPublicKey) }
+                    if (existing != null) {
+                        val conversation = database.conversationDao().getById(existing.conversationId)
+                        val relationship = database.pairRelationshipDao().getById(existing.relationshipId)
+                        val connection = database.connectionDao().getByRelationshipId(existing.relationshipId)
+                        val hasSession = sessionCrypto.hasSession(existing.relationshipId)
+                        when (existingContactScanAction(conversation != null, relationship != null, connection != null, hasSession)) {
+                            ExistingContactScanAction.ALREADY_OPEN -> {
+                            _uiState.update { it.copy(error = "Contact already exists with this peer") }
+                            return@launch
+                            }
+                            ExistingContactScanAction.REPAIR_REQUIRED -> {
+                            _uiState.update { it.copy(error = "The saved secure relationship is incomplete. Remove the contact and pair again.") }
+                            return@launch
+                            }
+                            ExistingContactScanAction.REOPEN -> Unit
+                        }
+                        requireNotNull(connection)
+                        database.conversationDao().upsert(
+                            ConversationEntity(
+                                conversationId = existing.conversationId,
+                                type = ConversationType.DIRECT,
+                                title = existing.displayName,
+                                avatarHash = existing.avatarHash
+                            )
+                        )
+                        invite.torOnionAddress?.let { onion ->
+                            torRouteManager?.bind(connection.sendQueueId, com.torxone.app.transport.tor.TorRoute(onion))
+                        }
+                        _uiState.update { it.copy(reopenedContact = existing, error = null) }
+                        agent?.triggerImmediateRetry()
+                        return@launch
+                    }
                     invite.torOnionAddress?.let {
                         torRouteManager?.bind("invite-${invite.inviteId}", com.torxone.app.transport.tor.TorRoute(it))
                     }
@@ -207,6 +256,7 @@ class ContactsViewModel(
                     database.connectionDao().upsert(connectionDbEntity)
                     database.conversationDao().upsert(conversationEntity)
                     database.consumedInviteDao().insert(consumedInviteEntity)
+                    consolidateDirectConversations(database)
                 }
 
                 // 2. Register Connection in-memory and initialize Double Ratchet session
@@ -236,13 +286,16 @@ class ContactsViewModel(
                 nearbyTransport?.registerScannedInvite(valid.invite.inviteId)
 
                 // 4. Send wire ContactBootstrapPayload to Bob so Bob establishes matching responder keys
+                val initiatorOnion = localOnionAddress()
+                    ?: throw IllegalStateException("Tor address became unavailable. Recreate the contact invite.")
                 val bootstrapSignedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
                     inviteId = valid.invite.inviteId,
                     initiatorIdentityId = localIdentity.identityId,
                     displayName = localIdentity.displayName,
                     signingPub = localIdentity.signingPublicKey,
                     encryptionPub = localIdentity.encryptionPublicKey,
-                    ephemeralPub = bootstrap.aliceEphemeralPublicKey
+                    ephemeralPub = bootstrap.aliceEphemeralPublicKey,
+                    initiatorTorOnionAddress = initiatorOnion
                 )
                 val bootstrapSig = IdentityCrypto.signEd25519(localIdentity.signingPrivateKey, bootstrapSignedData)
                 val bootstrapWire = com.torxone.app.relationship.ContactBootstrapPayload(
@@ -252,7 +305,8 @@ class ContactsViewModel(
                     initiatorSigningPublicKey = localIdentity.signingPublicKey,
                     initiatorEncryptionPublicKey = localIdentity.encryptionPublicKey,
                     initiatorEphemeralPublicKey = bootstrap.aliceEphemeralPublicKey,
-                    signature = bootstrapSig
+                    signature = bootstrapSig,
+                    initiatorTorOnionAddress = initiatorOnion
                 )
 
                 val outboxEntity = com.torxone.app.data.entity.OutboxEntity(
@@ -281,7 +335,7 @@ class ContactsViewModel(
                 agent?.wake()
 
                 _uiState.update { it.copy(pendingInviteValidation = null) }
-                onComplete(conversationId)
+                onComplete(database.contactDao().getByRelationshipId(connection.relationshipId)?.conversationId ?: conversationId)
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to add contact") }
             }
@@ -291,6 +345,23 @@ class ContactsViewModel(
     fun dismissValidation() {
         _uiState.update { it.copy(pendingInviteValidation = null) }
     }
+
+    fun consumeReopenedContact() {
+        _uiState.update { it.copy(reopenedContact = null) }
+    }
+}
+
+internal enum class ExistingContactScanAction { ALREADY_OPEN, REOPEN, REPAIR_REQUIRED }
+
+internal fun existingContactScanAction(
+    conversationExists: Boolean,
+    relationshipExists: Boolean,
+    connectionExists: Boolean,
+    sessionExists: Boolean
+): ExistingContactScanAction = when {
+    conversationExists -> ExistingContactScanAction.ALREADY_OPEN
+    relationshipExists && connectionExists && sessionExists -> ExistingContactScanAction.REOPEN
+    else -> ExistingContactScanAction.REPAIR_REQUIRED
 }
 
 internal fun bindPermanentTorRoute(

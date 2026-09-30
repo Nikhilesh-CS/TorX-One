@@ -356,8 +356,8 @@ class CallManager(
      */
     fun enableVideo() {
         val session = _activeCall.value ?: return
-          if (session.type != CallType.VIDEO) return
-          _activeCall.value = session.copy(isCameraOn = true)
+        if (session.type != CallType.VIDEO) return
+        _activeCall.value = session.copy(isCameraOn = true)
         callEventListener?.onCameraChanged(true)
     }
 

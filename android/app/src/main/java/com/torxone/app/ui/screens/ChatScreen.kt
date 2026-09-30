@@ -5,6 +5,7 @@ import android.graphics.ImageDecoder
 import android.graphics.drawable.AnimatedImageDrawable
 import android.os.Build
 import android.widget.ImageView
+import androidx.annotation.RequiresApi
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
@@ -1077,21 +1078,8 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
             .background(Color.Black.copy(alpha = 0.2f)),
         contentAlignment = Alignment.Center
     ) {
-        if (animatedDrawable != null) {
-            AndroidView(
-                factory = { ctx ->
-                    ImageView(ctx).apply {
-                        scaleType = ImageView.ScaleType.CENTER_CROP
-                        setImageDrawable(animatedDrawable)
-                        animatedDrawable.start()
-                    }
-                },
-                update = { view ->
-                    if (view.drawable !== animatedDrawable) view.setImageDrawable(animatedDrawable)
-                    if (!animatedDrawable.isRunning) animatedDrawable.start()
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && animatedDrawable != null) {
+            AnimatedGifView(animatedDrawable)
         } else if (imageBitmap != null) {
             Image(
                 bitmap = imageBitmap,
@@ -1131,6 +1119,25 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
             }
         }
     }
+}
+
+@RequiresApi(Build.VERSION_CODES.P)
+@Composable
+private fun AnimatedGifView(drawable: AnimatedImageDrawable) {
+    AndroidView(
+        factory = { context ->
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageDrawable(drawable)
+                drawable.start()
+            }
+        },
+        update = { view ->
+            if (view.drawable !== drawable) view.setImageDrawable(drawable)
+            if (!drawable.isRunning) drawable.start()
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
 
 @Composable

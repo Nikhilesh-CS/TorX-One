@@ -24,6 +24,9 @@ interface ConversationDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(conversation: ConversationEntity)
 
+    @Upsert
+    suspend fun upsertPreservingMessages(conversation: ConversationEntity)
+
     @Query("UPDATE conversations SET unread_count = :count WHERE conversationId = :id")
     suspend fun updateUnreadCount(id: String, count: Int)
 
@@ -138,7 +141,7 @@ interface ContactDao {
     @Query("SELECT * FROM contacts WHERE remote_identity_id = :remoteIdentityId LIMIT 1")
     suspend fun getByRemoteIdentityId(remoteIdentityId: String): ContactEntity?
 
-    @Query("SELECT * FROM contacts WHERE conversation_id = :conversationId")
+    @Query("SELECT * FROM contacts WHERE conversation_id = :conversationId ORDER BY relationship_id ASC LIMIT 1")
     suspend fun getByConversationId(conversationId: String): ContactEntity?
 
     @Query("SELECT * FROM contacts")

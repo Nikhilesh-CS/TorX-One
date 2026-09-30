@@ -12,3 +12,6 @@ local.properties
 *.aab
 **/build/
 .kotlin/
+*.keystore
+*.jks
+release-artifacts/

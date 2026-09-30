@@ -64,7 +64,9 @@ class IncomingDispatcher(
     private val bootstrapStateDao: com.torxone.app.data.dao.BootstrapStateDao? = null,
     private val pairRelationshipDao: com.torxone.app.data.dao.PairRelationshipDao? = null,
     private val keyProtector: com.torxone.app.crypto.KeyProtector,
-    private val authenticatedRemoteIdentityProvider: suspend (String) -> String? = { null }
+    private val authenticatedRemoteIdentityProvider: suspend (String) -> String? = { null },
+    private val torRouteManager: com.torxone.app.transport.tor.TorRouteManager? = null,
+    private val consolidateDirectChats: suspend () -> Unit = {}
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -130,7 +132,8 @@ class IncomingDispatcher(
                         displayName = bootstrapPayload.initiatorDisplayName,
                         signingPub = bootstrapPayload.initiatorSigningPublicKey,
                         encryptionPub = bootstrapPayload.initiatorEncryptionPublicKey,
-                        ephemeralPub = bootstrapPayload.initiatorEphemeralPublicKey
+                        ephemeralPub = bootstrapPayload.initiatorEphemeralPublicKey,
+                        initiatorTorOnionAddress = bootstrapPayload.initiatorTorOnionAddress
                     )
                     if (!IdentityCrypto.verifyEd25519(bootstrapPayload.initiatorSigningPublicKey, signedData, bootstrapPayload.signature)) {
                         Log.e(TAG, "Bootstrap payload signature verification failed!")
@@ -219,6 +222,7 @@ class IncomingDispatcher(
                         )
                     }
 
+                    consolidateDirectChats()
                     // Durably initialize Double Ratchet session before invite deletion and activation
                     sessionCrypto.initializeSession(
                         relationshipId = responderResult.relationship.relationshipId,
@@ -250,6 +254,18 @@ class IncomingDispatcher(
                     }
 
                     connectionManager.registerConnection(conn)
+
+                    // The bootstrap packet arrived on invite-<id>, which cannot be
+                    // looked up as the permanent receive queue. Bind the signed return
+                    // route directly to the newly authenticated permanent send queue
+                    // before the ACK is queued.
+                    bootstrapPayload.initiatorTorOnionAddress?.let { onion ->
+                        torRouteManager?.bind(
+                            conn.sendQueueId,
+                            com.torxone.app.transport.tor.TorRoute(onion)
+                        )
+                        Log.i(TAG, "[BOOTSTRAP ROUTE] Bound permanent reverse Tor route for relationship ${conn.relationshipId.take(8)}")
+                    }
 
                     sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorIdentityId)
 
@@ -497,7 +513,8 @@ class IncomingDispatcher(
                         MessageType.CALL_DECLINE,
                         MessageType.CALL_BUSY -> {
                             if (callHandler == null) throw IllegalStateException("Call handler unavailable")
-                            callHandler.handleCallSignal(connection, secureEnvelope)
+                            // Defer responses until this actor has completed its crypto commit.
+                            // RINGING/BUSY/ICE can encrypt through this same relationship.
                         }
                         MessageType.PROFILE_UPDATE -> {
                             if (contactDao == null || conversationDao == null) throw IllegalStateException("Profile update dependencies unavailable")
@@ -535,6 +552,9 @@ class IncomingDispatcher(
         // ACK itself is excluded to prevent acknowledgement loops; best-effort ephemeral
         // frames are handled before this durable path.
         val env = decryptedEnvelope
+        if (env != null && env.messageType.name.startsWith("CALL_")) {
+            callHandler?.handleCallSignal(connection, env)
+        }
         if (env != null && env.messageType != MessageType.DELIVERY_ACK) {
             sendAck(connection, env.logicalMessageId, opaqueEnvelope.envelopeId, env.senderIdentity)
         }

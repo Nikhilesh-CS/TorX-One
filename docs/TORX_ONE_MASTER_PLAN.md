@@ -1161,9 +1161,9 @@ Phase 15 — Scalability                ✅
 
 Phase 16 — Branding/UI                ✅
 
-Phase 17 — Documentation              ⏳
+Phase 17 — Documentation              ✅ (repository documentation; public policy setup pending)
 
-Phase 18 — Security CI                ⏳
+Phase 18 — Security CI                🚧 (pipeline implemented; remote execution/signing setup pending)
 
 Phase 19 — External audit             ⏳
 

@@ -1,6 +1,7 @@
 package com.torxone.app.transport.tor
 
 import android.content.Context
+import android.util.Log
 import com.torxone.app.incoming.IncomingTransportHub
 import com.torxone.app.protocol.ProtocolLimits
 import com.torxone.app.protocol.ProtocolCodec
@@ -21,6 +22,7 @@ class OnionEndpointManager(
 ) {
     companion object {
         const val ONION_PORT = 17654
+        private const val TAG = "OnionEndpointManager"
     }
 
     private var scope = CoroutineScope(SupervisorJob() + dispatcher)
@@ -32,12 +34,30 @@ class OnionEndpointManager(
     fun start(): Int {
         if (serverSocket != null) return localPort
         if (!scope.isActive) scope = CoroutineScope(SupervisorJob() + dispatcher)
-        val server = ServerSocket(0, 32, InetAddress.getLoopbackAddress())
+        // Android may select ::1 for getLoopbackAddress(), while torrc forwards to IPv4.
+        val server = ServerSocket(0, 32, InetAddress.getByName("127.0.0.1"))
         serverSocket = server
+        Log.i("TORX_DIAG", "listener_bound localPort=${server.localPort} onionPort=$ONION_PORT")
         scope.launch {
             while (isActive && !server.isClosed) {
-                val socket = runCatching { server.accept() }.getOrNull() ?: break
-                launch { receive(socket) }
+                val socket = try {
+                    server.accept()
+                } catch (error: Exception) {
+                    if (!server.isClosed) Log.e(TAG, "Tor listener accept failed", error)
+                    break
+                }
+                launch {
+                    try {
+                        receive(socket)
+                    } catch (cancelled: CancellationException) {
+                        socket.close()
+                        throw cancelled
+                    } catch (error: Exception) {
+                        // A disconnected/malformed client must not cancel the accepting loop.
+                        socket.close()
+                        Log.w(TAG, "Tor frame rejected: ${error.javaClass.simpleName}")
+                    }
+                }
             }
         }
         return server.localPort
@@ -55,6 +75,7 @@ class OnionEndpointManager(
             input.readFully(payload)
             require(input.read() == -1) { "Trailing bytes in Tor frame" }
             val accepted = incomingTransportHub.onRawFrameReceived(payload, TransportType.TOR)
+            Log.i("TORX_DIAG", "tor_rx queue=${ProtocolCodec.decodeTransportEnvelope(payload).queueAddress.take(8)} accepted=$accepted bytes=$length")
             if (accepted) {
                 val incomingQueue = ProtocolCodec.decodeTransportEnvelope(payload).queueAddress
                 val connection = connectionManager.getConnectionByRecvQueue(incomingQueue)
@@ -64,6 +85,8 @@ class OnionEndpointManager(
     }
 
     fun torrcLines(): List<String> {
+        // Context.getDir creates 0771 directories. Tor onion key directories require 0700.
+        android.system.Os.chmod(hiddenServiceDirectory.absolutePath, 448)
         val port = start()
         return listOf(
             "HiddenServiceDir ${hiddenServiceDirectory.absolutePath}",

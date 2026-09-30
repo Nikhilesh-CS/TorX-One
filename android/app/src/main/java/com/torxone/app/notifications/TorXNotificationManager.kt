@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.app.RemoteInput
+import androidx.core.content.ContextCompat
 import com.torxone.app.MainActivity
 import com.torxone.app.data.dao.ConversationDao
 import com.torxone.app.data.dao.LocalMessageStateDao
@@ -122,6 +123,12 @@ class TorXNotificationManager(
      */
     suspend fun refreshConversationNotification(conversationId: String) {
         try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "[NOTIFY SUPPRESSED] Notification permission is disabled")
+                return
+            }
             val notifsEnabled = appSettingsRepository?.notificationsEnabled?.first() ?: true
             if (!notifsEnabled) {
                 cancelForConversation(conversationId)

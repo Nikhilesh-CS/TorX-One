@@ -28,11 +28,14 @@ class TransportRouter {
         val candidates = if (fake != null) {
             listOf(fake)
         } else {
-            listOf(TransportType.NEARBY, TransportType.WIFI_HALOW, TransportType.GATEWAY, TransportType.TOR, TransportType.WIFI_DIRECT, TransportType.LORA, TransportType.RELAY)
+            listOf(TransportType.TOR, TransportType.NEARBY, TransportType.WIFI_HALOW, TransportType.GATEWAY, TransportType.WIFI_DIRECT, TransportType.LORA, TransportType.RELAY)
                 .mapNotNull(transports::get)
                 .filter { (it as? AddressableTransport)?.canRoute(destination) ?: true }
         }
-        if (candidates.isEmpty()) return TransportResult.Failed(TransportType.NEARBY, "No route for destination")
+        if (candidates.isEmpty()) {
+            Log.w(TAG, "[ROUTE MISSING] No authenticated route for destination=${destination.address.take(8)}")
+            return TransportResult.Failed(TransportType.TOR, "No route for destination")
+        }
 
         val failures = mutableListOf<String>()
         for (candidate in candidates) {

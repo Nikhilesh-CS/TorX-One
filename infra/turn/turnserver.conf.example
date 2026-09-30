@@ -1,0 +1,34 @@
+# Replace every CHANGE_ME value before starting. Linux host networking required.
+listening-port=3478
+tls-listening-port=5349
+min-port=49160
+max-port=49260
+realm=CHANGE_ME_TURN_DOMAIN
+server-name=CHANGE_ME_TURN_DOMAIN
+# For a VPS behind 1:1 NAT use PUBLIC_IP/PRIVATE_IP instead.
+external-ip=CHANGE_ME_PUBLIC_IPV4
+fingerprint
+use-auth-secret
+# Generate on the VPS; never put this secret in the app or source control.
+static-auth-secret=CHANGE_ME_RANDOM_SERVER_SECRET
+cert=/etc/coturn/tls/fullchain.pem
+pkey=/etc/coturn/tls/privkey.pem
+no-tlsv1
+no-tlsv1_1
+no-cli
+no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+user-quota=8
+total-quota=100
+max-bps=1000000
+stale-nonce=600
+log-file=stdout
+simple-log

@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -150,4 +152,35 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation(composeBom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+}
+
+// Resolve the actual release graph, including the separately vendored native Tor binary.
+tasks.register("securityInventory") {
+    val inventoryDir = layout.buildDirectory.dir("reports/security")
+    outputs.dir(inventoryDir)
+    outputs.upToDateWhen { false }
+    doLast {
+        val destination = inventoryDir.get().asFile.apply { mkdirs() }
+        val modules = configurations.getByName("releaseRuntimeClasspath")
+            .resolvedConfiguration.resolvedArtifacts.map { it.moduleVersion.id }
+            .distinctBy { "${it.group}:${it.name}:${it.version}" }
+            .sortedBy { "${it.group}:${it.name}:${it.version}" }
+        fun escaped(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"")
+        val components = modules.map { id ->
+            val purl = "pkg:maven/${id.group}/${id.name}@${id.version}"
+            """{"type":"library","group":"${escaped(id.group)}","name":"${escaped(id.name)}","version":"${escaped(id.version)}","purl":"${escaped(purl)}"}"""
+        }.toMutableList()
+        val tor = file("libs/tor-android-0.4.8.12.aar")
+        val hash = MessageDigest.getInstance("SHA-256")
+            .digest(tor.readBytes()).joinToString("") { "%02x".format(it) }
+        components += """{"type":"library","name":"tor-android","version":"0.4.8.12","hashes":[{"alg":"SHA-256","content":"$hash"}]}"""
+        components += """{"type":"library","name":"tor","version":"0.4.8.12","purl":"pkg:generic/tor@0.4.8.12"}"""
+        destination.resolve("sbom.cdx.json").writeText(
+            """{"bomFormat":"CycloneDX","specVersion":"1.5","version":1,"components":[${components.joinToString(",")}]}"""
+        )
+        destination.resolve("dependencies.txt").writeText(
+            modules.joinToString("\n") { "${it.group}:${it.name}:${it.version}" } +
+                "\ntor-android:0.4.8.12 SHA-256=$hash\n"
+        )
+    }
 }

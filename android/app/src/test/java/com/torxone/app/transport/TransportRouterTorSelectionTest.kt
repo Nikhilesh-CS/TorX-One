@@ -13,7 +13,7 @@ class TransportRouterTorSelectionTest {
     private val destination = TransportDestination("queue")
 
     @Test
-    fun `Nearby is preferred when both routes are ready`() = runBlocking {
+    fun `Tor is preferred when both routes are ready`() = runBlocking {
         val router = TransportRouter()
         val nearby = RoutedStub(TransportType.NEARBY)
         val tor = RoutedStub(TransportType.TOR)
@@ -22,9 +22,9 @@ class TransportRouterTorSelectionTest {
 
         val result = router.send(destination, payload)
 
-        assertEquals(TransportResult.Accepted(TransportType.NEARBY), result)
-        assertEquals(1, nearby.sends)
-        assertEquals(0, tor.sends)
+        assertEquals(TransportResult.Accepted(TransportType.TOR), result)
+        assertEquals(0, nearby.sends)
+        assertEquals(1, tor.sends)
     }
 
     @Test
@@ -41,14 +41,14 @@ class TransportRouterTorSelectionTest {
     }
 
     @Test
-    fun `router fails over from Nearby send failure to Tor with identical ciphertext`() = runBlocking {
+    fun `router fails over from Tor send failure to Nearby with identical ciphertext`() = runBlocking {
         val router = TransportRouter()
-        val nearby = RoutedStub(TransportType.NEARBY, result = TransportResult.Failed(TransportType.NEARBY, "lost"))
-        val tor = RoutedStub(TransportType.TOR)
+        val nearby = RoutedStub(TransportType.NEARBY)
+        val tor = RoutedStub(TransportType.TOR, result = TransportResult.Failed(TransportType.TOR, "lost"))
         router.registerTransport(nearby)
         router.registerTransport(tor)
 
-        assertEquals(TransportResult.Accepted(TransportType.TOR), router.send(destination, payload))
+        assertEquals(TransportResult.Accepted(TransportType.NEARBY), router.send(destination, payload))
         assertArrayEquals(payload, nearby.lastPayload)
         assertArrayEquals(payload, tor.lastPayload)
     }

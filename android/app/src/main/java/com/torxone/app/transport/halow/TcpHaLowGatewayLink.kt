@@ -1,6 +1,7 @@
 package com.torxone.app.transport.halow
 
 import android.net.Network
+import android.os.Build
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +33,9 @@ class TcpHaLowGatewayLink : HaLowGatewayLink {
     private var hello = CompletableDeferred<HaLowGatewayCapabilities>()
 
     override suspend fun connect(candidate: HaLowGatewayCandidate): HaLowGatewayCapabilities {
-        val network = candidate.networkHandle?.let(Network::fromNetworkHandle)
+        val network = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            candidate.networkHandle?.let(Network::fromNetworkHandle)
+        } else null
         val connected = network?.socketFactory?.createSocket() ?: Socket()
         connected.connect(InetSocketAddress(candidate.host, candidate.port), CONNECT_TIMEOUT_MS.toInt())
         connected.tcpNoDelay = true

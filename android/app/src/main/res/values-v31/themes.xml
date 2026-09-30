@@ -3,5 +3,7 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">@color/torx_brand_background</item>
         <item name="android:navigationBarColor">@color/torx_brand_background</item>
+        <item name="android:windowSplashScreenBackground">@color/torx_brand_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_torx</item>
     </style>
 </resources>

@@ -1,0 +1,16 @@
+services:
+  coturn:
+    image: ${COTURN_IMAGE:?Set COTURN_IMAGE to a reviewed coturn/coturn version or digest}
+    restart: unless-stopped
+    network_mode: host
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./tls:/etc/coturn/tls:ro
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
