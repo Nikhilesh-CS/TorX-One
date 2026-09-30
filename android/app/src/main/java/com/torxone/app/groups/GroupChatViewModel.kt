@@ -276,6 +276,18 @@ class GroupChatViewModel(
         }
     }
 
+    fun clearError() { _uiState.update { it.copy(error = null) } }
+
+    fun downloadMedia(mediaId: String) {
+        viewModelScope.launch {
+            try { requireNotNull(mediaService) { "Media service unavailable" }.resumeTransfer(mediaId) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = error.message ?: "Unable to download attachment") }
+            }
+        }
+    }
+
     fun sendImage(fileName: String, bytes: ByteArray, mimeType: String) {
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {

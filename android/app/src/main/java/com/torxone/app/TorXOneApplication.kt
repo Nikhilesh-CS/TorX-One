@@ -464,6 +464,7 @@ class TorXOneApplication : Application() {
             onBootstrapConfirmed = { torRouteManager.remove("invite-$it") }
         )
         val incomingDispatcher = IncomingDispatcher(
+            profileAvatarContext = this,
             connectionManager = connectionManager,
             sessionCrypto = sessionCrypto,
             processedEnvelopeDao = database.processedEnvelopeDao(),
@@ -497,6 +498,20 @@ class TorXOneApplication : Application() {
             peerTorEndpoints = peerTorEndpoints,
             consolidateDirectChats = { com.torxone.app.contacts.consolidateDirectConversations(database) }
         )
+        applicationScope.launch {
+            var knownRelationships = emptySet<String>()
+            connectionManager.activeConnectionsFlow.collect { connections ->
+                val current = connections.keys.toSet()
+                if ((current - knownRelationships).isNotEmpty()) {
+                    getLocalIdentityId()?.let { identity ->
+                        runCatching { chatService.broadcastProfileUpdate(identity,
+                            settingsRepository.displayName.first(), settingsRepository.about.first(), current - knownRelationships) }
+                            .onFailure { android.util.Log.w("TorXOneApplication", "Profile sync could not be queued", it) }
+                    }
+                }
+                knownRelationships = current
+            }
+        }
         incomingTransportHub = IncomingTransportHub(
             dispatcher = incomingDispatcher,
             dedicatedMediaFrameHandler = mediaService::handleDedicatedMediaFrame

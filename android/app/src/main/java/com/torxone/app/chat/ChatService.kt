@@ -786,14 +786,22 @@ class ChatService(
     suspend fun broadcastProfileUpdate(
         localIdentityId: String,
         displayName: String,
-        about: String = ""
+        about: String = "",
+        relationshipIds: Set<String>? = null
     ) {
         val activeConnections = connectionManager.getAllActiveConnections()
-        val payload = "$displayName\n$about".toByteArray(Charsets.UTF_8)
+        val avatar = appSettingsRepository?.profilePhotoForSync()
+        val visible = appSettingsRepository?.profilePhotoVisibility?.first()?.uppercase() !in setOf("NOBODY", "NONE")
+        val aboutVisible = appSettingsRepository?.aboutVisibility?.first()?.uppercase() !in setOf("NOBODY", "NONE")
+        val payload = com.torxone.app.profile.ProfileUpdateCodec.encode(
+            com.torxone.app.profile.ProfileUpdate(displayName, if (aboutVisible) about else "", System.currentTimeMillis(),
+                if (visible) avatar else null, hasAvatarUpdate = true))
         val now = System.currentTimeMillis()
 
+        var failures = 0
         val contactDao = database?.contactDao()
         for (connection in activeConnections) {
+            if (relationshipIds != null && connection.relationshipId !in relationshipIds) continue
             try {
                 val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: continue
                 if (contact.remoteIdentityId.isBlank()) continue
@@ -809,28 +817,23 @@ class ChatService(
                     payload = payload,
                     directionSequence = 0L
                 )
-                val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
-                val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
-                sessionCrypto.encryptAndCommit(connection.relationshipId, envelopeBytes, aad) { encrypted, updatedState ->
-                    sessionStore?.saveSession(updatedState)
-                    val deliveryItem = DeliveryItem(
-                        deliveryId = UUID.randomUUID().toString(),
-                        logicalMessageId = envelope.logicalMessageId,
-                        conversationId = contact.conversationId,
-                        connectionId = connection.connectionId,
-                        queueAddress = connection.sendQueueId,
-                        ciphertext = encrypted.serialize(),
-                        queueAuthenticator = connection.sendAuth,
-                        status = DeliveryStatus.QUEUED,
+                sendCoordinator.sendDurableUnsequenced(connection.relationshipId, connection, envelope) { committed, ciphertext ->
+                    outboxDao.insert(OutboxEntity(
+                        deliveryId = UUID.randomUUID().toString(), logicalMessageId = committed.logicalMessageId,
+                        conversationId = contact.conversationId, connectionId = connection.connectionId,
+                        queueAddress = connection.sendQueueId, ciphertext = ciphertext,
+                        queueAuthenticator = connection.sendAuth, status = DeliveryStatus.QUEUED.name,
                         priority = com.torxone.app.agent.DeliveryPriority.HIGH,
-                        expectsAck = false,
-                        applicationSequence = null
-                    )
-                    agent.enqueue(deliveryItem)
+                        expectsAck = true, relationshipId = connection.relationshipId, nextAttemptAt = now
+                    ))
+                    Unit
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                failures++
                 Log.w(TAG, "Failed to broadcast profile update to ${connection.relationshipId}: ${e.message}")
             }
         }
+        check(failures == 0) { "Profile saved locally, but updates for $failures contact(s) could not be queued. Try Save again." }
     }
 }

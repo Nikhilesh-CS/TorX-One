@@ -53,6 +53,15 @@ fun CallScreen(
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    if (uiState.callId.isBlank() || uiState.state == CallState.IDLE) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("No active call")
+                TextButton(onClick = onBackClick) { Text("Back to chat") }
+            }
+        }
+        return
+    }
     val context = LocalContext.current
     val app = context.applicationContext as TorXOneApplication
     val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
@@ -219,6 +228,7 @@ private fun VoiceCallLayout(
         ) {
             CallAvatar(
                 name = uiState.peerName,
+                avatarHash = uiState.peerAvatarHash,
                 isPulsing = uiState.state == CallState.INCOMING_RINGING ||
                     uiState.state == CallState.OUTGOING_SENDING ||
                     uiState.state == CallState.OUTGOING_CALLING ||
@@ -316,7 +326,8 @@ private fun VideoCallLayout(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CallAvatar(name = uiState.peerName, isPulsing = false)
+                    CallAvatar(name = uiState.peerName,
+                avatarHash = uiState.peerAvatarHash, isPulsing = false)
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "${uiState.peerName}'s camera is off",
@@ -427,7 +438,7 @@ private fun VideoCallLayout(
 // ─── Avatar Component with Radar Pulse ────────────────────────────────────────
 
 @Composable
-private fun CallAvatar(name: String, isPulsing: Boolean) {
+private fun CallAvatar(name: String, isPulsing: Boolean, avatarHash: String? = null) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val scale by infiniteTransition.animateFloat(
         initialValue = 1f,
@@ -473,12 +484,7 @@ private fun CallAvatar(name: String, isPulsing: Boolean) {
                 .border(3.dp, Color.White.copy(alpha = 0.2f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = name.take(1).uppercase().ifEmpty { "?" },
-                fontSize = 48.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
+            com.torxone.app.ui.components.ProfileAvatar(name, avatarHash, Modifier.fillMaxSize())
         }
     }
 }

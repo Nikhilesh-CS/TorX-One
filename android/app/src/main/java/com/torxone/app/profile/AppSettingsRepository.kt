@@ -32,7 +32,11 @@ class AppSettingsRepository(context: Context) {
         @Volatile var appLockGate: suspend () -> Boolean = { false }
     }
 
+    private val appContext = context.applicationContext
     private val store = context.settingsDataStore
+    suspend fun profilePhotoForSync(): ByteArray? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        ProfileAvatarStorage.readForSync(appContext, avatarUri.first())
+    }
 
     // ─── Profile Keys ────────────────────────────────────────────────
     private object ProfileKeys {

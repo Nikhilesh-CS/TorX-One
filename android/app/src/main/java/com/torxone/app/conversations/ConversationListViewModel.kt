@@ -97,6 +97,7 @@ class ConversationListViewModel(
                 isArchived = entity.isArchived,
                 isMuted = NotificationPolicy.isConversationMuted(entity.mutedUntil, now),
                 avatarHash = entity.avatarHash,
+                type = entity.type,
                 isLastMessageOutgoing = isOutgoing,
                 lastMessageStatus = status
             )

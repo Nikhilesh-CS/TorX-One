@@ -163,7 +163,9 @@ data class ContactEntity(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "remote_identity_id", defaultValue = "''")
-    val remoteIdentityId: String = ""
+    val remoteIdentityId: String = "",
+    @ColumnInfo(name = "about", defaultValue = "''") val about: String = "",
+    @ColumnInfo(name = "profile_updated_at", defaultValue = "0") val profileUpdatedAt: Long = 0
 ) {
     companion object {
         const val REMOTE_IDENTITY_UNKNOWN = "REMOTE_IDENTITY_UNKNOWN"
@@ -175,7 +177,11 @@ data class ContactEntity(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ContactEntity) return false
-        return contactId == other.contactId
+        return contactId == other.contactId && relationshipId == other.relationshipId &&
+            displayName == other.displayName && avatarHash == other.avatarHash && about == other.about &&
+            profileUpdatedAt == other.profileUpdatedAt && remoteIdentityId == other.remoteIdentityId &&
+            conversationId == other.conversationId && verificationState == other.verificationState &&
+            createdAt == other.createdAt && signingPublicKey.contentEquals(other.signingPublicKey)
     }
 
     override fun hashCode(): Int = contactId.hashCode()
@@ -662,7 +668,10 @@ data class MediaEntity(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is MediaEntity) return false
-        return mediaId == other.mediaId
+        return mediaId == other.mediaId && status == other.status && transferProgress == other.transferProgress &&
+            localPath == other.localPath && fileName == other.fileName && mimeType == other.mimeType &&
+            fileSize == other.fileSize && durationMs == other.durationMs &&
+            thumbnailData.contentEquals(other.thumbnailData) && waveformData.contentEquals(other.waveformData)
     }
 
     override fun hashCode(): Int = mediaId.hashCode()

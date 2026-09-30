@@ -75,6 +75,12 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    LaunchedEffect(uiState.error) {
+        uiState.error?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearError()
+        }
+    }
     val recordAudioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) viewModel.startVoiceRecording()
         else android.widget.Toast.makeText(context, "Microphone permission is required for voice notes", android.widget.Toast.LENGTH_SHORT).show()
@@ -120,6 +126,7 @@ fun ChatScreen(
         onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendVideo = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
+        onDownloadMedia = viewModel::downloadMedia,
         onStartVoiceRecording = {
             if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
                 viewModel.startVoiceRecording()
@@ -144,6 +151,8 @@ fun ChatScreen(
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
+    contactAvatar: String? = null,
+    displayName: String? = null,
     onBackClick: () -> Unit,
     onHeaderClick: () -> Unit = {},
     onStartVoiceCall: (() -> Unit)? = null,
@@ -152,6 +161,12 @@ fun ChatScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    LaunchedEffect(uiState.error) {
+        uiState.error?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearError()
+        }
+    }
 
     val recordAudioLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -203,7 +218,8 @@ fun ChatScreen(
     }
 
     ChatScreen(
-        contactName = uiState.title,
+        contactName = displayName ?: uiState.title,
+        contactAvatar = contactAvatar,
         subtitleOverride = uiState.subtitle,
         isGroup = uiState.isGroup,
         isParticipantActive = uiState.isParticipantActive,
@@ -236,6 +252,7 @@ fun ChatScreen(
         onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendVideo = { name, bytes, mime -> viewModel.sendVideo(name, bytes, mime) },
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
+        onDownloadMedia = viewModel::downloadMedia,
         onCancelMediaTransfer = viewModel::cancelMediaTransfer,
         onHeaderClick = onHeaderClick,
         onBackClick = onBackClick,
@@ -269,6 +286,7 @@ fun ChatScreen(
 @Composable
 fun ChatScreen(
     contactName: String,
+    contactAvatar: String? = null,
     messages: List<MessageUiModel>,
     composerText: String,
     presence: PresenceStatus = PresenceStatus.UNKNOWN,
@@ -296,6 +314,7 @@ fun ChatScreen(
     onSendVideo: (String, ByteArray, String) -> Unit = { _, _, _ -> },
     onSendDocument: (String, ByteArray, String) -> Unit = { _, _, _ -> },
     onCancelMediaTransfer: (String) -> Unit = {},
+    onDownloadMedia: ((String) -> Unit)? = null,
     onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
     onHeaderClick: () -> Unit = {},
     onBackClick: () -> Unit = {},
@@ -391,14 +410,24 @@ fun ChatScreen(
         }
     }
 
-    // Auto-scroll to bottom only if already close to bottom or initial load (m7)
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val totalItems = listState.layoutInfo.totalItemsCount
-            if (totalItems <= 1 || (totalItems - lastVisible) <= 3) {
-                listState.animateScrollToItem(messages.size - 1)
+    var followLatest by remember { mutableStateOf(true) }
+    var previousCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling && listState.layoutInfo.totalItemsCount > 0) {
+                val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                followLatest = last >= listState.layoutInfo.totalItemsCount - 2
             }
+        }
+    }
+    LaunchedEffect(messages.lastOrNull()?.logicalMessageId, messages.size) {
+        if (messages.isNotEmpty()) {
+            val outgoing = messages.size > previousCount && messages.last().direction == MessageDirection.OUTGOING
+            if (previousCount == 0 || followLatest || outgoing) {
+                listState.scrollToItem(messages.lastIndex)
+                followLatest = true
+            }
+            previousCount = messages.size
         }
     }
 
@@ -414,20 +443,7 @@ fun ChatScreen(
                             .clickable { onHeaderClick() }
                             .padding(vertical = 4.dp)
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = contactName.take(1).uppercase(),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            }
-                        }
+                        com.torxone.app.ui.components.ProfileAvatar(contactName, contactAvatar, Modifier.size(40.dp))
 
                         Spacer(modifier = Modifier.width(12.dp))
 
@@ -565,10 +581,11 @@ fun ChatScreen(
                     onReply = { onReply(message) },
                     onLongClick = { selectedMessageForMenu = message },
                     onMediaClick = { media ->
-                        if (media.type == MediaType.IMAGE) {
-                            viewerMedia = media
-                        }
+                        if (media.type == MediaType.IMAGE && media.localPath?.let { java.io.File(it).isFile } == true) viewerMedia = media
+                        else if (media.type == MediaType.IMAGE) com.torxone.app.ui.components.openMedia(context, media,
+                            onDownloadMedia?.let { download -> { download(media.mediaId) } })
                     },
+                    onDownload = onDownloadMedia?.let { download -> { message.media?.let { download(it.mediaId) } } },
                     onQuoteClick = { targetMsgId ->
                         coroutineScope.launch {
                             val targetIndex = messages.indexOfFirst { it.logicalMessageId == targetMsgId }
@@ -670,55 +687,7 @@ fun ChatScreen(
     }
 
     // Full-screen Image / Media Viewer Dialog
-    viewerMedia?.let { media ->
-        Dialog(
-            onDismissRequest = { viewerMedia = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Icon(
-                            Icons.Default.Image,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(120.dp)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = media.fileName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${media.fileSize / 1024} KB • Encrypted End-to-End",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.LightGray
-                        )
-                    }
-
-                    IconButton(
-                        onClick = { viewerMedia = null },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(16.dp)
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close", tint = Color.White)
-                    }
-                }
-            }
-        }
-    }
+    viewerMedia?.let { media -> com.torxone.app.ui.components.MediaViewer(media) { viewerMedia = null } }
 
     // Long Press Action Sheet
     selectedMessageForMenu?.let { target ->
@@ -892,6 +861,7 @@ private fun MessageBubble(
     onReply: () -> Unit,
     onLongClick: () -> Unit,
     onMediaClick: (MediaUiModel) -> Unit,
+    onDownload: (() -> Unit)?,
     onQuoteClick: (String) -> Unit,
     onToggleReaction: (String) -> Unit
 ) {
@@ -1002,9 +972,10 @@ private fun MessageBubble(
                         message.media?.let { media ->
                             when (media.type) {
                                 MediaType.IMAGE -> ImageBubbleView(media, isOutgoing)
-                                MediaType.VOICE_NOTE -> VoiceNoteBubbleView(media, isOutgoing)
-                                MediaType.VIDEO -> VideoBubbleView(media, isOutgoing)
-                                MediaType.DOCUMENT, MediaType.AUDIO -> DocumentBubbleView(media, isOutgoing)
+                                MediaType.VOICE_NOTE -> VoiceNoteBubbleView(media, isOutgoing, onDownload)
+                                MediaType.VIDEO -> VideoBubbleView(media, isOutgoing, onDownload)
+                                MediaType.DOCUMENT -> DocumentBubbleView(media, isOutgoing, onDownload)
+                                MediaType.AUDIO -> com.torxone.app.ui.components.AudioPlayback(media, Modifier.fillMaxWidth(), onDownload)
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                         }
@@ -1166,93 +1137,23 @@ private fun AnimatedGifView(drawable: AnimatedImageDrawable) {
 }
 
 @Composable
-private fun VoiceNoteBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
-    var isPlaying by remember { mutableStateOf(false) }
-    var speed by remember { mutableStateOf("1x") }
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-    ) {
-        FilledIconButton(
-            onClick = { isPlaying = !isPlaying },
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                contentColor = if (isOutgoing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimary
-            ),
-            modifier = Modifier.size(38.dp)
-        ) {
-            Icon(
-                if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Play"
-            )
-        }
-
-        // Waveform Bars
-        val waveformList = remember(media.waveformData) {
-            VoiceNoteHelper.normalizeWaveform(media.waveformData)
-        }
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .height(28.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            for (level in waveformList.take(28)) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight(level.coerceIn(0.15f, 1.0f))
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(
-                            if (isOutgoing)
-                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.9f)
-                            else
-                                MaterialTheme.colorScheme.primary
-                        )
-                )
-            }
-        }
-
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                text = VoiceNoteHelper.formatDuration(media.durationMs ?: 0L),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = (if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary).copy(alpha = 0.15f),
-                modifier = Modifier.clickable {
-                    speed = when (speed) {
-                        "1x" -> "1.5x"
-                        "1.5x" -> "2x"
-                        else -> "1x"
-                    }
-                }
-            ) {
-                Text(
-                    text = speed,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                )
-            }
-        }
-    }
+private fun VoiceNoteBubbleView(media: MediaUiModel, isOutgoing: Boolean, onDownload: (() -> Unit)?) {
+    com.torxone.app.ui.components.AudioPlayback(media, Modifier.fillMaxWidth(), onDownload)
 }
 
 @Composable
-private fun VideoBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
+private fun VideoBubbleView(media: MediaUiModel, isOutgoing: Boolean, onDownload: (() -> Unit)?) {
+    var viewing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    if (viewing) com.torxone.app.ui.components.MediaViewer(media) { viewing = false }
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(180.dp)
+            .clickable {
+                if (media.localPath?.let { java.io.File(it).isFile } == true) viewing = true
+                else com.torxone.app.ui.components.openMedia(context, media, onDownload)
+            }
             .clip(RoundedCornerShape(8.dp))
             .background(Color.Black.copy(alpha = 0.3f)),
         contentAlignment = Alignment.Center
@@ -1263,7 +1164,9 @@ private fun VideoBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
             modifier = Modifier.size(48.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = Color.White, modifier = Modifier.size(32.dp))
+                if (media.status == MediaStatus.DOWNLOADING) CircularProgressIndicator(progress = { media.progress }, color = Color.White)
+                else Icon(if (media.localPath != null) Icons.Default.PlayArrow else Icons.Default.Download,
+                    contentDescription = if (media.localPath != null) "Play video" else "Download video", tint = Color.White, modifier = Modifier.size(32.dp))
             }
         }
 
@@ -1286,11 +1189,12 @@ private fun VideoBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
 }
 
 @Composable
-private fun DocumentBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
+private fun DocumentBubbleView(media: MediaUiModel, isOutgoing: Boolean, onDownload: (() -> Unit)?) {
+    val context = LocalContext.current
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = if (isOutgoing) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().clickable { com.torxone.app.ui.components.openMedia(context, media, onDownload) }
     ) {
         Row(
             modifier = Modifier.padding(8.dp),
@@ -1322,14 +1226,14 @@ private fun DocumentBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
                     color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "${media.fileSize / 1024} KB",
+                    text = "${media.fileSize / 1024} KB • ${media.status.name.lowercase().replace('_', ' ')}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Icon(
-                if (media.status == MediaStatus.COMPLETE) Icons.Default.Check else Icons.Default.Download,
+                if (media.status == MediaStatus.COMPLETE) Icons.Default.Check else Icons.Default.HourglassEmpty,
                 contentDescription = null,
                 tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
@@ -1668,18 +1572,27 @@ private suspend fun readUriWithLimit(
     context: android.content.Context,
     uri: android.net.Uri,
     maxBytes: Int = 32 * 1024 * 1024
-): ByteArray? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        val output = java.io.ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
-        val buffer = ByteArray(64 * 1024)
-        var total = 0
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            total += count
-            if (total > maxBytes) return@withContext null
-            output.write(buffer, 0, count)
+): ByteArray? {
+    return try {
+        val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val output = java.io.ByteArrayOutputStream(minOf(maxBytes, 64 * 1024))
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    require(output.size().toLong() + count <= maxBytes) { "Attachment exceeds ${maxBytes / (1024 * 1024)} MB" }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray().also { require(it.isNotEmpty()) { "Selected attachment is empty" } }
+            } ?: error("Cannot read selected attachment")
         }
-        output.toByteArray()
+        bytes
+    } catch (error: Exception) {
+        if (error is kotlinx.coroutines.CancellationException) throw error
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            android.widget.Toast.makeText(context, error.message ?: "Cannot read attachment", android.widget.Toast.LENGTH_LONG).show()
+        }
+        null
     }
 }

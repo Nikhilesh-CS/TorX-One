@@ -37,7 +37,7 @@ import com.torxone.app.calls.CallHistoryDao
         RelayReceiptEntity::class,
         PeerTorEndpointEntity::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -211,6 +211,13 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_14_15 = object : androidx.room.migration.Migration(14, 15) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE contacts ADD COLUMN about TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE contacts ADD COLUMN profile_updated_at INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider
@@ -228,7 +235,7 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
 
             val provider = passphraseProvider
             try {

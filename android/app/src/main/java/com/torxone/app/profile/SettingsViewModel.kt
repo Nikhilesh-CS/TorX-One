@@ -140,24 +140,19 @@ class SettingsViewModel(
     }
 
     // ─── Profile Update ──────────────────────────────────────────────
-    fun updateProfile(
+    suspend fun updateProfile(
         name: String,
         about: String,
         avatarUpdate: ProfileAvatarUpdate = ProfileAvatarUpdate.Unchanged
     ) {
-        viewModelScope.launch {
-            settingsRepo.updateProfile(displayName = name, about = about, avatarUpdate = avatarUpdate)
-            try {
-                chatService?.let { cs ->
-                    identityRepo?.loadIdentity()?.let { id ->
-                        cs.broadcastProfileUpdate(id.identityId, name, about)
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.w("SettingsViewModel", "Profile metadata broadcast failed", e)
-            }
-        }
+        require(name.isNotBlank() && name.length <= 40 && '\n' !in name) { "Enter a display name of 1–40 characters" }
+        require(about.length <= 140) { "About must be at most 140 characters" }
+        settingsRepo.updateProfile(displayName = name, about = about, avatarUpdate = avatarUpdate)
+        chatService?.let { cs -> identityRepo?.loadIdentity()?.let { id ->
+            cs.broadcastProfileUpdate(id.identityId, name, about)
+        } }
     }
+
 }
 
 data class SettingsUiState(

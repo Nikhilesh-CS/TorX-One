@@ -1465,18 +1465,30 @@ class MediaService(
     }
 
     suspend fun resumeTransfer(mediaId: String) {
-        val transfer = mediaTransferDao.getByMediaId(mediaId) ?: return
+        val transfer = mediaTransferDao.getByMediaId(mediaId) ?: error("This attachment is no longer available")
         if (transfer.status != TransferStatus.PAUSED.name && transfer.status != TransferStatus.FAILED.name) return
+        val download = transfer.direction == TransferDirection.DOWNLOAD.name
+        val connection = if (download) requireNotNull(connectionManager.getConnectionByRelationship(transfer.relationshipId)) {
+            "Secure peer connection unavailable. Reopen this chat and try again."
+        } else null
+        val recipient = if (download && dedicatedMediaTransport != null) requireNotNull(
+            contactDao?.getByRelationshipId(transfer.relationshipId)?.remoteIdentityId?.takeIf {
+                it.isNotBlank() && it != ContactEntity.REMOTE_IDENTITY_UNKNOWN
+            }) { "Peer identity unavailable. Reconnect this contact." } else null
         mediaTransferDao.updateStatus(mediaId, TransferStatus.ACTIVE.name)
-        if (transfer.direction == TransferDirection.DOWNLOAD.name) {
-            if (dedicatedMediaTransport != null) {
-                val connection = connectionManager.getConnectionByRelationship(transfer.relationshipId) ?: return
-                val recipient = contactDao?.getByRelationshipId(transfer.relationshipId)?.remoteIdentityId ?: return
-                sendAccept(connection, transfer.conversationId, recipient, mediaId)
+        val progress = transfer.completedChunks.toFloat() / transfer.totalChunks.coerceAtLeast(1)
+        mediaDao.updateStatus(mediaId, if (download) MediaStatus.DOWNLOADING.name else MediaStatus.UPLOADING.name, progress)
+        try {
+            if (download) {
+                if (dedicatedMediaTransport != null) sendAccept(requireNotNull(connection), transfer.conversationId, requireNotNull(recipient), mediaId)
+                requestResume(mediaId)
+            } else {
+                resumeUpload(mediaId, getMissingChunkIndices(mediaId))
             }
-            requestResume(mediaId)
-        } else {
-            resumeUpload(mediaId, getMissingChunkIndices(mediaId))
+        } catch (error: Exception) {
+            mediaTransferDao.updateStatus(mediaId, TransferStatus.PAUSED.name)
+            mediaDao.updateStatus(mediaId, MediaStatus.QUEUED.name, progress)
+            throw error
         }
     }
 

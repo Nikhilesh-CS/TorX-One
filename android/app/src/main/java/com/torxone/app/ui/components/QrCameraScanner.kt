@@ -43,6 +43,19 @@ fun QrCameraScanner(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val onScan by rememberUpdatedState(onQrScanned)
+    val analysisExecutor = remember { java.util.concurrent.Executors.newSingleThreadExecutor() }
+    val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
+    var provider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val boundCases = remember { mutableListOf<androidx.camera.core.UseCase>() }
+    val disposed = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    DisposableEffect(Unit) {
+        onDispose {
+            disposed.set(true)
+            provider?.unbind(*boundCases.toTypedArray())
+            analysisExecutor.shutdown()
+        }
+    }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -78,6 +91,8 @@ fun QrCameraScanner(
                     cameraProviderFuture.addListener({
                         try {
                             val cameraProvider = cameraProviderFuture.get()
+                            if (disposed.get()) return@addListener
+                            provider = cameraProvider
                             val preview = Preview.Builder().build().also {
                                 it.surfaceProvider = previewView.surfaceProvider
                             }
@@ -86,12 +101,15 @@ fun QrCameraScanner(
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                 .build()
                                 .also {
-                                    it.setAnalyzer(executor, QrCodeAnalyzer(onQrScanned))
+                                    it.setAnalyzer(analysisExecutor, QrCodeAnalyzer { text -> mainExecutor.execute {
+                                        if (!disposed.get()) onScan(text)
+                                    } })
                                 }
 
                             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-                            cameraProvider.unbindAll()
+                            boundCases.clear()
+                            boundCases.addAll(listOf(preview, imageAnalysis))
                             cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
                                 cameraSelector,
@@ -150,22 +168,20 @@ private class QrCodeAnalyzer(
     }
 
     @Volatile
-    private var isScanned = false
+    private var lastText: String? = null
+    private var lastScanAt = 0L
 
     override fun analyze(imageProxy: ImageProxy) {
-        if (isScanned) {
-            imageProxy.close()
-            return
-        }
-
         try {
             val plane = imageProxy.planes[0]
             val buffer = plane.buffer
-            val data = ByteArray(buffer.remaining())
-            buffer.get(data)
-
             val width = imageProxy.width
             val height = imageProxy.height
+            val data = ByteArray(width * height)
+            val origin = buffer.position()
+            for (y in 0 until height) for (x in 0 until width) {
+                data[y * width + x] = buffer.get(origin + y * plane.rowStride + x * plane.pixelStride)
+            }
 
             val source = PlanarYUVLuminanceSource(
                 data, width, height, 0, 0, width, height, false
@@ -174,8 +190,12 @@ private class QrCodeAnalyzer(
             val result = reader.decodeWithState(binaryBitmap)
 
             if (result != null && !result.text.isNullOrBlank()) {
-                isScanned = true
-                onQrScanned(result.text.trim())
+                val text = result.text.trim()
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (text != lastText || now - lastScanAt > 2500) {
+                    lastText = text; lastScanAt = now
+                    onQrScanned(text)
+                }
             }
         } catch (_: NotFoundException) {
             // Normal when frame has no QR code

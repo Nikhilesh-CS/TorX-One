@@ -35,6 +35,7 @@ import com.torxone.app.transport.halow.HaLowConnectionState
 @Composable
 fun SettingsScreen(
     displayName: String,
+    avatarUri: String? = null,
     about: String,
     // Privacy
     lastSeenVisible: Boolean,
@@ -70,8 +71,12 @@ fun SettingsScreen(
     onPairHaLow: () -> Unit,
     onAppearanceChange: (field: String, value: Any) -> Unit,
     onDataChange: (field: String, value: Boolean) -> Unit,
-    onAboutClick: () -> Unit = {}
+    onAboutClick: (() -> Unit)? = null
 ) {
+    var showAbout by remember { mutableStateOf(false) }
+    if (showAbout) AlertDialog(onDismissRequest = { showAbout = false }, title = { Text("TorX One") },
+        text = { Text("Secure messaging with encrypted identities and Tor transport. Nearby connections are available when supported. Calls use WebRTC; direct calls can expose network addresses to your peer. Maximum Call Privacy requires a TURN relay.") },
+        confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Close") } })
     Scaffold(
         topBar = {
             TopAppBar(
@@ -106,27 +111,7 @@ fun SettingsScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.3f)
-                                    )
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = displayName.take(2).uppercase(),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
+                    com.torxone.app.ui.components.ProfileAvatar(displayName, avatarUri, Modifier.size(56.dp))
                     Spacer(modifier = Modifier.width(16.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -320,7 +305,7 @@ fun SettingsScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onAboutClick)
+                    .clickable(onClick = { onAboutClick?.invoke() ?: run { showAbout = true } })
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 color = Color.Transparent
             ) {
@@ -331,7 +316,7 @@ fun SettingsScreen(
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        text = "Version 0.1.0 · Privacy-first mesh messenger",
+                        text = "Version ${com.torxone.app.BuildConfig.VERSION_NAME} · Secure messaging over Tor",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                     )

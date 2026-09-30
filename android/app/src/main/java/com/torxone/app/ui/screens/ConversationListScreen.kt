@@ -468,35 +468,7 @@ private fun ConversationItem(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Avatar
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (conversation.type == ConversationType.GROUP)
-                            MaterialTheme.colorScheme.secondaryContainer
-                        else
-                            MaterialTheme.colorScheme.primaryContainer
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (conversation.type == ConversationType.GROUP) {
-                    Icon(
-                        imageVector = Icons.Default.Groups,
-                        contentDescription = "Group",
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.size(28.dp)
-                    )
-                } else {
-                    Text(
-                        text = conversation.title.take(1).uppercase(),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
+            com.torxone.app.ui.components.ProfileAvatar(conversation.title, conversation.avatarHash, Modifier.size(52.dp))
 
             // Title + Preview
             Column(

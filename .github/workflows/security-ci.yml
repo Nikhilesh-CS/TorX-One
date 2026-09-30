@@ -29,6 +29,7 @@ jobs:
       - name: Verify database migration and deterministic contact selection
         run: |
           python3 android/tools/verify_peer_endpoint_migration.py
+          python3 android/tools/verify_profile_migration.py
           python3 android/tools/verify_contact_selection.py
       - name: Preserve complete unit suite results
         if: always()

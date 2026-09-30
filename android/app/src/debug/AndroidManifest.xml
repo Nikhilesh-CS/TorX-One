@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".ui.UiTestActivity" android:exported="false"
+            android:theme="@style/Theme.TorXOne" />
+    </application>
+</manifest>

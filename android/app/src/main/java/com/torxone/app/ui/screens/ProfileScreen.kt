@@ -50,10 +50,11 @@ fun ProfileScreen(
     avatarUri: String?,
     identityId: String,
     signingPublicKey: ByteArray?,
-    onUpdateProfile: (name: String, about: String, avatarUpdate: ProfileAvatarUpdate) -> Unit,
+    onUpdateProfile: suspend (name: String, about: String, avatarUpdate: ProfileAvatarUpdate) -> Unit,
     onBackClick: () -> Unit,
     onShowQr: () -> Unit
 ) {
+    var savingProfile by remember { mutableStateOf(false) }
     var isEditing by remember { mutableStateOf(false) }
     var editName by remember(displayName) { mutableStateOf(displayName) }
     var editAbout by remember(about) { mutableStateOf(about) }
@@ -63,39 +64,13 @@ fun ProfileScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            scope.launch {
-                val stored = runCatching { withContext(Dispatchers.IO) {
-                    val profileDir = File(context.filesDir, "profile").apply { mkdirs() }
-                    val target = File(profileDir, "avatar_${System.currentTimeMillis()}.img")
-                    try {
-                        context.contentResolver.openInputStream(uri)?.use { input ->
-                            target.outputStream().use { output ->
-                                val buffer = ByteArray(64 * 1024)
-                                var total = 0L
-                                while (true) {
-                                    val count = input.read(buffer)
-                                    if (count < 0) break
-                                    total += count
-                                    require(total <= 10L * 1024L * 1024L) { "Profile image exceeds 10 MB" }
-                                    output.write(buffer, 0, count)
-                                }
-                            }
-                        } ?: error("Unable to read selected image")
-                        Uri.fromFile(target).toString()
-                    } catch (error: Exception) {
-                        target.delete()
-                        throw error
-                    }
-                } }.onFailure { avatarError = it.message ?: "Unable to use selected image" }.getOrNull()
-                if (stored != null) {
-                    editAvatarUri = stored
-                    avatarUpdate = ProfileAvatarUpdate.Changed(stored)
-                    avatarError = null
-                }
-            }
-        }
+    var editingPhoto by remember { mutableStateOf<Uri?>(null) }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri -> editingPhoto = uri }
+    editingPhoto?.let { selected ->
+        com.torxone.app.ui.components.AvatarEditor(selected, onSaved = { stored ->
+            editAvatarUri = stored; avatarUpdate = ProfileAvatarUpdate.Changed(stored)
+            avatarError = null; editingPhoto = null
+        }, onDismiss = { editingPhoto = null })
     }
 
     val avatarBitmap = remember(editAvatarUri) {
@@ -259,6 +234,7 @@ fun ProfileScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     OutlinedButton(
+                        enabled = !savingProfile,
                         onClick = {
                             editName = displayName
                             editAbout = about
@@ -273,16 +249,24 @@ fun ProfileScreen(
 
                     Button(
                         onClick = {
-                            onUpdateProfile(editName.trim(), editAbout.trim(), avatarUpdate)
-                            avatarUpdate = ProfileAvatarUpdate.Unchanged
-                            isEditing = false
+                            savingProfile = true
+                            scope.launch {
+                                try {
+                                    onUpdateProfile(editName.trim(), editAbout.trim(), avatarUpdate)
+                                    avatarUpdate = ProfileAvatarUpdate.Unchanged
+                                    isEditing = false
+                                } catch (error: Exception) {
+                                    if (error is kotlinx.coroutines.CancellationException) throw error
+                                    avatarError = error.message ?: "Unable to save profile"
+                                } finally { savingProfile = false }
+                            }
                         },
                         shape = RoundedCornerShape(24.dp),
-                        enabled = editName.trim().isNotEmpty()
+                        enabled = editName.trim().isNotEmpty() && !savingProfile
                     ) {
                         Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Save")
+                        Text(if (savingProfile) "Saving…" else "Save")
                     }
                 }
             } else {
@@ -335,7 +319,11 @@ fun ProfileScreen(
                         icon = Icons.Filled.Fingerprint,
                         title = "Identity ID",
                         subtitle = identityId.take(16) + "...",
-                        onClick = { }
+                        onClick = {
+                            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Identity ID", identityId))
+                            android.widget.Toast.makeText(context, "Identity ID copied", android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     )
                 }
             }

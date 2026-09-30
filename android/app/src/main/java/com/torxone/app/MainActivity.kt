@@ -38,6 +38,7 @@ import com.torxone.app.ui.security.AppLockOverlay
 import com.torxone.app.ui.theme.TorXOneTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
 
 class MainActivity : FragmentActivity() {
     val intentFlow = kotlinx.coroutines.flow.MutableStateFlow<android.content.Intent?>(null)
@@ -562,8 +563,10 @@ fun TorXOneApp() {
 
                     LaunchedEffect(screen.conversationId) {
                         isLoadingContact = true
-                        contact = app.database.contactDao().getByConversationId(screen.conversationId)
-                        isLoadingContact = false
+                        app.database.contactDao().observeAll().collect {
+                            contact = app.database.contactDao().getByConversationId(screen.conversationId)
+                            isLoadingContact = false
+                        }
                     }
 
                     if (isLoadingContact) {
@@ -653,6 +656,8 @@ fun TorXOneApp() {
 
                         ChatScreen(
                             viewModel = viewModel,
+                            contactAvatar = contact?.avatarHash,
+                            displayName = contact?.displayName,
                             onBackClick = {
                                 navigateBack()
                             },
@@ -661,24 +666,32 @@ fun TorXOneApp() {
                             },
                             onStartVoiceCall = {
                                 coroutineScope.launch {
-                                    app.callManager.startOutgoingCall(
+                                    val started = runCatching { app.callManager.startOutgoingCall(
                                         conversationId = screen.conversationId,
                                         relationshipId = contact!!.relationshipId,
                                         peerIdentityId = peerNetworkIdentity,
                                         type = com.torxone.app.calls.CallType.VOICE
-                                    )
-                                    navigateTo(Screen.ActiveCall)
+                                    ) }.getOrElse {
+                                        android.widget.Toast.makeText(context, it.message ?: "Unable to start call", android.widget.Toast.LENGTH_LONG).show()
+                                        null
+                                    }
+                                    if (started != null && app.callManager.activeCall.value?.callId == started.callId) navigateTo(Screen.ActiveCall)
+                                    else android.widget.Toast.makeText(context, "Call could not start. Check this contact or finish the active call.", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             },
                             onStartVideoCall = {
                                 coroutineScope.launch {
-                                    app.callManager.startOutgoingCall(
+                                    val started = runCatching { app.callManager.startOutgoingCall(
                                         conversationId = screen.conversationId,
                                         relationshipId = contact!!.relationshipId,
                                         peerIdentityId = peerNetworkIdentity,
                                         type = com.torxone.app.calls.CallType.VIDEO
-                                    )
-                                    navigateTo(Screen.ActiveCall)
+                                    ) }.getOrElse {
+                                        android.widget.Toast.makeText(context, it.message ?: "Unable to start call", android.widget.Toast.LENGTH_LONG).show()
+                                        null
+                                    }
+                                    if (started != null && app.callManager.activeCall.value?.callId == started.callId) navigateTo(Screen.ActiveCall)
+                                    else android.widget.Toast.makeText(context, "Call could not start. Check this contact or finish the active call.", android.widget.Toast.LENGTH_LONG).show()
                                 }
                             }
                         )
@@ -757,17 +770,18 @@ fun TorXOneApp() {
         is Screen.ContactInfo -> {
             val contactState = produceState<ContactEntity?>(initialValue = null, screen.conversationId) {
                 app.database.contactDao().observeAll().collect { contacts ->
-                    value = contacts.firstOrNull { it.conversationId == screen.conversationId }
+                    value = app.database.contactDao().getByConversationId(screen.conversationId)
                 }
             }
             val conversationState = produceState<ConversationEntity?>(initialValue = null, screen.conversationId) {
-                value = app.database.conversationDao().getById(screen.conversationId)
+                app.database.conversationDao().observeById(screen.conversationId).collect { value = it }
             }
 
             com.torxone.app.ui.screens.ContactInfoScreen(
                 contact = contactState.value,
                 conversation = conversationState.value,
                 chatService = app.chatService,
+                onOpenMedia = { navigateTo(Screen.SharedMedia(screen.conversationId)) },
                 onBackClick = {
                     navigateBack()
                 },
@@ -794,23 +808,8 @@ fun TorXOneApp() {
             NewGroupScreen(
                 contacts = contactsState.value,
                 onCreateGroup = { title, selectedMembers, avatarHash ->
-                    coroutineScope.launch {
-                        try {
-                            val group = app.groupService.createGroup(
-                                title = title,
-                                initialMembers = selectedMembers,
-                                avatarHash = avatarHash
-                            )
-                            navigateTo(Screen.Chat(group.groupId, group.title))
-                        } catch (e: Exception) {
-                            android.util.Log.e("MainActivity", "Failed to create group: ${e.message}", e)
-                            android.widget.Toast.makeText(
-                                context,
-                                "Failed to create group: ${e.message ?: "Unknown error"}",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
+                    val group = app.groupService.createGroup(title = title, initialMembers = selectedMembers, avatarHash = avatarHash)
+                    navigateTo(Screen.Chat(group.groupId, group.title))
                 },
                 onBackClick = {
                     navigateBack()
@@ -845,6 +844,7 @@ fun TorXOneApp() {
             val haLowState by app.haLowGatewayManager.state.collectAsState()
 
             SettingsScreen(
+                avatarUri = currentSettingsState.avatarUri,
                 relayOnlyCalls = currentSettingsState.relayOnlyCalls,
                 displayName = currentSettingsState.displayName,
                 about = currentSettingsState.about,
@@ -924,6 +924,23 @@ fun TorXOneApp() {
             )
         }
 
+        is Screen.SharedMedia -> {
+            val media by app.database.mediaDao().observeForConversation(screen.conversationId).collectAsState(initial = emptyList())
+            val messageFlow = remember(screen.conversationId) {
+                app.chatService.observeMessages(screen.conversationId)
+                    .map { rows -> rows.map { it to (it.body to it.deletedAt) } }
+            }
+            val messageSnapshots by messageFlow.collectAsState(initial = emptyList())
+            val messages = messageSnapshots.map { it.first }
+            val hidden by app.database.localMessageStateDao().observeHiddenMessageIds(screen.conversationId).collectAsState(initial = emptyList())
+            val visible = messages.filter { it.deletedAt == null && it.logicalMessageId !in hidden }
+            com.torxone.app.ui.screens.SharedMediaScreen(media.filter { item -> visible.any { it.logicalMessageId == item.messageId } }, visible,
+                onBack = { navigateBack() }, onDownload = { mediaId -> coroutineScope.launch {
+                    runCatching { app.mediaService.resumeTransfer(mediaId) }.onFailure {
+                        android.widget.Toast.makeText(context, it.message ?: "Unable to download", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                } })
+        }
         is Screen.ActiveCall -> {
             CallScreen(
                 viewModel = callViewModel,
@@ -959,6 +976,7 @@ sealed class Screen {
     data object ArchivedList : Screen()
     data class Chat(val conversationId: String, val contactName: String) : Screen()
     data class ContactInfo(val conversationId: String, val contactName: String) : Screen()
+    data class SharedMedia(val conversationId: String) : Screen()
     data object NewGroup : Screen()
     data class GroupInfo(val groupId: String) : Screen()
     data object Settings : Screen()

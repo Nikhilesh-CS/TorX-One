@@ -69,7 +69,8 @@ class IncomingDispatcher(
     private val torRouteManager: com.torxone.app.transport.tor.TorRouteManager? = null,
     private val consolidateDirectChats: suspend () -> Unit = {},
     private val peerTorEndpointDao: com.torxone.app.data.dao.PeerTorEndpointDao? = null,
-    private val peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository? = null
+    private val peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository? = null,
+    private val profileAvatarContext: android.content.Context? = null
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -654,18 +655,27 @@ class IncomingDispatcher(
     }
 
     private suspend fun handleProfileUpdate(connection: Connection, envelope: SecureEnvelope) {
-        val payloadStr = String(envelope.payload, Charsets.UTF_8)
-        val parts = payloadStr.split("\n", limit = 2)
-        val newDisplayName = parts.getOrNull(0)?.trim() ?: return
-        if (newDisplayName.isBlank()) return
-
+        val update = com.torxone.app.profile.ProfileUpdateCodec.decode(envelope.payload)
         val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: return
-        val updatedContact = contact.copy(displayName = newDisplayName)
-        contactDao.upsert(updatedContact)
-
-        val conv = conversationDao?.getById(contact.conversationId)
-        if (conv != null && conv.type == com.torxone.app.data.entity.ConversationType.DIRECT) {
-            conversationDao?.upsert(conv.copy(title = newDisplayName))
+        if (update.version > 0 && update.version <= contact.profileUpdatedAt) return
+        if (update.version == 0L && contact.profileUpdatedAt > 0) return
+        val avatarHash = if (!update.hasAvatarUpdate) contact.avatarHash else update.avatar?.let {
+            com.torxone.app.profile.ProfileAvatarStorage.save(requireNotNull(profileAvatarContext), it)
+        }
+        val newDisplayName = update.name
+        // Separate secure lanes belonging to the same verified identity share profile metadata.
+        val aliases = contactDao.getAll().filter {
+            it.remoteIdentityId == contact.remoteIdentityId && it.signingPublicKey.contentEquals(contact.signingPublicKey)
+        }
+        for (alias in aliases) {
+            if (update.version > 0 && alias.profileUpdatedAt > update.version) continue
+            contactDao.upsert(alias.copy(displayName = newDisplayName, about = update.about,
+                avatarHash = if (update.hasAvatarUpdate) avatarHash else alias.avatarHash, profileUpdatedAt = update.version))
+            val conv = conversationDao?.getById(alias.conversationId)
+            if (conv != null && conv.type == com.torxone.app.data.entity.ConversationType.DIRECT) {
+                conversationDao?.upsert(conv.copy(title = newDisplayName,
+                    avatarHash = if (update.hasAvatarUpdate) avatarHash else alias.avatarHash))
+            }
         }
         Log.i(TAG, "[PROFILE_UPDATE] Updated contact ${contact.contactId.take(8)} displayName to '$newDisplayName'")
     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -50,7 +51,7 @@ private enum class NewGroupStep {
 @Composable
 fun NewGroupScreen(
     contacts: List<ContactEntity>,
-    onCreateGroup: (title: String, selectedMembers: List<ContactEntity>, avatarHash: String?) -> Unit,
+    onCreateGroup: suspend (title: String, selectedMembers: List<ContactEntity>, avatarHash: String?) -> Unit,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -153,7 +154,14 @@ fun NewGroupScreen(
                     onClick = {
                         if (groupTitle.isNotBlank() && !isCreating) {
                             isCreating = true
-                            onCreateGroup(groupTitle.trim(), selectedContacts, avatarHash)
+                            scope.launch {
+                                try { onCreateGroup(groupTitle.trim(), selectedContacts, avatarHash) }
+                                catch (error: Exception) {
+                                    if (error is kotlinx.coroutines.CancellationException) throw error
+                                    avatarError = error.message ?: "Group creation failed"
+                                    android.widget.Toast.makeText(context, avatarError, android.widget.Toast.LENGTH_LONG).show()
+                                } finally { isCreating = false }
+                            }
                         }
                     },
                     containerColor = if (groupTitle.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
@@ -318,6 +326,7 @@ fun NewGroupScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
+                    .verticalScroll(rememberScrollState())
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {

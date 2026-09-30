@@ -46,7 +46,7 @@ def main():
     preserved = {table: db.execute(f'SELECT * FROM "{table}"').fetchall() for table in ["contacts", "pair_relationships", "connections", "sessions"]}
     ordinary = db.execute("SELECT * FROM outbox WHERE deliveryId='message-delivery'").fetchone()
     source = (ROOT / "android/app/src/main/java/com/torxone/app/data/TorXDatabase.kt").read_text(encoding="utf-8")
-    section = source.split("val MIGRATION_13_14 =", 1)[1].split("fun getInstance(", 1)[0]
+    section = source.split("val MIGRATION_13_14 =", 1)[1].split("val MIGRATION_14_15", 1)[0].split("fun getInstance(", 1)[0]
     statements = re.findall(r'db\.execSQL\("""(.*?)"""\.trimIndent\(\)\)|db\.execSQL\("([^"\n]*)"\)', section, re.S)
     assert len(statements) == 2, "Migration changed: update this verifier to exercise every statement"
     for multiline, inline in statements:
