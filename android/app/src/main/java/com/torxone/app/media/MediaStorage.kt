@@ -35,6 +35,19 @@ class MediaStorage(
     val thumbnailsDir: File
         get() = File(mediaBaseDir, "thumbnails").apply { if (!exists()) mkdirs() }
 
+    /** Only acknowledge deletion after the owned private file is actually absent. */
+    fun ownedFile(path: String): File {
+        val file = File(path).canonicalFile
+        val base = mediaBaseDir.canonicalFile
+        require(file.path.startsWith(base.path + File.separator)) { "File is outside private media storage" }
+        return file
+    }
+
+    fun deleteOwnedFileConfirmed(path: String): Boolean = try {
+        val file = ownedFile(path)
+        !file.exists() || (file.isFile && file.delete() && !file.exists())
+    } catch (_: Exception) { false }
+
     /**
      * Allocates or gets the temporary encrypted file for assembling chunks of an incoming transfer.
      */
@@ -95,11 +108,15 @@ class MediaStorage(
      * Saves decrypted media bytes into app-private incoming directory.
      */
     fun saveIncomingFile(mediaId: String, fileName: String, data: ByteArray): File {
-        val canonicalId = canonicalMediaId(mediaId)
-        val safeName = fileName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
-        val destination = File(incomingDir, "${canonicalId}_$safeName")
+        val destination = incomingFile(mediaId, fileName)
         destination.writeBytes(data)
         return destination
+    }
+
+    fun incomingFile(mediaId: String, fileName: String): File {
+        val canonicalId = canonicalMediaId(mediaId)
+        val safeName = fileName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+        return File(incomingDir, "${canonicalId}_$safeName")
     }
 
     /**
@@ -141,14 +158,7 @@ class MediaStorage(
      */
     fun deleteLocalFile(path: String?) {
         if (path.isNullOrEmpty()) return
-        try {
-            val file = File(path)
-            if (file.exists() && file.canonicalPath.startsWith(mediaBaseDir.canonicalPath)) {
-                file.delete()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to delete local file at path=$path: ${e.message}", e)
-        }
+        deleteOwnedFileConfirmed(path)
     }
 
     /**

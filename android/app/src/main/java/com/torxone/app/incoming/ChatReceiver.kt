@@ -31,6 +31,7 @@ class ChatReceiver(
     ): Boolean {
         val messageId = envelope.logicalMessageId
         val text = String(envelope.payload, Charsets.UTF_8)
+        val expired = com.torxone.app.privacy.DisappearingPolicy.expired(envelope.expiresAt, System.currentTimeMillis())
 
         val isGroup = envelope.groupMetadata != null
         val conversationId: String
@@ -75,7 +76,7 @@ class ChatReceiver(
                 title = conversationTitle,
                 unreadCount = 0,
                 lastMessageId = messageId,
-                lastMessagePreview = text.take(100),
+                lastMessagePreview = if (expired) null else text.take(100),
                 lastMessageTime = envelope.timestamp
             )
             conversationDao.upsert(conv)
@@ -89,17 +90,21 @@ class ChatReceiver(
             logicalMessageId = messageId,
             conversationId = conversationId,
             senderId = envelope.senderIdentity,
-            type = MessageType.TEXT.name,
-            body = text,
+            type = envelope.messageType.name,
+            body = if (expired) null else text,
             direction = MessageDirection.INCOMING,
             status = if (isActive) DeliveryStatus.READ.name else DeliveryStatus.DELIVERED.name,
             createdAt = envelope.timestamp,
             receivedAt = now,
             readAt = if (isActive) now else null,
-            replyToMessageId = envelope.replyToMessageId
+            replyToMessageId = if (expired) null else envelope.replyToMessageId,
+            expiresAt = envelope.expiresAt,
+            deletedAt = if (expired) now else null
         )
 
         messageDao.insertIfAbsent(messageEntity)
+
+        if (expired) return true // Commit and ACK, but never display or notify delayed plaintext.
 
         conversationDao.updateLastMessage(
             conversationId = conversationId,

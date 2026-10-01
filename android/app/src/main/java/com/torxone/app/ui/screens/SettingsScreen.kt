@@ -71,7 +71,9 @@ fun SettingsScreen(
     onPairHaLow: () -> Unit,
     onAppearanceChange: (field: String, value: Any) -> Unit,
     onDataChange: (field: String, value: Boolean) -> Unit,
-    onAboutClick: (() -> Unit)? = null
+    onAboutClick: (() -> Unit)? = null,
+    onSavedMessages: (() -> Unit)? = null,
+    onSearchMessages: (() -> Unit)? = null
 ) {
     var showAbout by remember { mutableStateOf(false) }
     if (showAbout) AlertDialog(onDismissRequest = { showAbout = false }, title = { Text("TorX One") },
@@ -135,6 +137,10 @@ fun SettingsScreen(
                 }
             }
 
+            onSavedMessages?.let { ListItem(headlineContent = { Text("Starred messages") },
+                leadingContent = { Icon(Icons.Default.Star, null) }, modifier = Modifier.clickable(onClick = it)) }
+            onSearchMessages?.let { ListItem(headlineContent = { Text("Search messages") },
+                leadingContent = { Icon(Icons.Default.Search, null) }, modifier = Modifier.clickable(onClick = it)) }
             // ─── Privacy ─────────────────────────────────────────────
             SettingsSectionHeader(
                 icon = Icons.Filled.Lock,

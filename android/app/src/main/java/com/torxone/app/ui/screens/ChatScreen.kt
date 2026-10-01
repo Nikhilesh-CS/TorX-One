@@ -37,6 +37,8 @@ import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -52,6 +54,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.chat.*
+import com.torxone.app.data.entity.ConversationAppearanceEntity
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.media.MediaStatus
 import com.torxone.app.media.MediaType
@@ -71,6 +74,15 @@ fun ChatScreen(
     viewModel: com.torxone.app.groups.GroupChatViewModel,
     onBackClick: () -> Unit,
     onHeaderClick: () -> Unit = {},
+    onForward: ((List<String>) -> Unit)? = null,
+    onSearch: (() -> Unit)? = null,
+    onSchedule: ((String, String?) -> Unit)? = null,
+    connectionSnapshot: com.torxone.app.ui.connection.ConnectionUxSnapshot? = null,
+    onOpenConnection: (() -> Unit)? = null,
+    onDisappearing: (() -> Unit)? = null,
+    initialMessageId: String? = null,
+    appearance: ConversationAppearanceEntity? = null,
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -123,6 +135,17 @@ fun ChatScreen(
         onToggleReaction = viewModel::toggleReaction,
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
+        starredIds = uiState.starredIds,
+        onSetStarred = viewModel::setStarred,
+        onForward = onForward,
+        onSearch = onSearch,
+        onSchedule = onSchedule,
+        connectionSnapshot = connectionSnapshot,
+        onOpenConnection = onOpenConnection,
+        onDisappearing = onDisappearing,
+        initialMessageId = initialMessageId,
+        appearance = appearance,
+        onSaveAppearance = onSaveAppearance,
         onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendVideo = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
@@ -157,6 +180,16 @@ fun ChatScreen(
     onHeaderClick: () -> Unit = {},
     onStartVoiceCall: (() -> Unit)? = null,
     onStartVideoCall: (() -> Unit)? = null,
+    onForward: ((List<String>) -> Unit)? = null,
+    onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
+    onSearch: (() -> Unit)? = null,
+    onSchedule: ((String, String?) -> Unit)? = null,
+    connectionSnapshot: com.torxone.app.ui.connection.ConnectionUxSnapshot? = null,
+    onOpenConnection: (() -> Unit)? = null,
+    onDisappearing: (() -> Unit)? = null,
+    initialMessageId: String? = null,
+    appearance: ConversationAppearanceEntity? = null,
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -240,6 +273,18 @@ fun ChatScreen(
         onToggleReaction = viewModel::toggleReaction,
         onDeleteForMe = viewModel::deleteForMe,
         onDeleteForEveryone = viewModel::deleteForEveryone,
+        starredIds = uiState.starredIds,
+        onSetStarred = viewModel::setStarred,
+        onForward = onForward,
+        onSearch = onSearch,
+        onSchedule = onSchedule,
+        connectionSnapshot = connectionSnapshot,
+        onOpenConnection = onOpenConnection,
+        onDisappearing = onDisappearing,
+        onRequestMessageInfo = onRequestMessageInfo,
+        initialMessageId = initialMessageId,
+        appearance = appearance,
+        onSaveAppearance = onSaveAppearance,
         onStartVoiceRecording = {
             if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
                 viewModel.startVoiceRecording()
@@ -320,6 +365,17 @@ fun ChatScreen(
     onBackClick: () -> Unit = {},
     onStartVoiceCall: (() -> Unit)? = null,
     onStartVideoCall: (() -> Unit)? = null,
+    starredIds: Set<String> = emptySet(),
+    onSetStarred: ((Set<String>, Boolean) -> Unit)? = null,
+    onForward: ((List<String>) -> Unit)? = null,
+    onSearch: (() -> Unit)? = null,
+    onSchedule: ((String, String?) -> Unit)? = null,
+    connectionSnapshot: com.torxone.app.ui.connection.ConnectionUxSnapshot? = null,
+    onOpenConnection: (() -> Unit)? = null,
+    onDisappearing: (() -> Unit)? = null,
+    initialMessageId: String? = null,
+    appearance: ConversationAppearanceEntity? = null,
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -330,6 +386,12 @@ fun ChatScreen(
     var messagePendingDelete by remember { mutableStateOf<MessageUiModel?>(null) }
     var viewerMedia by remember { mutableStateOf<MediaUiModel?>(null) }
     var showAttachmentMenu by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(emptySet<String>()) }
+    var selectionMenu by remember { mutableStateOf(false) }
+    var confirmBulkDelete by remember { mutableStateOf(false) }
+    var chatOptionsOpen by remember { mutableStateOf(false) }
+    var showAppearance by remember { mutableStateOf(false) }
+    var jumpApplied by remember(initialMessageId) { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -430,6 +492,24 @@ fun ChatScreen(
             previousCount = messages.size
         }
     }
+    LaunchedEffect(initialMessageId, messages.map { it.logicalMessageId }) {
+        if (!jumpApplied && initialMessageId != null) {
+            val index = messages.indexOfFirst { it.logicalMessageId == initialMessageId }
+            if (index >= 0) {
+                listState.scrollToItem(index); highlightedMessageId = initialMessageId
+                followLatest = false; jumpApplied = true
+            }
+        }
+        selectedIds = selectedIds.intersect(messages.filterNot { it.isDeleted }.map { it.logicalMessageId }.toSet())
+    }
+    androidx.activity.compose.BackHandler(selectedIds.isNotEmpty()) { selectedIds = emptySet() }
+    if (confirmBulkDelete) AlertDialog(onDismissRequest = { confirmBulkDelete = false }, title = { Text("Delete ${selectedIds.size} messages locally?") },
+        confirmButton = { TextButton(onClick = { selectedIds.forEach(onDeleteForMe); selectedIds = emptySet(); confirmBulkDelete = false }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { confirmBulkDelete = false }) { Text("Cancel") } })
+
+    if (showAppearance && appearance != null && onSaveAppearance != null) {
+        com.torxone.app.ui.components.ConversationAppearanceDialog(appearance, onSaveAppearance) { showAppearance = false }
+    }
 
     Scaffold(
         topBar = {
@@ -460,6 +540,7 @@ fun ChatScreen(
                                 isTyping -> "typing…"
                                 presence == PresenceStatus.ONLINE -> "online"
                                 presence == PresenceStatus.OFFLINE && lastSeenAt != null -> formatLastSeen(lastSeenAt)
+                                presence == PresenceStatus.UNKNOWN -> "last seen unavailable"
                                 else -> "offline"
                             }
                             val subtitleColor = when {
@@ -478,11 +559,45 @@ fun ChatScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBackClick) {
+                    IconButton(onClick = { if (selectedIds.isNotEmpty()) selectedIds = emptySet() else onBackClick() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
+                    if (selectedIds.isNotEmpty()) {
+                        Text("${selectedIds.size} selected")
+                        Box {
+                            IconButton(onClick = { selectionMenu = true }) { Icon(Icons.Default.MoreVert, "Selection actions") }
+                            DropdownMenu(selectionMenu, { selectionMenu = false }) {
+                                DropdownMenuItem(text = { Text("Copy") }, onClick = {
+                                    clipboardManager.setText(AnnotatedString(messages.filter { it.logicalMessageId in selectedIds }.mapNotNull { it.body }.joinToString("\n")))
+                                    selectedIds = emptySet(); selectionMenu = false
+                                })
+                                val allStarred = selectedIds.all { it in starredIds }
+                                onSetStarred?.let { star -> DropdownMenuItem(text = { Text(if (allStarred) "Unstar" else "Star") }, onClick = {
+                                    star(selectedIds, !allStarred); selectedIds = emptySet(); selectionMenu = false
+                                }) }
+                                onForward?.let { forward -> DropdownMenuItem(text = { Text("Forward") }, onClick = {
+                                    forward(messages.filter { it.logicalMessageId in selectedIds }.map { it.logicalMessageId }); selectedIds = emptySet(); selectionMenu = false
+                                }) }
+                                DropdownMenuItem(text = { Text("Delete locally") }, onClick = { confirmBulkDelete = true; selectionMenu = false })
+                                if (selectedIds.size == 1) DropdownMenuItem(text = { Text("Message actions") }, onClick = {
+                                    selectedMessageForMenu = messages.find { it.logicalMessageId in selectedIds }; selectedIds = emptySet(); selectionMenu = false
+                                })
+                            }
+                        }
+                    } else {
+                    if (onSearch != null || onSaveAppearance != null || onSchedule != null || onOpenConnection != null || onDisappearing != null) Box {
+                        IconButton(onClick = { chatOptionsOpen = true }) { Icon(Icons.Default.MoreVert, "Chat options") }
+                        DropdownMenu(chatOptionsOpen, { chatOptionsOpen = false }) {
+                            onSearch?.let { search -> DropdownMenuItem(text = { Text("Search this chat") }, onClick = { chatOptionsOpen = false; search() }) }
+                            if (onSaveAppearance != null) DropdownMenuItem(text = { Text("Chat appearance") }, onClick = { chatOptionsOpen = false; showAppearance = true })
+                            onSchedule?.let { schedule -> DropdownMenuItem(text = { Text("Scheduled messages") }, enabled = editingMessage == null,
+                                onClick = { chatOptionsOpen = false; schedule(composerText, replyingTo?.logicalMessageId) }) }
+                            onDisappearing?.let { action -> DropdownMenuItem(text = { Text("Disappearing messages") }, onClick = { chatOptionsOpen = false; action() }) }
+                            onOpenConnection?.let { action -> DropdownMenuItem(text = { Text("Connection") }, onClick = { chatOptionsOpen = false; action() }) }
+                        }
+                    }
                     if (!isGroup) {
                         if (onStartVoiceCall != null) {
                             IconButton(onClick = onStartVoiceCall) {
@@ -502,6 +617,7 @@ fun ChatScreen(
                                 )
                             }
                         }
+                    }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -557,18 +673,27 @@ fun ChatScreen(
         ),
         modifier = modifier
     ) { innerPadding ->
+        Column(Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) {
+        if (connectionSnapshot != null && onOpenConnection != null) {
+            com.torxone.app.ui.components.ConnectionStatusBanner(connectionSnapshot, onOpenConnection)
+        }
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(
-                top = innerPadding.calculateTopPadding() + 8.dp,
+                top = 8.dp,
                 bottom = innerPadding.calculateBottomPadding() + 8.dp,
                 start = 12.dp,
                 end = 12.dp
             ),
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
+                .weight(1f)
+                .fillMaxWidth()
+                .background(when (appearance?.wallpaper) {
+                    "WARM" -> lerp(MaterialTheme.colorScheme.background, Color(0xFFC88845), 0.16f)
+                    "COOL" -> lerp(MaterialTheme.colorScheme.background, Color(0xFF397A9C), 0.16f)
+                    else -> MaterialTheme.colorScheme.background
+                })
         ) {
             itemsIndexed(
                 items = messages,
@@ -576,10 +701,17 @@ fun ChatScreen(
             ) { _, message ->
                 MessageBubble(
                     message = message,
+                    appearance = appearance,
                     contactName = contactName,
-                    isHighlighted = message.logicalMessageId == highlightedMessageId,
+                    isHighlighted = message.logicalMessageId == highlightedMessageId || message.logicalMessageId in selectedIds,
                     onReply = { onReply(message) },
-                    onLongClick = { selectedMessageForMenu = message },
+                    onLongClick = {
+                        if (onSetStarred != null && !message.isDeleted) selectedIds = selectedIds + message.logicalMessageId
+                        else selectedMessageForMenu = message
+                    },
+                    onSelectionClick = if (selectedIds.isEmpty()) null else { {
+                        selectedIds = if (message.logicalMessageId in selectedIds) selectedIds - message.logicalMessageId else selectedIds + message.logicalMessageId
+                    } },
                     onMediaClick = { media ->
                         if (media.type == MediaType.IMAGE && media.localPath?.let { java.io.File(it).isFile } == true) viewerMedia = media
                         else if (media.type == MediaType.IMAGE) com.torxone.app.ui.components.openMedia(context, media,
@@ -603,7 +735,9 @@ fun ChatScreen(
                         onToggleReaction(message.logicalMessageId, emoji)
                     }
                 )
+                if (message.logicalMessageId in starredIds) Text("Starred", style = MaterialTheme.typography.labelSmall)
             }
+        }
         }
     }
 
@@ -763,7 +897,7 @@ fun ChatScreen(
                     )
                 }
 
-                if (!target.isDeleted && target.direction == MessageDirection.OUTGOING && isGroup && onRequestMessageInfo != null) {
+                if (onRequestMessageInfo != null && (!isGroup || target.direction == MessageDirection.OUTGOING)) {
                     ListItem(
                         headlineContent = { Text("Message info") },
                         leadingContent = { Icon(Icons.Default.Info, contentDescription = null) },
@@ -856,10 +990,12 @@ private fun AttachmentOptionItem(
 @Composable
 private fun MessageBubble(
     message: MessageUiModel,
+    appearance: ConversationAppearanceEntity?,
     contactName: String,
     isHighlighted: Boolean,
     onReply: () -> Unit,
     onLongClick: () -> Unit,
+    onSelectionClick: (() -> Unit)? = null,
     onMediaClick: (MediaUiModel) -> Unit,
     onDownload: (() -> Unit)?,
     onQuoteClick: (String) -> Unit,
@@ -869,7 +1005,11 @@ private fun MessageBubble(
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
 
     val baseBubbleColor = if (isOutgoing)
-        MaterialTheme.colorScheme.primary
+        when (appearance?.theme) {
+            "OCEAN" -> if (MaterialTheme.colorScheme.onPrimary.luminance() < 0.5f) Color(0xFF9DDCF1) else Color(0xFF15556D)
+            "FOREST" -> if (MaterialTheme.colorScheme.onPrimary.luminance() < 0.5f) Color(0xFFA2DEB3) else Color(0xFF215E3B)
+            else -> MaterialTheme.colorScheme.primary
+        }
     else
         MaterialTheme.colorScheme.surfaceVariant
 
@@ -913,15 +1053,15 @@ private fun MessageBubble(
                     .widthIn(max = 310.dp)
                     .combinedClickable(
                         onClick = {
-                            message.media?.let { onMediaClick(it) }
+                            if (onSelectionClick != null) onSelectionClick() else message.media?.let { onMediaClick(it) }
                         },
                         onLongClick = onLongClick
                     ),
                 shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    topEnd = 16.dp,
-                    bottomStart = if (isOutgoing) 16.dp else 4.dp,
-                    bottomEnd = if (isOutgoing) 4.dp else 16.dp
+                    topStart = if (appearance?.bubbleStyle == "SQUARE") 4.dp else 16.dp,
+                    topEnd = if (appearance?.bubbleStyle == "SQUARE") 4.dp else 16.dp,
+                    bottomStart = if (isOutgoing && appearance?.bubbleStyle != "SQUARE") 16.dp else 4.dp,
+                    bottomEnd = if (!isOutgoing && appearance?.bubbleStyle != "SQUARE") 16.dp else 4.dp
                 ),
                 color = animatedColor,
                 tonalElevation = 2.dp
@@ -962,7 +1102,7 @@ private fun MessageBubble(
                                 tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                             Text(
-                                text = "This message was deleted",
+                                text = if (message.expiresAt != null) "This message expired or was deleted" else "This message was deleted",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
                                 color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
@@ -983,7 +1123,7 @@ private fun MessageBubble(
                         // Text body (if not purely media or if has text caption)
                         if (message.media == null || (message.body != null && message.body != message.media.fileName)) {
                             Text(
-                                text = message.body ?: "",
+                                text = remember(message.body) { com.torxone.app.ui.components.SafeRichText.render(message.body.orEmpty()) },
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1002,6 +1142,11 @@ private fun MessageBubble(
                                 style = MaterialTheme.typography.labelSmall.copy(fontStyle = FontStyle.Italic),
                                 color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
+                        }
+
+                        if (message.expiresAt != null && !message.isDeleted) {
+                            Icon(Icons.Default.Timer, contentDescription = "Disappears at ${SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(message.expiresAt))}",
+                                modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
 
                         Text(
@@ -1546,13 +1691,7 @@ private fun formatMessageTime(timestamp: Long): String {
 }
 
 private fun formatLastSeen(timestamp: Long): String {
-    val now = System.currentTimeMillis()
-    val diff = now - timestamp
-    return when {
-        diff < 60_000L -> "last seen just now"
-        diff < 3600_000L -> "last seen ${diff / 60_000L}m ago"
-        else -> "last seen ${SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))}"
-    }
+    return com.torxone.app.chat.PresenceFormatter.formatLastSeen(timestamp)
 }
 
 private fun resolveMediaFileName(context: android.content.Context, uri: android.net.Uri, defaultName: String): String {

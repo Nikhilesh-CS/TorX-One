@@ -91,6 +91,20 @@ class TorXOneApplication : Application() {
     lateinit var chatService: ChatService
         private set
 
+    val productivityService by lazy {
+        com.torxone.app.chat.ChatProductivityService(database, chatService, groupService, mediaService)
+    }
+    val scheduledMessageService by lazy {
+        com.torxone.app.scheduling.ScheduledMessageService(database, chatService, groupService,
+            com.torxone.app.scheduling.ScheduledMessageWorkScheduler(this), { getLocalIdentityId() },
+            { initState.value is AppInitState.Ready && !settingsRepository.isAppLockedNow() })
+    }
+    val securityPolicyService by lazy {
+        com.torxone.app.privacy.SecurityPolicyService(database, com.torxone.app.media.MediaStorage(this),
+            onExpired = { notificationManager.cancelForConversation(it.conversationId) },
+            onExpiredMedia = { if (::mediaService.isInitialized) mediaService.cancelTransfer(it, notifyPeer = false) })
+    }
+
     lateinit var groupService: com.torxone.app.groups.GroupService
         private set
 
@@ -268,7 +282,9 @@ class TorXOneApplication : Application() {
             transportRouter = transportRouter,
             outboxStore = createOutboxStore(),
             processedStore = createProcessedStore(),
-            relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId }
+            relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId },
+            isDeliveryPaused = { item -> item.conversationId.isNotBlank() &&
+                item.conversationId in settingsRepository.pausedConversations.first() }
         )
 
         // 7. Direct Route Table & Presence Service
@@ -280,7 +296,23 @@ class TorXOneApplication : Application() {
             directRouteTable = directRouteTable,
             contactDao = database.contactDao(),
             localIdentityIdProvider = { getLocalIdentityId() },
-            appSettingsRepository = settingsRepository
+            appSettingsRepository = settingsRepository,
+            loadLastSeen = { relationship ->
+                settingsRepository.encryptedPeerLastSeen(relationship)?.let { wrapped ->
+                    val plain = keyProtector.unwrap(android.util.Base64.decode(wrapped, android.util.Base64.NO_WRAP))
+                    val text = plain.toString(Charsets.UTF_8)
+                    plain.fill(0)
+                    text.takeIf { it.startsWith("$relationship:") }?.substringAfterLast(':')?.toLongOrNull()
+                }
+            },
+            saveLastSeen = { relationship, timestamp ->
+                settingsRepository.saveEncryptedPeerLastSeen(relationship,
+                    timestamp?.let {
+                        val plain = "$relationship:$it".toByteArray(Charsets.UTF_8)
+                        val wrapped = try { keyProtector.wrap(plain) } finally { plain.fill(0) }
+                        android.util.Base64.encodeToString(wrapped, android.util.Base64.NO_WRAP)
+                    })
+            }
         )
         val presenceHandler = PresenceHandler(presenceService)
         val typingHandler = TypingHandler(presenceService)
@@ -341,7 +373,8 @@ class TorXOneApplication : Application() {
                 },
                 fallback = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter)
             ),
-            groupMessageDeliveryDao = database.groupMessageDeliveryDao()
+            groupMessageDeliveryDao = database.groupMessageDeliveryDao(),
+            securityPolicyService = securityPolicyService
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -350,6 +383,7 @@ class TorXOneApplication : Application() {
 
         // 7c. Group Service & Handler
         groupService = com.torxone.app.groups.GroupService(
+            featureDao = database.featureDao(),
             groupDao = database.groupDao(),
             groupMemberDao = database.groupMemberDao(),
             groupMessageDeliveryDao = database.groupMessageDeliveryDao(),
@@ -365,7 +399,9 @@ class TorXOneApplication : Application() {
             localIdentityIdProvider = { getLocalIdentityId() },
             transactionRunner = { block -> database.withTransaction { block() } },
             relationshipSendCoordinator = relationshipSendCoordinator,
-            sessionStore = sessionStore
+            sessionStore = sessionStore,
+            securityPolicyService = securityPolicyService,
+            canSendText = { !settingsRepository.isAppLockedNow() }
         )
         val groupHandler = com.torxone.app.incoming.GroupHandler(
             groupDao = database.groupDao(),
@@ -464,7 +500,9 @@ class TorXOneApplication : Application() {
             onBootstrapConfirmed = { torRouteManager.remove("invite-$it") }
         )
         val incomingDispatcher = IncomingDispatcher(
+            securityPolicyService = securityPolicyService,
             profileAvatarContext = this,
+            featureDao = database.featureDao(),
             connectionManager = connectionManager,
             sessionCrypto = sessionCrypto,
             processedEnvelopeDao = database.processedEnvelopeDao(),
@@ -719,7 +757,9 @@ class TorXOneApplication : Application() {
             appSettingsRepository = settingsRepository,
             sessionStore = sessionStore,
             mediaStorage = com.torxone.app.media.MediaStorage(this),
-            relationshipSendCoordinator = relationshipSendCoordinator
+            relationshipSendCoordinator = relationshipSendCoordinator,
+            securityPolicyService = securityPolicyService,
+            canSendText = { !settingsRepository.isAppLockedNow() }
         )
 
         // 10. Explicit asynchronous application initialization
@@ -748,6 +788,9 @@ class TorXOneApplication : Application() {
                 peerTorEndpoints.restore(database.connectionDao(), torRouteManager)
 
                 // Start background agent and transport only AFTER async initialization completes
+                securityPolicyService.cleanupDue()
+                securityPolicyService.start(applicationScope)
+                com.torxone.app.chat.MessageLinkIndex(database).start(applicationScope)
                 agent.start()
                 torBootstrapManager.start()
                 com.torxone.app.transport.tor.NetworkRecoveryMonitor(
@@ -790,6 +833,11 @@ class TorXOneApplication : Application() {
 
                 runtimeInitialized = true
                 _initState.value = AppInitState.Ready(cachedLocalIdentityId)
+                applicationScope.launch {
+                    runCatching { scheduledMessageService.recover() }.onFailure {
+                        android.util.Log.w("TorXOneApplication", "Scheduled-message recovery will retry", it)
+                    }
+                }
             } catch (e: Throwable) {
                 android.util.Log.e("TorXOneApplication", "Async app initialization failed", e)
                 _initState.value = AppInitState.Failed(e)

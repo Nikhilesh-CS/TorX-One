@@ -20,6 +20,7 @@ object ProtocolCodec {
         require(envelope.senderIdentity.isNotBlank() && envelope.senderIdentity.length <= ProtocolLimits.MAX_ID_LENGTH)
         require(envelope.recipientBinding.length <= ProtocolLimits.MAX_ID_LENGTH)
         require(envelope.timestamp > 0 && envelope.directionSequence >= 0)
+        com.torxone.app.privacy.DisappearingPolicy.validate(envelope.timestamp, envelope.expiresAt)
         require(envelope.payload.size <= ProtocolLimits.MAX_SECURE_PAYLOAD_BYTES)
         require(envelope.replyToMessageId == null || envelope.replyToMessageId.length <= ProtocolLimits.MAX_ID_LENGTH)
         require(envelope.groupMetadata == null || (envelope.groupMetadata.groupId.isNotBlank() && envelope.groupMetadata.groupId.length <= ProtocolLimits.MAX_ID_LENGTH && envelope.groupMetadata.groupEpoch >= 0 && envelope.groupMetadata.keyVersion >= 0))
@@ -32,7 +33,9 @@ object ProtocolCodec {
         dos.writeUTF(envelope.conversationId)
         dos.writeUTF(envelope.senderIdentity)
         dos.writeUTF(envelope.recipientBinding)
-        dos.writeUTF(envelope.messageType.name)
+        val wireType = if (envelope.messageType == MessageType.UNKNOWN) requireNotNull(envelope.unknownMessageType) else envelope.messageType.name
+        require(wireType.matches(Regex("[A-Z][A-Z0-9_]{0,63}")))
+        dos.writeUTF(wireType)
         dos.writeLong(envelope.timestamp)
         dos.writeUTF(envelope.replyToMessageId ?: "")
         dos.writeLong(envelope.directionSequence)
@@ -48,6 +51,10 @@ object ProtocolCodec {
             dos.writeBoolean(false)
         }
 
+        if (envelope.expiresAt != null) {
+            dos.writeInt(0x54584531) // TXE1; only sent after DISAPPEARING_V1 advertisement.
+            dos.writeLong(envelope.expiresAt)
+        }
         dos.flush()
 
         return baos.toByteArray()
@@ -66,10 +73,11 @@ object ProtocolCodec {
         val senderIdentity = dis.readUTF()
         val recipientBinding = dis.readUTF()
         val typeStr = dis.readUTF()
+        require(typeStr.matches(Regex("[A-Z][A-Z0-9_]{0,63}")))
         val messageType = try {
             MessageType.valueOf(typeStr)
         } catch (_: Exception) {
-            throw IllegalArgumentException("Unsupported message type: $typeStr")
+            MessageType.UNKNOWN
         }
         val timestamp = dis.readLong()
         val replyToRaw = dis.readUTF()
@@ -96,6 +104,10 @@ object ProtocolCodec {
                 GroupEnvelopeMetadata(groupId = gId, groupEpoch = gEpoch, keyVersion = kVer)
             } else null
         } else null
+        val expiresAt = if (dis.available() == 0) null else {
+            require(dis.available() == 12 && dis.readInt() == 0x54584531) { "Invalid secure envelope extension" }
+            dis.readLong().also { com.torxone.app.privacy.DisappearingPolicy.validate(timestamp, it) }
+        }
         require(dis.available() == 0) { "Trailing bytes in secure envelope" }
 
         return SecureEnvelope(
@@ -109,7 +121,9 @@ object ProtocolCodec {
             payload = payload,
             replyToMessageId = replyTo,
             groupMetadata = groupMetadata,
-            directionSequence = directionSequence
+            directionSequence = directionSequence,
+            expiresAt = expiresAt,
+            unknownMessageType = if (messageType == MessageType.UNKNOWN) typeStr else null
         )
     }
 

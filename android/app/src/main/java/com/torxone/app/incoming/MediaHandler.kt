@@ -29,7 +29,7 @@ class MediaHandler(
         Log.i(TAG, "[RX] Handling media descriptor msg=${envelope.logicalMessageId.take(8)}")
         val success = mediaService.handleIncomingDescriptor(connection, envelope)
 
-        if (success) {
+        if (success && !com.torxone.app.privacy.DisappearingPolicy.expired(envelope.expiresAt, System.currentTimeMillis())) {
             val descriptor = try {
                 MediaProtocolCodec.decodeDescriptor(envelope.payload)
             } catch (_: Exception) { null }

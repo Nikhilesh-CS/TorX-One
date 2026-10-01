@@ -39,6 +39,7 @@ import com.torxone.app.ui.theme.TorXOneTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 
 class MainActivity : FragmentActivity() {
     val intentFlow = kotlinx.coroutines.flow.MutableStateFlow<android.content.Intent?>(null)
@@ -114,6 +115,10 @@ fun TorXOneApp() {
         return
     }
 
+    val aliases by remember(app.database) { app.database.featureDao().observeAliases() }
+        .collectAsState(initial = emptyList())
+    val localNames = remember(aliases) { aliases.associate { it.contactId to it.alias } }
+
     val launchNavigateTo = (context as? android.app.Activity)?.intent?.getStringExtra("navigate_to")
     var currentScreen by remember(resolved) {
         val launchConvId = (context as? android.app.Activity)?.intent?.getStringExtra("conversationId")
@@ -128,6 +133,7 @@ fun TorXOneApp() {
         }
     }
     var showInviteDialog by remember { mutableStateOf(false) }
+    var clearScheduledSource by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // Ensure identity exists on startup (only when past onboarding)
     if (resolved) {
@@ -155,7 +161,9 @@ fun TorXOneApp() {
     val conversationListViewModel: com.torxone.app.conversations.ConversationListViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         com.torxone.app.conversations.ConversationListViewModel(
             chatService = app.chatService,
-            messageDao = app.database.messageDao()
+            messageDao = app.database.messageDao(),
+            featureDao = app.database.featureDao(),
+            contactDao = app.database.contactDao()
         )
     }
 
@@ -170,16 +178,14 @@ fun TorXOneApp() {
     val callViewModel: com.torxone.app.calls.CallViewModel = androidx.lifecycle.viewmodel.compose.viewModel {
         com.torxone.app.calls.CallViewModel(
             callManager = app.callManager,
-            contactDao = app.database.contactDao()
+            contactDao = app.database.contactDao(),
+            featureDao = app.database.featureDao()
         )
     }
 
     val fragmentActivity = context as? FragmentActivity
     val settingsState by settingsViewModel.uiState.collectAsState()
     var isAppUnlocked by rememberSaveable { mutableStateOf(false) }
-    SideEffect {
-        AppSettingsRepository.appLockGate = { isAppUnlocked }
-    }
     var lockErrorMessage by remember { mutableStateOf<String?>(null) }
 
     // Screen Security: enforce FLAG_SECURE on window
@@ -191,18 +197,45 @@ fun TorXOneApp() {
 
     // App Lock: track background timeout and reset unlocked state (M31)
     val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, resolved, isAppUnlocked, settingsState.appLockEnabled) {
+        fun updatePresence() {
+            app.presenceService.setForeground(resolved && (!settingsState.appLockEnabled || isAppUnlocked) &&
+                lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+        }
+        val presenceObserver = LifecycleEventObserver { _, _ -> updatePresence() }
+        lifecycleOwner.lifecycle.addObserver(presenceObserver)
+        updatePresence()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(presenceObserver)
+            app.presenceService.setForeground(false)
+        }
+    }
     var backgroundTimestamp by remember { mutableLongStateOf(0L) }
+    SideEffect {
+        AppSettingsRepository.appLockGate = {
+            com.torxone.app.profile.AppUnlockPolicy.isAuthorized(isAppUnlocked, backgroundTimestamp,
+                settingsState.appLockTimeoutMs, android.os.SystemClock.elapsedRealtime())
+        }
+    }
 
     DisposableEffect(lifecycleOwner, settingsState.appLockEnabled, settingsState.appLockTimeoutMs) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> {
-                    backgroundTimestamp = System.currentTimeMillis()
+                    backgroundTimestamp = android.os.SystemClock.elapsedRealtime()
                 }
                 Lifecycle.Event.ON_START -> {
+                    app.applicationScope.launch {
+                        runCatching {
+                            app.securityPolicyService.cleanupDue()
+                            app.scheduledMessageService.recover()
+                        }.onFailure {
+                            android.util.Log.w("MainActivity", "Local feature recovery will retry", it)
+                        }
+                    }
                     if (settingsState.appLockEnabled && backgroundTimestamp > 0L) {
-                        val elapsed = System.currentTimeMillis() - backgroundTimestamp
-                        if (elapsed >= settingsState.appLockTimeoutMs) {
+                        if (!com.torxone.app.profile.AppUnlockPolicy.isAuthorized(isAppUnlocked, backgroundTimestamp,
+                                settingsState.appLockTimeoutMs, android.os.SystemClock.elapsedRealtime())) {
                             isAppUnlocked = false
                         }
                     }
@@ -225,6 +258,11 @@ fun TorXOneApp() {
                 onSuccess = {
                     isAppUnlocked = true
                     lockErrorMessage = null
+                    app.applicationScope.launch {
+                        runCatching { app.scheduledMessageService.recover() }.onFailure {
+                            android.util.Log.w("MainActivity", "Scheduled-message recovery will retry", it)
+                        }
+                    }
                 },
                 onError = { err ->
                     lockErrorMessage = err
@@ -467,6 +505,40 @@ fun TorXOneApp() {
         }
 
         is Screen.Chat -> {
+            var conversation by remember(screen.conversationId) { mutableStateOf<ConversationEntity?>(null) }
+            var showConnection by remember(screen.conversationId) { mutableStateOf(false) }
+            var showDisappearing by remember(screen.conversationId) { mutableStateOf(false) }
+            var infoMessageId by remember(screen.conversationId) { mutableStateOf<String?>(null) }
+            val connectionFlow = remember(screen.conversationId) {
+                com.torxone.app.ui.connection.ConnectionUxReader(app.database, app.transportRouter,
+                    app.torController.state, app.nearbyTransport, context,
+                    isSendingPaused = { it in app.settingsRepository.pausedConversations.first() }).observe(screen.conversationId)
+            }
+            val connectionSnapshot by connectionFlow.collectAsState(initial = com.torxone.app.ui.connection.ConnectionUxSnapshot())
+            val policy by remember(screen.conversationId) {
+                app.securityPolicyService.dao.observePolicy(screen.conversationId)
+            }.collectAsState(initial = null)
+            if (showConnection) com.torxone.app.ui.components.ConnectionDashboardDialog(connectionSnapshot,
+                onDismiss = { showConnection = false }, onRetry = { app.agent.triggerImmediateRetry(screen.conversationId) },
+                onToggleSendingPaused = { coroutineScope.launch {
+                    app.settingsRepository.setConversationSendingPaused(screen.conversationId, !connectionSnapshot.sendingPaused)
+                    if (connectionSnapshot.sendingPaused) app.agent.triggerImmediateRetry(screen.conversationId)
+                } },
+                onVerifyIdentity = if (conversation?.type != ConversationType.DIRECT) null else ({
+                    showConnection = false
+                    navigateTo(Screen.ContactInfo(screen.conversationId, screen.contactName))
+                }))
+            if (showDisappearing) com.torxone.app.ui.components.DisappearingTimerDialog(policy,
+                onSave = { app.securityPolicyService.setTimer(screen.conversationId, it) },
+                onDismiss = { showDisappearing = false })
+            infoMessageId?.let { id ->
+                com.torxone.app.ui.components.MessageInfoHost(app.database, id, screen.conversationId,
+                    onDismiss = { infoMessageId = null }, onRetry = { app.agent.triggerImmediateRetry(screen.conversationId) })
+            }
+            val appearance by remember(screen.conversationId) {
+                app.database.featureDao().observeAppearance(screen.conversationId)
+            }.collectAsState(initial = null)
+            val chatAppearance = appearance ?: com.torxone.app.data.entity.ConversationAppearanceEntity(screen.conversationId)
             // Track active conversation for notification suppression and unread counts
             DisposableEffect(screen.conversationId) {
                 app.activeConversationTracker.setActiveConversation(screen.conversationId)
@@ -485,7 +557,6 @@ fun TorXOneApp() {
             }
 
             var isLoadingConversation by remember(screen.conversationId) { mutableStateOf(true) }
-            var conversation by remember(screen.conversationId) { mutableStateOf<ConversationEntity?>(null) }
             var isLoadingIdentity by remember { mutableStateOf(true) }
             var localIdentity by remember { mutableStateOf<TorXIdentity?>(null) }
 
@@ -543,12 +614,26 @@ fun TorXOneApp() {
                             conversationDao = app.database.conversationDao(),
                             mediaDao = app.database.mediaDao(),
                             mediaService = app.mediaService,
-                            voiceNoteRecorder = groupVoiceRecorder
+                            localMessageStateDao = app.database.localMessageStateDao(),
+                            voiceNoteRecorder = groupVoiceRecorder,
+                            productivity = app.productivityService
                         )
                     }
 
                     ChatScreen(
                         viewModel = groupViewModel,
+                        initialMessageId = screen.messageId,
+                        appearance = chatAppearance,
+                        onSaveAppearance = app.productivityService::saveAppearance,
+                        connectionSnapshot = connectionSnapshot,
+                        onOpenConnection = { showConnection = true },
+                        onDisappearing = { showDisappearing = true },
+                        onSchedule = { text, reply ->
+                            clearScheduledSource = if (text.isBlank()) null else { { groupViewModel.clearScheduledComposer(text, reply) } }
+                            navigateTo(Screen.Scheduled(screen.conversationId, text, reply))
+                        },
+                        onSearch = { navigateTo(Screen.Search(screen.conversationId)) },
+                        onForward = { navigateTo(Screen.Forward(it)) },
                         onBackClick = {
                             navigateBack()
                         },
@@ -650,14 +735,28 @@ fun TorXOneApp() {
                                     chatService = app.chatService,
                                     presenceService = app.presenceService,
                                     mediaService = app.mediaService,
-                                    voiceNoteRecorder = voiceRecorder
+                                    voiceNoteRecorder = voiceRecorder,
+                                    productivity = app.productivityService
                                 )
                             }
 
                         ChatScreen(
                             viewModel = viewModel,
+                            initialMessageId = screen.messageId,
+                        appearance = chatAppearance,
+                        onSaveAppearance = app.productivityService::saveAppearance,
+                        connectionSnapshot = connectionSnapshot,
+                        onOpenConnection = { showConnection = true },
+                        onDisappearing = { showDisappearing = true },
+                        onRequestMessageInfo = { infoMessageId = it.logicalMessageId },
+                        onSchedule = { text, reply ->
+                            clearScheduledSource = if (text.isBlank()) null else { { viewModel.clearScheduledComposer(text, reply) } }
+                            navigateTo(Screen.Scheduled(screen.conversationId, text, reply))
+                        },
+                            onSearch = { navigateTo(Screen.Search(screen.conversationId)) },
+                            onForward = { navigateTo(Screen.Forward(it)) },
                             contactAvatar = contact?.avatarHash,
-                            displayName = contact?.displayName,
+                            displayName = localNames[contact?.contactId] ?: contact?.displayName,
                             onBackClick = {
                                 navigateBack()
                             },
@@ -781,6 +880,11 @@ fun TorXOneApp() {
                 contact = contactState.value,
                 conversation = conversationState.value,
                 chatService = app.chatService,
+                nickname = localNames[contactState.value?.contactId],
+                onSaveNickname = { nickname ->
+                    val peer = requireNotNull(contactState.value) { "Contact unavailable" }
+                    app.productivityService.saveNickname(peer.contactId, nickname)
+                },
                 onOpenMedia = { navigateTo(Screen.SharedMedia(screen.conversationId)) },
                 onBackClick = {
                     navigateBack()
@@ -866,6 +970,8 @@ fun TorXOneApp() {
                 autoDownloadMedia = currentSettingsState.autoDownloadMedia,
                 onBackClick = { navigateBack() },
                 onProfileClick = { navigateTo(Screen.Profile) },
+                onSavedMessages = { navigateTo(Screen.SavedMessages) },
+                onSearchMessages = { navigateTo(Screen.Search(null)) },
                 onPrivacyChange = { field, value -> settingsViewModel.setPrivacy(field, value) },
                 onNotificationChange = { field, value -> settingsViewModel.setNotification(field, value) },
                 onSecurityChange = { field, value ->
@@ -925,6 +1031,9 @@ fun TorXOneApp() {
         }
 
         is Screen.SharedMedia -> {
+            val cachedLinks by remember(screen.conversationId) {
+                app.database.featureDao().observeLinks(screen.conversationId)
+            }.collectAsState(initial = emptyList())
             val media by app.database.mediaDao().observeForConversation(screen.conversationId).collectAsState(initial = emptyList())
             val messageFlow = remember(screen.conversationId) {
                 app.chatService.observeMessages(screen.conversationId)
@@ -935,11 +1044,48 @@ fun TorXOneApp() {
             val hidden by app.database.localMessageStateDao().observeHiddenMessageIds(screen.conversationId).collectAsState(initial = emptyList())
             val visible = messages.filter { it.deletedAt == null && it.logicalMessageId !in hidden }
             com.torxone.app.ui.screens.SharedMediaScreen(media.filter { item -> visible.any { it.logicalMessageId == item.messageId } }, visible,
+                cachedLinks = cachedLinks,
                 onBack = { navigateBack() }, onDownload = { mediaId -> coroutineScope.launch {
                     runCatching { app.mediaService.resumeTransfer(mediaId) }.onFailure {
                         android.widget.Toast.makeText(context, it.message ?: "Unable to download", android.widget.Toast.LENGTH_LONG).show()
                     }
                 } })
+        }
+        is Screen.Search -> {
+            com.torxone.app.ui.screens.MessageSearchScreen(app.productivityService, screen.conversationId,
+                onOpen = { message -> navigateTo(Screen.Chat(message.conversationId, "Chat", message.logicalMessageId)) },
+                onBack = { navigateBack() })
+        }
+        is Screen.Scheduled -> {
+            com.torxone.app.ui.screens.ScheduledMessagesScreen(app.scheduledMessageService, screen.conversationId,
+                onBack = { navigateBack() }, initialText = screen.text, initialReplyToMessageId = screen.replyToMessageId,
+                onCreated = { clearScheduledSource?.invoke(); clearScheduledSource = null })
+        }
+        is Screen.SavedMessages -> {
+            val flow = remember { app.database.featureDao().observeStarredMessages() }
+            val saved by flow.collectAsState(initial = emptyList())
+            com.torxone.app.ui.screens.SavedMessagesScreen(saved,
+                onOpen = { navigateTo(Screen.Chat(it.conversationId, "Chat", it.logicalMessageId)) },
+                onUnstar = { id -> coroutineScope.launch { app.productivityService.setStarred(setOf(id), false) } },
+                onBack = { navigateBack() })
+        }
+        is Screen.Forward -> {
+            val flow = remember { app.chatService.observeConversations() }
+            val destinations by flow.collectAsState(initial = emptyList())
+            var sending by remember(screen) { mutableStateOf(false) }
+            var error by remember(screen) { mutableStateOf<String?>(null) }
+            com.torxone.app.ui.screens.ForwardMessagesScreen(destinations, sending, error,
+                onChoose = { destination -> coroutineScope.launch {
+                    sending = true; error = null
+                    try {
+                        val identity = requireNotNull(app.identityRepository.loadIdentity()) { "Unlock your identity first" }
+                        app.productivityService.forward(screen.ids, destination, identity.identityId, screen.operationId)
+                        navigateBack()
+                    } catch (failure: Exception) {
+                        if (failure is kotlinx.coroutines.CancellationException) throw failure
+                        error = failure.message ?: "Unable to forward messages"
+                    } finally { sending = false }
+                } }, onBack = { navigateBack() })
         }
         is Screen.ActiveCall -> {
             CallScreen(
@@ -974,7 +1120,11 @@ sealed class Screen {
     data object Landing : Screen()
     data object ConversationList : Screen()
     data object ArchivedList : Screen()
-    data class Chat(val conversationId: String, val contactName: String) : Screen()
+    data class Chat(val conversationId: String, val contactName: String, val messageId: String? = null) : Screen()
+    data class Search(val conversationId: String?) : Screen()
+    data class Scheduled(val conversationId: String, val text: String = "", val replyToMessageId: String? = null) : Screen()
+    data class Forward(val ids: List<String>, val operationId: String = java.util.UUID.randomUUID().toString()) : Screen()
+    data object SavedMessages : Screen()
     data class ContactInfo(val conversationId: String, val contactName: String) : Screen()
     data class SharedMedia(val conversationId: String) : Screen()
     data object NewGroup : Screen()

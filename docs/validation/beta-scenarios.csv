@@ -1,0 +1,21 @@
+id,scenario,expected,paired
+BT_TOGGLE,Bluetooth off then on,Queue and recover with authenticated route and no duplicate chat,true
+WIFI_TOGGLE,Wi-Fi off then on,Durable delivery recovers without resetting identity or session,true
+INTERNET_LOSS,Remove direct Internet,Nearby offline delivery or truthful durable pending state,true
+TOR_LOSS,Disconnect Tor,Eligible alternate path or truthful pending state and later ACK,true
+NETWORK_SWITCH,Wi-Fi to cellular and back,Bidirectional persistence and ACK on same relationship,true
+AIRPLANE,Airplane mode with permitted local radio enabled,Offline local delivery when an authenticated local route exists,true
+PROCESS_KILL,Kill process while message is pending,Relaunch yields exactly one message and matching ACK,true
+REBOOT,Reboot while message is pending,After required unlock recover persisted session outbox and delivery,true
+BATTERY_SAVER,Background with battery saver,No false delivered state and recovery after permitted wake,true
+LOW_STORAGE,Controlled low storage on test device,Fail safely without lost ratchet state or silent message loss,false
+LOW_MEMORY,Controlled process and memory pressure,Restore consistent session and UI without duplicate ciphertext,true
+HUGE_CHAT,At least 100000 synthetic messages,Record cold-open search scroll memory and latency without crash,false
+GROUPS,Partial group fan-out membership change and restart,Authenticated members and ordered recovery without stranded epoch,true
+VOICE_CALL,Answer voice call on different networks,Rings and audio works both ways then releases microphone,true
+VIDEO_CALL,Answer video call on different networks,Audio video hangup and interruption recovery verified,true
+LARGE_FILE,Approximately 1GB synthetic encrypted file,Resume after interruption and exact final SHA256 match,true
+LONG_OFFLINE,Recipient offline for hours then returns,No ratchet desynchronization and single persistence plus ACK,true
+NEARBY_MOVE,Move peer out of range and back,Route expires and recovers without a second contact or chat,true
+UPGRADE,Upgrade candidate preserving existing identity and data,Migration retains sessions routes messages and pending deliveries,true
+EXPIRY,Delayed expired message and interrupted media,ACK without resurfacing expired content or private files,true

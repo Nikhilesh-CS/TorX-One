@@ -40,6 +40,11 @@ class EditHandler(
         }
 
         // Rule 2: Cannot edit an already deleted message
+        if (com.torxone.app.privacy.DisappearingPolicy.expired(targetMsg.expiresAt, System.currentTimeMillis())) {
+            // The authenticated author may retry an old edit after expiry. Accept/ACK
+            // without restoring text or blocking every following directional sequence.
+            return true
+        }
         if (targetMsg.deletedAt != null) {
             Log.w(TAG, "Edit rejected: message ${edit.targetMessageId.take(8)} was already deleted")
             return false

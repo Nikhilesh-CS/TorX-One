@@ -34,7 +34,8 @@ class TorXAgent(
     private val coroutineDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val baseRetryDelayMs: Long = 3_000L,
     private val outboxPollIntervalMs: Long = 1_000L,
-    private val relationshipForQueue: (String) -> String? = { null }
+    private val relationshipForQueue: (String) -> String? = { null },
+    private val isDeliveryPaused: suspend (DeliveryItem) -> Boolean = { false }
 ) {
     companion object {
         private const val TAG = "TorXAgent"
@@ -140,10 +141,10 @@ class TorXAgent(
      * Trigger immediate retry (e.g. when Nearby connects).
      * Resets waiting retry items so they transmit immediately without waiting for backoff timers.
      */
-    fun triggerImmediateRetry() {
+    fun triggerImmediateRetry(conversationId: String? = null) {
         scope.launch {
             try {
-                recoverStaleOutboxItems()
+                recoverStaleOutboxItems(conversationId)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to recover stale outbox items during immediate retry: ${e.message}", e)
             }
@@ -181,11 +182,12 @@ class TorXAgent(
         emitUpdate(logicalMessageId, DeliveryStatus.READ)
     }
 
-    private suspend fun recoverStaleOutboxItems() {
+    private suspend fun recoverStaleOutboxItems(conversationId: String? = null) {
         try {
             val pending = outboxStore.getPendingItems()
             val now = System.currentTimeMillis()
             for (item in pending) {
+                if (item.deliveryId in inflightItems || (conversationId != null && item.conversationId != conversationId)) continue
                 if (item.status == DeliveryStatus.TRANSMITTING ||
                     item.status == DeliveryStatus.RETRY_WAIT ||
                     (item.status == DeliveryStatus.TRANSPORT_ACCEPTED && now - item.updatedAt > baseRetryDelayMs)
@@ -200,6 +202,7 @@ class TorXAgent(
     }
 
     private suspend fun processOutbox() {
+        val destinationJobs = mutableMapOf<String, Job>()
         while (currentCoroutineContext().isActive) {
             try {
                 val pending = outboxStore.getPendingItems()
@@ -214,9 +217,10 @@ class TorXAgent(
                             "queue:${item.queueAddress}"
                         }
                     }
-                    supervisorScope {
-                        for ((_, destinationItems) in groupedByDestination) {
-                            launch {
+                    destinationJobs.entries.removeAll { !it.value.isActive }
+                        for ((destinationKey, destinationItems) in groupedByDestination) {
+                            if (destinationJobs[destinationKey]?.isActive == true) continue
+                            val worker = CoroutineScope(currentCoroutineContext()).launch(start = CoroutineStart.LAZY) {
                                 // P0-4: Strict application sequence scheduling
                                 // 1. High-priority non-sequenced traffic can jump ahead where protocol-safe
                                 val highPriorityNonSequenced = destinationItems
@@ -308,8 +312,9 @@ class TorXAgent(
                                     }
                                 }
                             }
+                            destinationJobs[destinationKey] = worker
+                            worker.start()
                         }
-                    }
                 }
 
                 withTimeoutOrNull(outboxPollIntervalMs) {
@@ -325,6 +330,8 @@ class TorXAgent(
     }
 
     private suspend fun processDeliveryItem(item: DeliveryItem): Boolean {
+        // Keep ciphertext and sequence intact. Removing a sequenced item would strand later sends.
+        if (isDeliveryPaused(item)) return false
         // Allocated sequences must still attempt transport after the retry limit.
         // Rescheduling them without sending permanently stalls the entire lane.
         if (item.attemptCount >= MAX_RETRY_ATTEMPTS && item.applicationSequence == null) {

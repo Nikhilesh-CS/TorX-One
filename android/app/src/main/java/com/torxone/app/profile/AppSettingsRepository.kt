@@ -83,6 +83,7 @@ class AppSettingsRepository(context: Context) {
         val RELAY_ONLY_CALLS = booleanPreferencesKey("conn_relay_only_calls")
         val AUTO_CONNECT_NEARBY = booleanPreferencesKey("conn_auto_nearby")
         val LOW_BANDWIDTH_MODE = booleanPreferencesKey("conn_low_bandwidth")
+        val PAUSED_CONVERSATIONS = stringSetPreferencesKey("conn_paused_conversations")
     }
 
     // ─── Data & Storage Keys ─────────────────────────────────────────
@@ -95,6 +96,26 @@ class AppSettingsRepository(context: Context) {
     // =========================================================================
 
     val relayOnlyCalls: Flow<Boolean> = store.data.map { it[ConnectionKeys.RELAY_ONLY_CALLS] ?: false }
+
+    val pausedConversations: Flow<Set<String>> = store.data.map { it[ConnectionKeys.PAUSED_CONVERSATIONS].orEmpty() }
+
+    suspend fun encryptedPeerLastSeen(relationshipId: String): String? =
+        store.data.first()[stringPreferencesKey("peer_seen_$relationshipId")]
+
+    suspend fun saveEncryptedPeerLastSeen(relationshipId: String, wrapped: String?) {
+        store.edit {
+            val key = stringPreferencesKey("peer_seen_$relationshipId")
+            if (wrapped == null) it.remove(key) else it[key] = wrapped
+        }
+    }
+
+    suspend fun setConversationSendingPaused(conversationId: String, paused: Boolean) {
+        require(conversationId.isNotBlank())
+        store.edit { prefs ->
+            val ids = prefs[ConnectionKeys.PAUSED_CONVERSATIONS].orEmpty()
+            prefs[ConnectionKeys.PAUSED_CONVERSATIONS] = if (paused) ids + conversationId else ids - conversationId
+        }
+    }
 
     suspend fun setRelayOnlyCalls(enabled: Boolean) {
         store.edit { it[ConnectionKeys.RELAY_ONLY_CALLS] = enabled }

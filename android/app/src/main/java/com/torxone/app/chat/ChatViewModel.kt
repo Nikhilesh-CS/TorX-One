@@ -50,7 +50,8 @@ data class ChatUiState(
     val connectionState: ConnectionState = ConnectionState.ACTIVE,
     val isSending: Boolean = false,
     val voiceRecording: VoiceRecordingState = VoiceRecordingState(),
-    val error: String? = null
+    val error: String? = null,
+    val starredIds: Set<String> = emptySet()
 )
 
 /**
@@ -75,7 +76,8 @@ class ChatViewModel(
     private val chatService: ChatService,
     private val presenceService: PresenceService? = null,
     private val mediaService: MediaService? = null,
-    private val voiceNoteRecorder: VoiceNoteRecorder? = null
+    private val voiceNoteRecorder: VoiceNoteRecorder? = null,
+    private val productivity: ChatProductivityService? = null
 ) : ViewModel() {
 
     companion object {
@@ -90,8 +92,26 @@ class ChatViewModel(
     private var typingDebounceJob: Job? = null
     private var isTypingLocally = false
     private var recordingTimerJob: Job? = null
+    private var draftJob: Job? = null
+    private var draftChanged = false
+    private var restoredReplyId: String? = null
+    private var composerBeforeEdit: Pair<String, MessageUiModel?>? = null
 
     init {
+        productivity?.let { service ->
+            viewModelScope.launch {
+                service.dao.draft(conversationId)?.let { draft ->
+                    if (!draftChanged) {
+                        restoredReplyId = draft.replyToMessageId
+                        _uiState.update { it.copy(composerText = draft.text,
+                            replyingTo = it.messages.find { message -> message.logicalMessageId == restoredReplyId }) }
+                    }
+                }
+            }
+            viewModelScope.launch { service.dao.observeStars(conversationId).collect { ids ->
+                _uiState.update { it.copy(starredIds = ids.toSet()) }
+            } }
+        }
         // 1. Observe messages, reactions, local hidden state, and media attachments
         viewModelScope.launch {
             val mediaFlow: Flow<List<MediaEntity>> = mediaService?.observeMediaForConversation(conversationId)
@@ -108,7 +128,7 @@ class ChatViewModel(
                 val visibleEntities = msgEntities.filter { !hiddenSet.contains(it.logicalMessageId) }
                 mapToUiModels(visibleEntities, reactionEntities, mediaEntities)
             }.collect { uiModels ->
-                _uiState.update { it.copy(messages = uiModels) }
+                _uiState.update { it.copy(messages = uiModels, replyingTo = it.replyingTo ?: uiModels.find { message -> message.logicalMessageId == restoredReplyId }) }
 
                 // Automatically mark incoming messages read if conversation is open
                 markConversationRead()
@@ -227,6 +247,7 @@ class ChatViewModel(
                 isEdited = entity.editedAt != null,
                 editedAt = entity.editedAt,
                 isDeleted = entity.deletedAt != null,
+                expiresAt = entity.expiresAt,
                 reactions = reactionSummaries,
                 media = mediaModel
             )
@@ -235,6 +256,7 @@ class ChatViewModel(
 
     fun onComposerTextChanged(newText: String) {
         _uiState.update { it.copy(composerText = newText) }
+        persistDraft()
 
         if (presenceService == null) return
 
@@ -265,15 +287,23 @@ class ChatViewModel(
     }
 
     fun onReply(message: MessageUiModel) {
+        restoredReplyId = null
         _uiState.update { it.copy(replyingTo = message, editingMessage = null) }
+        persistDraft()
     }
 
     fun cancelReply() {
+        restoredReplyId = null
         _uiState.update { it.copy(replyingTo = null) }
+        persistDraft()
     }
 
     fun startEditing(message: MessageUiModel) {
         if (message.direction == MessageDirection.OUTGOING && !message.isDeleted) {
+            if (_uiState.value.editingMessage == null) {
+                composerBeforeEdit = _uiState.value.composerText to _uiState.value.replyingTo
+                persistDraft()
+            }
             _uiState.update {
                 it.copy(
                     editingMessage = message,
@@ -285,7 +315,10 @@ class ChatViewModel(
     }
 
     fun cancelEditing() {
-        _uiState.update { it.copy(editingMessage = null, composerText = "") }
+        val draft = composerBeforeEdit
+        composerBeforeEdit = null
+        _uiState.update { it.copy(editingMessage = null, composerText = draft?.first.orEmpty(), replyingTo = draft?.second) }
+        persistDraft()
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
@@ -347,12 +380,13 @@ class ChatViewModel(
     }
 
     fun sendText() {
+        if (_uiState.value.isSending) return
         val text = _uiState.value.composerText.trim()
         if (text.isEmpty()) return
 
         val editing = _uiState.value.editingMessage
         if (editing != null) {
-            _uiState.update { it.copy(editingMessage = null, composerText = "", isSending = true, error = null) }
+            _uiState.update { it.copy(isSending = true, error = null) }
             viewModelScope.launch {
                 try {
                     chatService.editMessage(
@@ -363,6 +397,10 @@ class ChatViewModel(
                         targetMessageId = editing.logicalMessageId,
                         newText = text
                     )
+                    if (_uiState.value.editingMessage?.logicalMessageId == editing.logicalMessageId &&
+                        _uiState.value.composerText.trim() == text) cancelEditing()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
                 } catch (e: Exception) {
                     _uiState.update { it.copy(error = e.message ?: "Edit failed") }
                 } finally {
@@ -382,7 +420,8 @@ class ChatViewModel(
             }
         }
 
-        _uiState.update { it.copy(composerText = "", replyingTo = null, isSending = true, error = null) }
+        draftJob?.cancel()
+        _uiState.update { it.copy(isSending = true, error = null) }
         viewModelScope.launch {
             try {
                 chatService.sendTextMessage(
@@ -393,6 +432,9 @@ class ChatViewModel(
                     text = text,
                     replyToMessageId = replyToId
                 )
+                restoredReplyId = null
+                _uiState.update { if (it.composerText.trim() == text) it.copy(composerText = "", replyingTo = null) else it }
+                persistDraft()
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Send failed") }
             } finally {
@@ -400,6 +442,35 @@ class ChatViewModel(
             }
         }
     }
+
+    fun clearScheduledComposer(text: String, replyId: String?) {
+        val current = _uiState.value
+        if (current.editingMessage != null || current.composerText != text || current.replyingTo?.logicalMessageId != replyId) return
+        restoredReplyId = null
+        _uiState.update { it.copy(composerText = "", replyingTo = null) }
+        persistDraft(0)
+    }
+
+    private fun persistDraft(debounceMs: Long = 500) {
+        draftChanged = true
+        if (_uiState.value.editingMessage != null) return
+        val service = productivity ?: return
+        val snapshot = _uiState.value
+        draftJob?.cancel()
+        draftJob = viewModelScope.launch {
+            delay(debounceMs)
+            try { service.saveDraft(conversationId, snapshot.composerText, snapshot.replyingTo?.logicalMessageId ?: restoredReplyId) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Unable to save draft: ${error.message}") }
+            }
+        }
+    }
+
+    fun setStarred(ids: Set<String>, enabled: Boolean) { viewModelScope.launch {
+        try { productivity?.setStarred(ids, enabled) }
+        catch (error: Exception) { _uiState.update { it.copy(error = error.message) } }
+    } }
 
     // ═══════════════════════════════════════════════════════════════
     //  Media Sending Methods

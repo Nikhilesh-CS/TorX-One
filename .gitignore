@@ -16,3 +16,5 @@ local.properties
 *.jks
 release-artifacts/
 /.android-sdk/
+__pycache__/
+*.py[cod]

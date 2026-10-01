@@ -42,7 +42,8 @@ class GroupChatViewModel(
     private val mediaDao: MediaDao? = null,
     private val mediaService: MediaService? = null,
     private val localMessageStateDao: LocalMessageStateDao? = null,
-    private val voiceNoteRecorder: VoiceNoteRecorder? = null
+    private val voiceNoteRecorder: VoiceNoteRecorder? = null,
+    private val productivity: ChatProductivityService? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -55,8 +56,26 @@ class GroupChatViewModel(
 
     private val typingTimestamps = ConcurrentHashMap<String, Long>()
     private var recordingTimerJob: Job? = null
+    private var draftJob: Job? = null
+    private var draftChanged = false
+    private var restoredReplyId: String? = null
+    private var composerBeforeEdit: Pair<String, MessageUiModel?>? = null
 
     init {
+        productivity?.let { service ->
+            viewModelScope.launch {
+                service.dao.draft(conversationId)?.let { draft ->
+                    if (!draftChanged) {
+                        restoredReplyId = draft.replyToMessageId
+                        _uiState.update { it.copy(composerText = draft.text,
+                            replyingTo = it.messages.find { message -> message.logicalMessageId == restoredReplyId }) }
+                    }
+                }
+            }
+            viewModelScope.launch { service.dao.observeStars(conversationId).collect { ids ->
+                _uiState.update { it.copy(starredIds = ids.toSet()) }
+            } }
+        }
         // 1. Observe Group Entity & Title
         viewModelScope.launch {
             groupDao.observeById(groupId).filterNotNull().collect { group ->
@@ -91,7 +110,10 @@ class GroupChatViewModel(
             combine(
                 messageDao.observeByConversation(conversationId),
                 reactionDao.observeForConversation(conversationId),
-                contactDao.observeAll(),
+                combine(contactDao.observeAll(), productivity?.dao?.observeAliases() ?: flowOf(emptyList())) { contacts, aliases ->
+                    val names = aliases.associate { it.contactId to it.alias }
+                    contacts.map { peer -> names[peer.contactId]?.let { peer.copy(displayName = it) } ?: peer }
+                },
                 localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList()),
                 mediaDao?.observeForConversation(conversationId) ?: flowOf(emptyList())
             ) { messages, reactions, contacts, hiddenMessageIds, mediaItems ->
@@ -177,12 +199,14 @@ class GroupChatViewModel(
                         isEdited = msg.editVersion > 0,
                         editedAt = msg.editedAt,
                         isDeleted = msg.deletedAt != null,
+                        expiresAt = msg.expiresAt,
                         reactions = reactionSummaries,
                         media = mediaModel
                     )
                 }
             }.collect { messageList ->
-                _uiState.update { it.copy(messages = messageList) }
+                _uiState.update { it.copy(messages = messageList,
+                    replyingTo = it.replyingTo ?: messageList.find { message -> message.logicalMessageId == restoredReplyId }) }
             }
         }
 
@@ -192,24 +216,34 @@ class GroupChatViewModel(
 
     fun onComposerTextChanged(newText: String) {
         _uiState.update { it.copy(composerText = newText) }
+        persistDraft()
     }
 
     fun sendText() {
         val text = _uiState.value.composerText.trim()
-        if (text.isEmpty() || !_uiState.value.isParticipantActive) return
+        if (text.isEmpty() || !_uiState.value.isParticipantActive || _uiState.value.isSending) return
 
         val replyToId = _uiState.value.replyingTo?.logicalMessageId
         val editing = _uiState.value.editingMessage
 
         if (editing != null) {
+            _uiState.update { it.copy(isSending = true, error = null) }
             viewModelScope.launch {
-                groupService.sendGroupEdit(groupId, editing.logicalMessageId, text)
-                _uiState.update { it.copy(editingMessage = null, composerText = "") }
+                try {
+                    groupService.sendGroupEdit(groupId, editing.logicalMessageId, text)
+                    if (_uiState.value.editingMessage?.logicalMessageId == editing.logicalMessageId &&
+                        _uiState.value.composerText.trim() == text) cancelEditing()
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    _uiState.update { it.copy(error = failure.message ?: "Edit failed") }
+                } finally { _uiState.update { it.copy(isSending = false) } }
             }
             return
         }
 
-        _uiState.update { it.copy(composerText = "", replyingTo = null) }
+        draftJob?.cancel()
+        _uiState.update { it.copy(isSending = true, error = null) }
         viewModelScope.launch {
             try {
                 groupService.sendGroupText(
@@ -217,22 +251,35 @@ class GroupChatViewModel(
                     text = text,
                     replyToMessageId = replyToId
                 )
+                restoredReplyId = null
+                _uiState.update { if (it.composerText.trim() == text) it.copy(composerText = "", replyingTo = null) else it }
+                persistDraft()
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
+            } finally {
+                _uiState.update { it.copy(isSending = false) }
             }
         }
     }
 
     fun onReply(message: MessageUiModel) {
+        restoredReplyId = null
         _uiState.update { it.copy(replyingTo = message, editingMessage = null) }
+        persistDraft()
     }
 
     fun cancelReply() {
+        restoredReplyId = null
         _uiState.update { it.copy(replyingTo = null) }
+        persistDraft()
     }
 
     fun startEditing(message: MessageUiModel) {
         if (message.direction != MessageDirection.OUTGOING || message.isDeleted) return
+        if (_uiState.value.editingMessage == null) {
+            composerBeforeEdit = _uiState.value.composerText to _uiState.value.replyingTo
+            persistDraft()
+        }
         _uiState.update {
             it.copy(
                 editingMessage = message,
@@ -243,7 +290,10 @@ class GroupChatViewModel(
     }
 
     fun cancelEditing() {
-        _uiState.update { it.copy(editingMessage = null, composerText = "") }
+        val draft = composerBeforeEdit
+        composerBeforeEdit = null
+        _uiState.update { it.copy(editingMessage = null, composerText = draft?.first.orEmpty(), replyingTo = draft?.second) }
+        persistDraft()
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
@@ -277,6 +327,35 @@ class GroupChatViewModel(
     }
 
     fun clearError() { _uiState.update { it.copy(error = null) } }
+
+    fun clearScheduledComposer(text: String, replyId: String?) {
+        val current = _uiState.value
+        if (current.editingMessage != null || current.composerText != text || current.replyingTo?.logicalMessageId != replyId) return
+        restoredReplyId = null
+        _uiState.update { it.copy(composerText = "", replyingTo = null) }
+        persistDraft(0)
+    }
+
+    private fun persistDraft(debounceMs: Long = 500) {
+        draftChanged = true
+        if (_uiState.value.editingMessage != null) return
+        val service = productivity ?: return
+        val snapshot = _uiState.value
+        draftJob?.cancel()
+        draftJob = viewModelScope.launch {
+            delay(debounceMs)
+            try { service.saveDraft(conversationId, snapshot.composerText, snapshot.replyingTo?.logicalMessageId ?: restoredReplyId) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Unable to save draft: ${error.message}") }
+            }
+        }
+    }
+
+    fun setStarred(ids: Set<String>, enabled: Boolean) { viewModelScope.launch {
+        try { productivity?.setStarred(ids, enabled) }
+        catch (error: Exception) { _uiState.update { it.copy(error = error.message) } }
+    } }
 
     fun downloadMedia(mediaId: String) {
         viewModelScope.launch {

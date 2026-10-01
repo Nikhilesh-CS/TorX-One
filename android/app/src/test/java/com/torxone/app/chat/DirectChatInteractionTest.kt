@@ -272,19 +272,19 @@ class DirectChatInteractionTest {
         )
 
         val presenceFlow = presenceService.observePresence(relationshipId)
-        assertEquals(PresenceStatus.OFFLINE, presenceFlow.value.status)
+        assertEquals(PresenceStatus.UNKNOWN, presenceFlow.value.status)
+        assertNull(presenceFlow.value.lastSeenAt)
 
         // 1. Peer connects and route becomes READY
         routeTable.bindRoute(relationshipId, "ep-bob", RouteState.READY)
-        assertEquals(PresenceStatus.ONLINE, presenceFlow.value.status)
+        assertEquals(PresenceStatus.UNKNOWN, presenceFlow.value.status)
         assertFalse(presenceFlow.value.isTyping)
 
         // 2. Peer disconnects
         val now = System.currentTimeMillis()
         routeTable.removeEndpoint("ep-bob")
         assertEquals(PresenceStatus.OFFLINE, presenceFlow.value.status)
-        assertNotNull(presenceFlow.value.lastSeenAt)
-        assertTrue(presenceFlow.value.lastSeenAt!! >= now)
+        assertNull(presenceFlow.value.lastSeenAt)
 
         // 3. Test PresenceFormatter
         val formattedToday = PresenceFormatter.formatLastSeen(now, now)
@@ -314,15 +314,15 @@ class DirectChatInteractionTest {
             localIdentityIdProvider = { "alice" }
         )
 
-        // Initial state is OFFLINE
-        assertEquals(PresenceStatus.OFFLINE, presenceService.getPresence(relationshipId).status)
+        // Transport/observer creation cannot invent peer activity.
+        assertEquals(PresenceStatus.UNKNOWN, presenceService.getPresence(relationshipId).status)
 
         // Receive PRESENCE_UPDATE(ONLINE)
         presenceService.onPresenceUpdateReceived(relationshipId, PresenceUpdate(PresenceState.ONLINE))
         assertEquals(PresenceStatus.ONLINE, presenceService.getPresence(relationshipId).status)
 
         // Receive PRESENCE_UPDATE(OFFLINE)
-        val offlineTimestamp = 123456789L
+        val offlineTimestamp = System.currentTimeMillis()
         presenceService.onPresenceUpdateReceived(relationshipId, PresenceUpdate(PresenceState.OFFLINE, offlineTimestamp))
         assertEquals(PresenceStatus.OFFLINE, presenceService.getPresence(relationshipId).status)
         assertEquals(offlineTimestamp, presenceService.getPresence(relationshipId).lastSeenAt)

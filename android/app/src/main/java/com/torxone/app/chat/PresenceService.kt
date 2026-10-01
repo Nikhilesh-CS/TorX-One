@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -42,7 +43,13 @@ class PresenceService(
     private val appSettingsRepository: AppSettingsRepository? = null,
     private val coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
     private val contactDao: com.torxone.app.data.dao.ContactDao? = null,
-    private val remoteIdentityProvider: suspend (String) -> String? = { null }
+    private val remoteIdentityProvider: suspend (String) -> String? = { null },
+    private val loadLastSeen: suspend (String) -> Long? = { null },
+    private val saveLastSeen: suspend (String, Long?) -> Unit = { _, _ -> },
+    private val relationshipsProvider: suspend () -> List<String> = {
+        contactDao?.getAll()?.map { it.relationshipId }?.distinct().orEmpty()
+    },
+    private val presenceSender: (suspend (String, PresenceState) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "PresenceService"
@@ -53,6 +60,7 @@ class PresenceService(
 
     private val presenceStates = ConcurrentHashMap<String, MutableStateFlow<PeerPresenceState>>()
     private val typingTimeoutJobs = ConcurrentHashMap<String, Job>()
+    private val lastPresenceUpdates = ConcurrentHashMap<String, Long>()
 
     init {
         // Register as a listener to route transitions in DirectRouteTable
@@ -71,15 +79,22 @@ class PresenceService(
 
     private fun getOrCreateState(relationshipId: String): MutableStateFlow<PeerPresenceState> {
         return presenceStates.computeIfAbsent(relationshipId) {
-            val isReady = directRouteTable.isReady(relationshipId)
-            val initialStatus = if (isReady) PresenceStatus.ONLINE else PresenceStatus.OFFLINE
-            MutableStateFlow(
+            val flow = MutableStateFlow(
                 PeerPresenceState(
                     relationshipId = relationshipId,
-                    status = initialStatus,
-                    lastSeenAt = if (!isReady) System.currentTimeMillis() else null
+                    status = PresenceStatus.UNKNOWN,
+                    lastSeenAt = null
                 )
             )
+            coroutineScope.launch {
+                runCatching { loadLastSeen(relationshipId) }.getOrNull()?.takeIf {
+                    it > 0 && it <= System.currentTimeMillis()
+                }?.let { saved -> flow.update { state ->
+                    if (lastPresenceUpdates.containsKey(relationshipId) || (state.lastSeenAt ?: 0) >= saved) state else state.copy(lastSeenAt = saved,
+                        status = if (state.status == PresenceStatus.UNKNOWN) PresenceStatus.OFFLINE else state.status)
+                } }
+            }
+            flow
         }
     }
 
@@ -88,19 +103,15 @@ class PresenceService(
      */
     fun handleRouteStateChanged(relationshipId: String, state: RouteState, lastSeen: Long) {
         val stateFlow = getOrCreateState(relationshipId)
-        val now = System.currentTimeMillis()
         when (state) {
             RouteState.READY -> {
-                Log.d(TAG, "[PRESENCE] Peer $relationshipId is now ONLINE")
-                stateFlow.update { it.copy(status = PresenceStatus.ONLINE, isTyping = false) }
+                // A background transport connection does not prove foreground app activity.
             }
             RouteState.STALE, RouteState.DISCONNECTED -> {
-                Log.d(TAG, "[PRESENCE] Peer $relationshipId is now OFFLINE (lastSeen=$now)")
                 cancelTypingSafetyTimer(relationshipId)
                 stateFlow.update {
                     it.copy(
                         status = PresenceStatus.OFFLINE,
-                        lastSeenAt = now,
                         isTyping = false,
                         typingExpiresAt = null
                     )
@@ -113,23 +124,75 @@ class PresenceService(
     /**
      * Handle incoming decrypted PRESENCE_UPDATE protocol packet.
      */
-    fun onPresenceUpdateReceived(relationshipId: String, update: PresenceUpdate) {
+    @Synchronized fun onPresenceUpdateReceived(relationshipId: String, update: PresenceUpdate) {
         Log.d(TAG, "[RX PRESENCE] rel=${relationshipId.take(8)} state=${update.state}")
         val stateFlow = getOrCreateState(relationshipId)
+        val receivedAt = System.currentTimeMillis()
+        // Do not let a delayed/offline replay or a future peer clock fabricate activity.
+        if (update.timestamp <= 0L || update.timestamp > receivedAt + 60_000L ||
+            update.timestamp < (lastPresenceUpdates[relationshipId] ?: stateFlow.value.lastSeenAt ?: 0L)) return
+        lastPresenceUpdates[relationshipId] = update.timestamp
+        val confirmedSeen = minOf(update.timestamp, receivedAt).takeIf { update.lastSeenVisible }
+        presenceTimeoutJobs.remove(relationshipId)?.cancel()
         when (update.state) {
             PresenceState.ONLINE -> {
-                stateFlow.update { it.copy(status = PresenceStatus.ONLINE) }
+                stateFlow.update { it.copy(status = PresenceStatus.ONLINE, lastSeenAt = confirmedSeen) }
+                presenceTimeoutJobs[relationshipId] = coroutineScope.launch {
+                    delay(PRESENCE_TTL_MS)
+                    stateFlow.update { it.copy(status = PresenceStatus.OFFLINE, isTyping = false, typingExpiresAt = null) }
+                }
             }
             PresenceState.OFFLINE -> {
                 cancelTypingSafetyTimer(relationshipId)
                 stateFlow.update {
                     it.copy(
                         status = PresenceStatus.OFFLINE,
-                        lastSeenAt = update.timestamp,
-                        isTyping = false
+                        lastSeenAt = confirmedSeen,
+                        isTyping = false,
+                        typingExpiresAt = null
                     )
                 }
             }
+        }
+        persistConfirmedSeen(relationshipId, stateFlow)
+    }
+
+    private fun persistConfirmedSeen(relationshipId: String, stateFlow: MutableStateFlow<PeerPresenceState>) {
+        coroutineScope.launch {
+            persistenceMutex.withLock {
+                runCatching { saveLastSeen(relationshipId, stateFlow.value.lastSeenAt) }
+            }
+        }
+    }
+
+    private val presenceTimeoutJobs = ConcurrentHashMap<String, Job>()
+    private val persistenceMutex = kotlinx.coroutines.sync.Mutex()
+    private var foregroundJob: Job? = null
+    private var foreground = false
+
+    /** Announces actual unlocked foreground use, independently of opening a chat. */
+    @Synchronized fun setForeground(active: Boolean) {
+        if (foreground == active) return
+        foreground = active
+        foregroundJob?.cancel()
+        foregroundJob = coroutineScope.launch {
+            val sending = mutableMapOf<String, Job>()
+            do {
+                relationshipsProvider().distinct().forEach { relationship ->
+                    if (sending[relationship]?.isActive != true) {
+                        val worker = CoroutineScope(currentCoroutineContext()).launch(start = CoroutineStart.LAZY) {
+                            try {
+                                val state = if (active) PresenceState.ONLINE else PresenceState.OFFLINE
+                                presenceSender?.invoke(relationship, state) ?: sendPresenceUpdate(relationship, state)
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) { Log.w(TAG, "Presence update could not be sent") }
+                        }
+                        sending[relationship] = worker
+                        worker.start()
+                    }
+                }
+                if (active) delay(20_000L)
+            } while (active && isActive)
         }
     }
 
@@ -183,12 +246,7 @@ class PresenceService(
             Log.d(TAG, "Online status disabled in settings; suppressing ONLINE update to $relationshipId")
             return
         }
-        if (state == PresenceState.OFFLINE && !lastSeenVisible) {
-            Log.d(TAG, "Last seen status disabled in settings; suppressing OFFLINE update to $relationshipId")
-            return
-        }
-
-        val payload = PresenceUpdate(state = state).toByteArray()
+        val payload = PresenceUpdate(state = state, lastSeenVisible = lastSeenVisible).toByteArray()
         sendEphemeralEnvelope(
             relationshipId = relationshipId,
             conversationId = "",
@@ -266,6 +324,8 @@ class PresenceService(
             )
 
             agent.sendEphemeral(deliveryItem, ttlMs)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send ephemeral $messageType: ${e.message}")
         }

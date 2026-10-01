@@ -23,7 +23,8 @@ import kotlinx.coroutines.launch
  */
 class CallViewModel(
     private val callManager: CallManager,
-    private val contactDao: ContactDao
+    private val contactDao: ContactDao,
+    private val featureDao: com.torxone.app.data.dao.FeatureDao? = null
 ) : ViewModel() {
 
     companion object {
@@ -54,6 +55,9 @@ class CallViewModel(
     val uiState: StateFlow<CallUiState> = _uiState.asStateFlow()
 
     init {
+        featureDao?.let { dao -> viewModelScope.launch { dao.observeAliases().collect {
+            callManager.activeCall.value?.let { updateFromSession(it) }
+        } } }
         // Observe CallManager's active call
         viewModelScope.launch {
             callManager.activeCall.collect { session ->
@@ -85,7 +89,7 @@ class CallViewModel(
     private suspend fun updateFromSession(session: CallSession) {
         // Resolve peer display name
         val contacts = contactDao.getByRelationshipId(session.relationshipId)
-        val peerName = contacts?.displayName ?: session.peerIdentityId.take(8)
+        val peerName = contacts?.let { featureDao?.alias(it.contactId)?.alias ?: it.displayName } ?: session.peerIdentityId.take(8)
         val avatarHash = contacts?.avatarHash
 
         _uiState.value = CallUiState(

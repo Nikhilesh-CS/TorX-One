@@ -35,9 +35,17 @@ import com.torxone.app.calls.CallHistoryDao
         BootstrapStateEntity::class,
         RelayPacketEntity::class,
         RelayReceiptEntity::class,
-        PeerTorEndpointEntity::class
+        PeerTorEndpointEntity::class,
+        PeerCapabilitiesEntity::class, ConversationDraftEntity::class, StarredMessageEntity::class,
+        ContactAliasEntity::class, ConversationAppearanceEntity::class, MessageFtsEntity::class,
+        MessageLinkEntity::class, PendingLinkIndexEntity::class,
+        com.torxone.app.privacy.ConversationSecurityPolicy::class,
+        com.torxone.app.privacy.ExpiredMediaTombstone::class,
+        com.torxone.app.privacy.PrivacyFileCleanup::class,
+        com.torxone.app.privacy.PendingMediaFile::class,
+        com.torxone.app.scheduling.ScheduledMessageEntity::class
     ],
-    version = 15,
+    version = 20,
     exportSchema = true
 )
 abstract class TorXDatabase : RoomDatabase() {
@@ -64,6 +72,9 @@ abstract class TorXDatabase : RoomDatabase() {
     abstract fun bootstrapStateDao(): BootstrapStateDao
     abstract fun relayQueueDao(): RelayQueueDao
     abstract fun peerTorEndpointDao(): PeerTorEndpointDao
+    abstract fun featureDao(): FeatureDao
+    abstract fun scheduledMessageDao(): com.torxone.app.scheduling.SchedulingDao
+    abstract fun securityPolicyDao(): com.torxone.app.privacy.SecurityPolicyDao
 
     companion object {
         @Volatile
@@ -218,6 +229,24 @@ abstract class TorXDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_15_16 = object : androidx.room.migration.Migration(15, 16) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) = FeatureSchema.migrate(db)
+        }
+
+        val MIGRATION_16_17 = object : androidx.room.migration.Migration(16, 17) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) = LinkSchema.migrate(db)
+        }
+
+        val MIGRATION_17_18 = object : androidx.room.migration.Migration(17, 18) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) = com.torxone.app.privacy.SecurityPolicySchema.migrate(db)
+        }
+        val MIGRATION_18_19 = object : androidx.room.migration.Migration(18, 19) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) = com.torxone.app.scheduling.SchedulingSchema.migrate(db)
+        }
+        val MIGRATION_19_20 = object : androidx.room.migration.Migration(19, 20) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) = com.torxone.app.privacy.MediaFileSchema.migrate(db)
+        }
+
         fun getInstance(
             context: Context,
             passphraseProvider: DatabasePassphraseProvider
@@ -235,7 +264,13 @@ abstract class TorXDatabase : RoomDatabase() {
                 context.applicationContext,
                 TorXDatabase::class.java,
                 "torxone.db"
-            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
+            ).addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20)
+                .addCallback(object : RoomDatabase.Callback() {
+                    override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        FeatureSchema.installSearchTriggers(db)
+                        LinkSchema.installTriggers(db)
+                    }
+                })
 
             val provider = passphraseProvider
             try {

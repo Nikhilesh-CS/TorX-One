@@ -70,7 +70,9 @@ class IncomingDispatcher(
     private val consolidateDirectChats: suspend () -> Unit = {},
     private val peerTorEndpointDao: com.torxone.app.data.dao.PeerTorEndpointDao? = null,
     private val peerTorEndpoints: com.torxone.app.transport.tor.PeerTorEndpointRepository? = null,
-    private val profileAvatarContext: android.content.Context? = null
+    private val profileAvatarContext: android.content.Context? = null,
+    private val featureDao: com.torxone.app.data.dao.FeatureDao? = null,
+    private val securityPolicyService: com.torxone.app.privacy.SecurityPolicyService? = null
 ) {
     companion object {
         private const val TAG = "IncomingDispatcher"
@@ -385,12 +387,18 @@ class IncomingDispatcher(
                 // Stage 8: Validate secure envelope
                 val now = System.currentTimeMillis()
                 val timestamp = secureEnvelope.timestamp
-                if (timestamp <= 0L || (timestamp < now && now - timestamp > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS) ||
+                val expiredContent = com.torxone.app.privacy.DisappearingPolicy.expired(secureEnvelope.expiresAt, now)
+                val expiredMediaControl = knownExpiredMediaControl(connection, secureEnvelope)
+                if (timestamp <= 0L || (!expiredContent && !expiredMediaControl && timestamp < now && now - timestamp > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS) ||
                     (timestamp > now && timestamp - now > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS)
                 ) {
                     val skew = if (timestamp <= 0L) Long.MAX_VALUE else if (timestamp < now) now - timestamp else timestamp - now
                     throw IllegalStateException("Timestamp skew $skew exceeds allowed ${ProtocolLimits.MAX_TIMESTAMP_SKEW_MS}")
                 }
+                require(secureEnvelope.expiresAt == null || secureEnvelope.messageType in setOf(
+                    MessageType.TEXT, MessageType.IMAGE, MessageType.VIDEO, MessageType.AUDIO, MessageType.FILE, MessageType.VOICE_NOTE,
+                    MessageType.UNKNOWN, MessageType.LOCATION, MessageType.CONTACT, MessageType.STICKER
+                )) { "Expiry is only valid on message content" }
 
                 if (secureEnvelope.recipientBinding.isBlank() || secureEnvelope.recipientBinding != localId) {
                     throw IllegalStateException("Recipient binding mismatch: expected $localId, got ${secureEnvelope.recipientBinding}")
@@ -407,7 +415,8 @@ class IncomingDispatcher(
                 }
 
                 // Stage 8c: Validate directional sequence requirements (read current sequence, validate incoming > current, DO NOT mutate memory or DB yet)
-                requiresSequence = secureEnvelope.messageType.requiresApplicationSequence()
+                requiresSequence = secureEnvelope.messageType.requiresApplicationSequence() ||
+                    (secureEnvelope.messageType == MessageType.UNKNOWN && secureEnvelope.directionSequence > 0)
                 if (requiresSequence) {
                     if (secureEnvelope.directionSequence <= 0) {
                         throw IllegalStateException("Message type ${secureEnvelope.messageType} requires positive directional sequence, got ${secureEnvelope.directionSequence}")
@@ -537,7 +546,15 @@ class IncomingDispatcher(
                             handleProfileUpdate(connection, secureEnvelope)
                         }
                         else -> {
-                            throw IllegalStateException("Unsupported message type ${secureEnvelope.messageType}")
+                            // Commit the authenticated ratchet/deduplication state even when a
+                            // future feature is unavailable. Unknown data never becomes an action.
+                            if (secureEnvelope.conversationId.isNotBlank()) {
+                                requireHandlerSuccess(chatReceiver.receiveTextMessage(connection, secureEnvelope.copy(
+                                    messageType = MessageType.UNKNOWN,
+                                    payload = "This message requires a newer TorX version".toByteArray(),
+                                    replyToMessageId = null
+                                )), "Unsupported message")
+                            }
                         }
                     }
 
@@ -579,6 +596,24 @@ class IncomingDispatcher(
     }
 
     /** Retransmission after a lost ACK must confirm, never initialize or reset the ratchet. */
+    private suspend fun knownExpiredMediaControl(connection: Connection, envelope: SecureEnvelope): Boolean {
+        val security = securityPolicyService ?: return false
+        val codec = com.torxone.app.media.MediaProtocolCodec
+        val mediaId = try { when (envelope.messageType) {
+            MessageType.FILE_PROGRESS -> codec.decodeChunk(envelope.payload).mediaId
+            MessageType.FILE_ACCEPT -> codec.decodeAccept(envelope.payload).mediaId
+            MessageType.FILE_COMPLETE -> codec.decodeComplete(envelope.payload).mediaId
+            MessageType.FILE_RESUME -> codec.decodeResumeRequest(envelope.payload).mediaId
+            MessageType.FILE_CANCEL -> codec.decodeCancel(envelope.payload).mediaId
+            else -> return false
+        } } catch (_: Exception) { return false }
+        val tombstone = security.dao.expiredMedia(mediaId, connection.relationshipId) ?: return false
+        val localConversation = envelope.groupMetadata?.groupId
+            ?: envelope.conversationId.takeIf { it == tombstone.conversationId }
+            ?: contactDao?.getByRelationshipId(connection.relationshipId)?.conversationId
+        return localConversation == tombstone.conversationId
+    }
+
     private suspend fun confirmBootstrapRetry(inviteId: String, opaque: OpaqueTransportEnvelope): Boolean {
         val state = bootstrapStateDao?.getByInviteId(inviteId) ?: return false
         if (state.isInitiator || state.status != com.torxone.app.data.entity.BootstrapStatus.ACTIVE) return false
@@ -655,6 +690,15 @@ class IncomingDispatcher(
     }
 
     private suspend fun handleProfileUpdate(connection: Connection, envelope: SecureEnvelope) {
+        val capabilities = PeerCapabilitiesCodec.decode(envelope.payload)
+        if (capabilities != null) {
+            val previous = featureDao?.capabilities(connection.relationshipId)
+            if (previous == null || previous.updatedAt <= envelope.timestamp) {
+                featureDao?.saveCapabilities(com.torxone.app.data.entity.PeerCapabilitiesEntity(
+                    connection.relationshipId, capabilities.sorted().joinToString(","), envelope.timestamp))
+            }
+            return
+        }
         val update = com.torxone.app.profile.ProfileUpdateCodec.decode(envelope.payload)
         val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: return
         if (update.version > 0 && update.version <= contact.profileUpdatedAt) return

@@ -74,5 +74,8 @@ try:
     ping(args.phone_a, port_a, onion_b)
     ping(args.phone_b, port_b, onion_a)
 except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-    print(f'Tor diagnostic FAILED: {type(error).__name__}')
+    # RuntimeError messages above contain only bounded diagnostic state, never
+    # onion addresses, payloads or credentials. Other errors may embed commands.
+    detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+    print(f'Tor diagnostic FAILED: {detail}')
     raise SystemExit(1)

@@ -26,10 +26,23 @@ jobs:
         working-directory: android
         run: |
           bash ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:securityInventory
+          python3 tools/inventory_apk_native.py --apk app/build/outputs/apk/debug/app-debug.apk --output app/build/reports/security/native-libraries.json
       - name: Verify database migration and deterministic contact selection
         run: |
           python3 android/tools/verify_peer_endpoint_migration.py
           python3 android/tools/verify_profile_migration.py
+          python3 android/tools/verify_feature_foundation.py
+          python3 android/tools/verify_link_migration.py
+          python3 android/tools/verify_privacy_scheduling_migrations.py
+          python3 android/tools/validate_release_evidence.py
+          python3 android/tools/test_release_evidence.py
+          python3 android/tools/test_runtime_dependency_scan.py
+          python3 android/tools/test_signed_candidate.py
+          python3 android/tools/test_media_expiry_queries.py
+          python3 android/tools/validate_release_approval.py
+          python3 android/tools/test_release_approval.py
+          python3 android/tools/test_native_inventory.py
+          python3 android/tools/test_backup_policy.py
           python3 android/tools/verify_contact_selection.py
       - name: Preserve complete unit suite results
         if: always()

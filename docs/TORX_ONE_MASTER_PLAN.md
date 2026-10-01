@@ -1165,13 +1165,13 @@ Phase 17 — Documentation              ✅ (repository documentation; public po
 
 Phase 18 — Security CI                🚧 (pipeline implemented; remote execution/signing setup pending)
 
-Phase 19 — External audit             ⏳
+Phase 19 — External audit             🚧 (review package prepared; independent review/retest pending)
 
-Phase 20 — Beta                       ⏳
+Phase 20 — Beta                       🚧 (supplemental Realme checks passed; paired-device and campaign matrix pending)
 
-Phase 21 — Release Candidate          ⏳
+Phase 21 — Release Candidate          🚧 (local builds, suites and Realme checks passed; audit/beta/signing gates pending)
 
-Phase 22 — TorX One 1.0               ⏳
+Phase 22 — TorX One 1.0               🚧 (release controls/sign-off prepared; actual acceptance gates pending)
 ```
 
 # RIGHT NOW

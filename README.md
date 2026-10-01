@@ -12,6 +12,7 @@ Android messaging prototype with encrypted pairwise sessions, Tor onion transpor
 - [Privacy policy and metadata](docs/PRIVACY.md)
 - [Report a vulnerability](SECURITY.md)
 - [Signing and release gates](docs/RELEASE.md)
+- [1.0 release sign-off](docs/PHASE_22_RELEASE_SIGNOFF.md)
 - [Dependencies and SBOM](docs/DEPENDENCIES.md)
 - [Official roadmap](docs/TORX_ONE_MASTER_PLAN.md)
 

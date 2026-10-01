@@ -24,6 +24,28 @@ class UiInteractionTest {
         compose.waitUntil(10_000) { runCatching { compose.onAllNodes(isRoot()).fetchSemanticsNodes().isNotEmpty() }.getOrDefault(false) }
     }
 
+    @Test fun savedLinkMetadataIsSearchableWithoutMessageBody() {
+        val links = listOf(
+            com.torxone.app.data.entity.MessageLinkEntity("first", "chat", "https://example.com/docs", "example.com", 1),
+            com.torxone.app.data.entity.MessageLinkEntity("second", "chat", "https://openai.com/docs", "openai.com", 2))
+        show { MaterialTheme { SharedMediaScreen(emptyList(), emptyList(), cachedLinks = links, onBack = {}) } }
+        compose.onNodeWithText("Links").performClick()
+        compose.onNodeWithText("Search saved links").performTextInput("openai")
+        compose.onNodeWithText("https://openai.com/docs").assertIsDisplayed()
+        compose.onNodeWithText("https://example.com/docs").assertDoesNotExist()
+    }
+
+    @Test fun chatAppearanceControlsSaveActualLocalSelection() {
+        var saved: com.torxone.app.data.entity.ConversationAppearanceEntity? = null
+        show { MaterialTheme { com.torxone.app.ui.components.ConversationAppearanceDialog(
+            com.torxone.app.data.entity.ConversationAppearanceEntity("chat"), onSave = { saved = it }, onDismiss = {}) } }
+        compose.onNodeWithText("Ocean").performClick()
+        compose.onNodeWithText("Cool").performClick()
+        compose.onNodeWithText("Square").performClick()
+        compose.onNodeWithText("Save").performClick()
+        compose.runOnIdle { assertEquals(com.torxone.app.data.entity.ConversationAppearanceEntity("chat", "OCEAN", "COOL", "SQUARE"), saved) }
+    }
+
     @Test fun incomingMessageFollowsVisibleChatBottom() {
         fun message(index: Int) = MessageUiModel("id-$index", "chat", "peer", "message-$index",
             MessageDirection.INCOMING, DeliveryStatus.DELIVERED, index.toLong())
@@ -32,6 +54,32 @@ class UiInteractionTest {
         compose.onNodeWithText("message-39").assertIsDisplayed()
         compose.runOnIdle { messages.value = messages.value + message(40) }
         compose.onNodeWithText("message-40").assertIsDisplayed()
+    }
+    @Test fun multiSelectStarsBothSelectedMessages() {
+        val messages = (0..2).map { MessageUiModel("id-$it", "chat", "peer", "select-$it",
+            MessageDirection.INCOMING, DeliveryStatus.DELIVERED, it.toLong()) }
+        var selected = emptySet<String>()
+        show { MaterialTheme { ChatScreen("Alice", messages = messages, composerText = "",
+            onSetStarred = { ids, enabled -> if (enabled) selected = ids }) } }
+        compose.onNodeWithText("select-0").performTouchInput { longClick() }
+        compose.onNodeWithText("select-1").performClick()
+        compose.onNodeWithText("2 selected").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Selection actions").performClick()
+        compose.onNodeWithText("Star").performClick()
+        compose.runOnIdle { assertEquals(setOf("id-0", "id-1"), selected) }
+    }
+    @Test fun searchNavigationJumpsToRequestedOlderMessage() {
+        val messages = (0..39).map { MessageUiModel("id-$it", "chat", "peer", "jump-$it",
+            MessageDirection.INCOMING, DeliveryStatus.DELIVERED, it.toLong()) }
+        show { MaterialTheme { ChatScreen("Alice", messages = messages, composerText = "", initialMessageId = "id-3") } }
+        compose.onNodeWithText("jump-3").assertIsDisplayed()
+    }
+    @Test fun mediaBrowserLinksTabShowsStoredMessageUrl() {
+        val message = com.torxone.app.data.entity.MessageEntity("link", "chat", "peer", "TEXT", "See https://example.com/docs",
+            MessageDirection.INCOMING, "DELIVERED")
+        show { MaterialTheme { SharedMediaScreen(emptyList(), listOf(message), onBack = {}) } }
+        compose.onNodeWithText("Links").performClick()
+        compose.onNodeWithText("https://example.com/docs").assertIsDisplayed()
     }
     @Test fun outgoingMessageFollowsBottomWhileReadingOlderMessages() {
         fun message(index: Int, direction: MessageDirection = MessageDirection.INCOMING) = MessageUiModel("id-$index", "chat", "peer", "message-$index", direction, DeliveryStatus.DELIVERED, index.toLong())

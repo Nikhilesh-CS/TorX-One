@@ -35,7 +35,10 @@ class GroupService(
     private val localIdentityIdProvider: suspend () -> String?,
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit,
     private val relationshipSendCoordinator: RelationshipSendCoordinator? = null,
-    private val sessionStore: com.torxone.app.crypto.SessionStore? = null
+    private val sessionStore: com.torxone.app.crypto.SessionStore? = null,
+    private val featureDao: FeatureDao? = null,
+    private val securityPolicyService: com.torxone.app.privacy.SecurityPolicyService? = null,
+    private val canSendText: suspend () -> Boolean = { true }
 ) {
     companion object {
         private const val TAG = "GroupService"
@@ -186,7 +189,9 @@ class GroupService(
     suspend fun sendGroupText(
         groupId: String,
         text: String,
-        replyToMessageId: String? = null
+        replyToMessageId: String? = null,
+        logicalMessageId: String? = null,
+        clearDraft: Boolean = true
     ): MessageEntity {
         require(text.isNotBlank()) { "Group message text cannot be blank" }
         val localIdentityId = localIdentityIdProvider()
@@ -203,9 +208,14 @@ class GroupService(
         val activeMembers = groupMemberDao.getActiveMembers(groupId)
             .filter { it.memberIdentityId != localIdentityId }
 
-        val messageId = UUID.randomUUID().toString()
+        val messageId = logicalMessageId ?: UUID.randomUUID().toString()
+        messageDao.getById(messageId)?.let {
+            require(it.conversationId == groupId && it.senderId == localIdentityId && it.body == text)
+            return it
+        }
         val now = System.currentTimeMillis()
 
+        val expiresAt = securityPolicyService?.expiryForSend(groupId, activeMembers.map { it.relationshipId }, now)
         val messageEntity = MessageEntity(
             logicalMessageId = messageId,
             conversationId = groupId,
@@ -215,7 +225,8 @@ class GroupService(
             direction = MessageDirection.OUTGOING,
             status = if (activeMembers.isEmpty()) DeliveryStatus.DELIVERED.name else DeliveryStatus.QUEUED.name,
             createdAt = now,
-            replyToMessageId = replyToMessageId
+            replyToMessageId = replyToMessageId,
+            expiresAt = expiresAt
         )
 
         // Pre-create per-recipient delivery records
@@ -233,7 +244,9 @@ class GroupService(
 
         // Atomically commit logical message, conversation update, and delivery records
         transactionRunner {
+            check(canSendText()) { "Unlock TorX to send this message" }
             messageDao.upsert(messageEntity)
+            if (clearDraft) featureDao?.deleteDraft(groupId)
             conversationDao.updateLastMessage(
                 conversationId = groupId,
                 messageId = messageId,
@@ -1107,6 +1120,13 @@ class GroupService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
+        val logicalMessage = messageDao.getById(messageId)
+        if (logicalMessage?.expiresAt != null && com.torxone.app.privacy.DisappearingPolicy.expired(logicalMessage.expiresAt, System.currentTimeMillis())) {
+            groupMessageDeliveryDao.upsert(GroupMessageDeliveryEntity(deliveryId, messageId,
+                recipientIdentityId, relationshipId, status = GroupDeliveryStatus.EXPIRED.name))
+            return // No sequence was allocated for this recipient.
+        }
+
         val outboxDeliveryId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
@@ -1121,7 +1141,7 @@ class GroupService(
                     senderIdentity = localIdentityId,
                     recipientBinding = recipientIdentityId,
                     messageType = messageType,
-                    timestamp = now,
+                    timestamp = logicalMessage?.createdAt ?: now,
                     payload = payload,
                     replyToMessageId = replyToMessageId,
                     groupMetadata = GroupEnvelopeMetadata(
@@ -1129,7 +1149,8 @@ class GroupService(
                         groupEpoch = epoch.toInt(),
                         keyVersion = epoch.toInt()
                     ),
-                    directionSequence = seq
+                    directionSequence = seq,
+                    expiresAt = logicalMessage?.expiresAt
                 )
             },
             persistDomain = { seq, _, ciphertext ->

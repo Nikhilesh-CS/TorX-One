@@ -75,13 +75,15 @@ enum class PresenceState {
  */
 data class PresenceUpdate(
     val state: PresenceState,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val lastSeenVisible: Boolean = true
 ) {
     fun toByteArray(): ByteArray {
         val baos = ByteArrayOutputStream()
         val dos = DataOutputStream(baos)
         dos.writeUTF(state.name)
         dos.writeLong(timestamp)
+        dos.writeBoolean(lastSeenVisible)
         dos.flush()
         return baos.toByteArray()
     }
@@ -91,12 +93,12 @@ data class PresenceUpdate(
             val dis = DataInputStream(ByteArrayInputStream(bytes))
             val stateName = dis.readUTF()
             val time = dis.readLong()
-            val state = try {
-                PresenceState.valueOf(stateName)
-            } catch (_: Exception) {
-                PresenceState.OFFLINE
+            val state = PresenceState.valueOf(stateName)
+            val visible = if (dis.available() == 0) true else dis.readUnsignedByte().let {
+                require(it in 0..1) { "Invalid presence privacy flag" }; it == 1
             }
-            return PresenceUpdate(state, time)
+            require(dis.available() == 0) { "Trailing presence fields" }
+            return PresenceUpdate(state, time, visible)
         }
     }
 }

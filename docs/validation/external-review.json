@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "NOT_STARTED",
+  "reviewer": "",
+  "candidate_source": "",
+  "candidate_apk_sha256": "",
+  "penetration_test_complete": false,
+  "covered_surfaces": [],
+  "report_path": "",
+  "report_sha256": "",
+  "independent_signoff": false
+}

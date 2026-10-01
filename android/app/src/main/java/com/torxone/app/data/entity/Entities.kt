@@ -69,6 +69,7 @@ enum class ConversationType {
     tableName = "messages",
     indices = [
         Index("conversation_id", "created_at"),
+        Index("expires_at"),
         Index("logical_message_id", unique = true)
     ],
     foreignKeys = [
@@ -125,7 +126,10 @@ data class MessageEntity(
     val editVersion: Int = 0,
 
     @ColumnInfo(name = "deleted_at")
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+
+    @ColumnInfo(name = "expires_at", defaultValue = "NULL")
+    val expiresAt: Long? = null
 )
 
 enum class MessageDirection {

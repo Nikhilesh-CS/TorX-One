@@ -37,6 +37,7 @@ enum class GroupMemberState {
  * Delivery status for individual group members.
  */
 enum class GroupDeliveryStatus {
+    EXPIRED,
     PENDING,
     QUEUED,
     DELIVERED,

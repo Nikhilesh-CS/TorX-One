@@ -36,6 +36,7 @@ class ReactionHandler(
         }
 
         val conversationId = targetMsg.conversationId
+        if (com.torxone.app.privacy.DisappearingPolicy.expired(targetMsg.expiresAt, System.currentTimeMillis())) return true
         val senderId = envelope.senderIdentity
 
         when (reaction.operation) {

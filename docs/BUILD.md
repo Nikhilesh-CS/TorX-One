@@ -1,6 +1,6 @@
 # Build and verification
 
-Install JDK 17, Android SDK platform 36 and compatible build tools. The wrapper pins Gradle 9.6.0; plugin and dependency versions are in `android/build.gradle.kts` and `android/app/build.gradle.kts`. Do not silently downgrade versions to make CI green. SDK and Maven repositories require network access on first build. Local Tor AAR is in `android/app/libs/`.
+Install JDK 17, Android SDK platform 37.1 and build tools 36.0.0 (the CI configuration). The app targets API 36 and supports API 26 or newer. The wrapper pins Gradle 9.6.0; plugin and dependency versions are in `android/build.gradle.kts` and `android/app/build.gradle.kts`. Do not silently downgrade versions to make CI green. SDK and Maven repositories require network access on first build. The Tor AAR is resolved from the declared `info.guardianproject:tor-android` dependency; the release inventory records its selected version and hash.
 
 Set `JAVA_HOME` and `ANDROID_HOME`, or create untracked `android/local.properties` with `sdk.dir`. From `android/`:
 

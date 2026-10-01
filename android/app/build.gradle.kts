@@ -83,6 +83,12 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+// Both variants export the same Room schema. Concurrent writers can truncate the
+// JSON while the other processor reads it when debug and release share a build.
+tasks.matching { it.name == "kspReleaseKotlin" }.configureEach {
+    mustRunAfter(tasks.matching { it.name == "kspDebugKotlin" })
+}
+
 dependencies {
     // ── Compose BOM ──
     val composeBom = platform("androidx.compose:compose-bom:2026.03.00")
@@ -107,6 +113,7 @@ dependencies {
     val roomVersion = "2.8.5"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
+    implementation("androidx.work:work-runtime-ktx:2.12.0")
     ksp("androidx.room:room-compiler:$roomVersion")
     implementation("net.zetetic:sqlcipher-android:4.10.0@aar")
     implementation("androidx.sqlite:sqlite:2.7.1")

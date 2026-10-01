@@ -25,13 +25,20 @@ data class ConversationListUiState(
 @OptIn(kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ConversationListViewModel(
     private val chatService: ChatService,
-    private val messageDao: MessageDao? = null
+    private val messageDao: MessageDao? = null,
+    private val featureDao: com.torxone.app.data.dao.FeatureDao? = null,
+    private val contactDao: com.torxone.app.data.dao.ContactDao? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ConversationListUiState())
     val uiState: StateFlow<ConversationListUiState> = _uiState.asStateFlow()
 
     private val searchQueryFlow = MutableStateFlow("")
+    private val localNames = combine(featureDao?.observeAliases() ?: flowOf(emptyList()),
+        contactDao?.observeAll() ?: flowOf(emptyList())) { aliases, contacts ->
+        val names = aliases.associate { it.contactId to it.alias }
+        contacts.mapNotNull { contact -> names[contact.contactId]?.let { contact.conversationId to it } }.toMap()
+    }
 
     init {
         // 1. Observe active conversations or search results
@@ -45,7 +52,11 @@ class ConversationListViewModel(
                         chatService.searchConversations(query)
                     }
                 }
-                .map { list -> mapToUiModels(list) }
+                .combine(featureDao?.observeDrafts() ?: flowOf(emptyList())) { list, drafts ->
+                    mapToUiModels(list).map { row -> drafts.find { it.conversationId == row.conversationId && it.text.isNotBlank() }
+                        ?.let { row.copy(preview = "Draft: ${it.text.take(100)}", isLastMessageOutgoing = false, lastMessageStatus = null) } ?: row }
+                }
+                .combine(localNames) { rows, names -> rows.map { row -> names[row.conversationId]?.let { row.copy(title = it) } ?: row } }
                 .collect { uiModels ->
                     _uiState.update { it.copy(conversations = uiModels) }
                 }
@@ -55,6 +66,7 @@ class ConversationListViewModel(
         viewModelScope.launch {
             chatService.observeArchivedConversations()
                 .map { list -> mapToUiModels(list) }
+                .combine(localNames) { rows, names -> rows.map { row -> names[row.conversationId]?.let { row.copy(title = it) } ?: row } }
                 .collect { uiModels ->
                     _uiState.update { it.copy(archivedConversations = uiModels) }
                 }

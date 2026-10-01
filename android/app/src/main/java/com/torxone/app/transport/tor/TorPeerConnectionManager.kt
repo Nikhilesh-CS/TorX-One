@@ -20,14 +20,16 @@ class TorPeerConnectionManager(
     private val socketFactory: (Int) -> Socket = { port ->
         Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
     },
-    private val connectSocket: (Socket, TorRoute) -> Unit = { socket, route ->
-        socket.connect(InetSocketAddress.createUnresolved(route.onionHost, route.port), 120_000)
-    },
+    private val connectSocket: ((Socket, TorRoute) -> Unit)? = null,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val maxPeers: Int = 32,
     private val idleMs: Long = 90_000,
-    private val writeTimeoutMs: Long = 15_000
+    private val writeTimeoutMs: Long = DEFAULT_SOCKET_TIMEOUT_MS,
+    private val connectTimeoutMs: Long = DEFAULT_SOCKET_TIMEOUT_MS
 ) {
+    companion object {
+        const val DEFAULT_SOCKET_TIMEOUT_MS = 120_000L
+    }
     private data class Peer(val route: TorRoute, val socksPort: Int, val returnOnion: String,
                             val socket: Socket, val output: DataOutputStream, var activity: Long)
     private val peers = LinkedHashMap<String, Peer>(16, 0.75f, true)
@@ -39,7 +41,10 @@ class TorPeerConnectionManager(
         Thread(task, "Tor-stream-deadlines").apply { isDaemon = true }
     }
 
-    init { require(maxPeers > 0 && idleMs > 0 && writeTimeoutMs > 0) }
+    init {
+        require(maxPeers > 0 && idleMs > 0 && writeTimeoutMs > 0)
+        require(connectTimeoutMs in 1..Int.MAX_VALUE.toLong())
+    }
 
     suspend fun send(key: String, route: TorRoute, socksPort: Int, returnOnion: String, payload: ByteArray) {
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
@@ -74,7 +79,17 @@ class TorPeerConnectionManager(
             pending.add(socket)
         }
         try {
-            connectSocket(socket, route)
+            val connectDeadline = deadlines.schedule({ runCatching { socket.close() } }, connectTimeoutMs, TimeUnit.MILLISECONDS)
+            try {
+                // Use the same budget for SOCKS negotiation and the close deadline.
+                // A hardcoded shorter socket timeout would defeat the configured budget.
+                val connector = connectSocket
+                if (connector != null) connector(socket, route)
+                else socket.connect(
+                    InetSocketAddress.createUnresolved(route.onionHost, route.port),
+                    connectTimeoutMs.toInt()
+                )
+            } finally { connectDeadline.cancel(false) }
             val output = DataOutputStream(socket.getOutputStream())
             val timeout = deadlines.schedule({ runCatching { socket.close() } }, writeTimeoutMs, TimeUnit.MILLISECONDS)
             try { TorStreamFraming.writeHeader(output, returnOnion); output.flush() }

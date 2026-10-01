@@ -20,6 +20,8 @@ import com.torxone.app.profile.AppSettingsRepository
 import com.torxone.app.protocol.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /**
@@ -50,11 +52,27 @@ class ChatService(
     private val transactionRunner: suspend (suspend () -> Unit) -> Unit = { block ->
         if (database != null) database.withTransaction { block() } else block()
     },
-    private val relationshipSendCoordinator: RelationshipSendCoordinator? = null
+    private val relationshipSendCoordinator: RelationshipSendCoordinator? = null,
+    private val securityPolicyService: com.torxone.app.privacy.SecurityPolicyService? = null,
+    private val canSendText: suspend () -> Boolean = { true }
 ) {
     companion object {
         private const val TAG = "ChatService"
     }
+    private val readLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    private suspend fun consumeUnread(conversationId: String): MessageEntity? =
+        readLocks.computeIfAbsent(conversationId) { Mutex() }.withLock {
+            var latest: MessageEntity? = null
+            transactionRunner {
+                latest = messageDao.getLatestUnreadIncoming(conversationId)
+                if (latest != null) messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, System.currentTimeMillis())
+                conversationDao.updateUnreadCount(conversationId, 0)
+                conversationDao.updateManuallyUnread(conversationId, false)
+            }
+            notificationManager?.cancelForConversation(conversationId)
+            latest
+        }
 
     private val sendCoordinator: RelationshipSendCoordinator by lazy {
         relationshipSendCoordinator ?: RelationshipSendCoordinator(
@@ -76,7 +94,9 @@ class ChatService(
         localIdentityId: String,
         recipientId: String,
         text: String,
-        replyToMessageId: String? = null
+        replyToMessageId: String? = null,
+        logicalMessageId: String? = null,
+        clearDraft: Boolean = true
     ): String {
         require(text.isNotBlank()) { "Message text cannot be blank" }
         if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
@@ -86,9 +106,15 @@ class ChatService(
         val connection = connectionManager.getConnectionByRelationship(relationshipId)
             ?: throw IllegalStateException("No active connection for relationship $relationshipId")
 
-        val messageId = UUID.randomUUID().toString()
+        val messageId = logicalMessageId ?: UUID.randomUUID().toString()
+        messageDao.getById(messageId)?.let {
+            require(it.conversationId == conversationId && it.senderId == localIdentityId && it.body == text)
+            return messageId
+        }
         val deliveryId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
+
+        val expiresAt = securityPolicyService?.expiryForSend(conversationId, listOf(relationshipId), now)
 
         Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)} replyTo=${replyToMessageId?.take(8)}")
 
@@ -106,10 +132,12 @@ class ChatService(
                     timestamp = now,
                     payload = text.toByteArray(Charsets.UTF_8),
                     replyToMessageId = replyToMessageId,
+                    expiresAt = expiresAt,
                     directionSequence = seq
                 )
             },
             persistDomain = { seq, _, ciphertext ->
+                check(canSendText()) { "Unlock TorX to send this message" }
                 val messageEntity = MessageEntity(
                     logicalMessageId = messageId,
                     conversationId = conversationId,
@@ -119,7 +147,8 @@ class ChatService(
                     direction = MessageDirection.OUTGOING,
                     status = DeliveryStatus.QUEUED.name,
                     createdAt = now,
-                    replyToMessageId = replyToMessageId
+                    replyToMessageId = replyToMessageId,
+                    expiresAt = expiresAt
                 )
 
                 val outboxEntity = OutboxEntity(
@@ -140,6 +169,7 @@ class ChatService(
                 )
 
                 messageDao.insertIfAbsent(messageEntity)
+                if (clearDraft) database?.featureDao()?.deleteDraft(conversationId)
                 outboxDao.insert(outboxEntity)
                 conversationDao.updateLastMessage(
                     conversationId = conversationId,
@@ -166,16 +196,7 @@ class ChatService(
         localIdentityId: String,
         recipientId: String
     ) {
-        val now = System.currentTimeMillis()
-
-        // 1. Query latest unread FIRST before marking as read locally
-        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId)
-
-        // 2. Mark incoming messages in local Room database as READ
-        messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
-        conversationDao.updateUnreadCount(conversationId, 0)
-        conversationDao.updateManuallyUnread(conversationId, false)
-        notificationManager?.cancelForConversation(conversationId)
+        val latestUnread = consumeUnread(conversationId)
 
         if (latestUnread == null) return
 
@@ -194,12 +215,7 @@ class ChatService(
      * reset manuallyUnread flag, cancel notifications, and dispatch READ_RECEIPT to peer if direct chat.
      */
     suspend fun markConversationRead(conversationId: String) {
-        val now = System.currentTimeMillis()
-        val latestUnread = messageDao.getLatestUnreadIncoming(conversationId)
-        messageDao.markAllIncomingRead(conversationId, DeliveryStatus.READ.name, now)
-        conversationDao.updateUnreadCount(conversationId, 0)
-        conversationDao.updateManuallyUnread(conversationId, false)
-        notificationManager?.cancelForConversation(conversationId)
+        val latestUnread = consumeUnread(conversationId)
 
         if (latestUnread != null && database != null) {
             val contact = database.contactDao().getByConversationId(conversationId)
@@ -218,7 +234,7 @@ class ChatService(
 
     /**
      * Send an explicit encrypted batch READ_RECEIPT for messages up to upToMessageId.
-     * Note: Control packet does NOT trigger an ACK back.
+     * Best-effort control: retry transport failure, but do not wait for a delivery ACK.
      */
     suspend fun sendReadReceipt(
         conversationId: String,
@@ -270,7 +286,9 @@ class ChatService(
                 ciphertext = ciphertext,
                 queueAuthenticator = connection.sendAuth,
                 status = DeliveryStatus.QUEUED,
-                priority = com.torxone.app.agent.DeliveryPriority.HIGH
+                priority = com.torxone.app.agent.DeliveryPriority.HIGH,
+                expectsAck = false,
+                relationshipId = relationshipId
             )
 
             Log.i(TAG, "[READ RECEIPT] Enqueueing READ up to ${upToMessageId.take(8)} for conv=${conversationId.take(8)}")
@@ -522,6 +540,7 @@ class ChatService(
             Log.w(TAG, "Cannot edit message: not original author")
             return false
         }
+        if (com.torxone.app.privacy.DisappearingPolicy.expired(targetMsg.expiresAt, System.currentTimeMillis())) return false
         if (targetMsg.deletedAt != null) {
             Log.w(TAG, "Cannot edit deleted message")
             return false
@@ -806,6 +825,7 @@ class ChatService(
                 val contact = contactDao?.getByRelationshipId(connection.relationshipId) ?: continue
                 if (contact.remoteIdentityId.isBlank()) continue
                 val recipientId = contact.remoteIdentityId
+                for (profilePayload in listOf(PeerCapabilitiesCodec.encode(displayName, if (aboutVisible) about else ""), payload)) {
                 val envelope = SecureEnvelope(
                     protocolVersion = 1,
                     logicalMessageId = UUID.randomUUID().toString(),
@@ -814,7 +834,7 @@ class ChatService(
                     recipientBinding = recipientId,
                     messageType = MessageType.PROFILE_UPDATE,
                     timestamp = now,
-                    payload = payload,
+                    payload = profilePayload,
                     directionSequence = 0L
                 )
                 sendCoordinator.sendDurableUnsequenced(connection.relationshipId, connection, envelope) { committed, ciphertext ->
@@ -827,6 +847,7 @@ class ChatService(
                         expectsAck = true, relationshipId = connection.relationshipId, nextAttemptAt = now
                     ))
                     Unit
+                }
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

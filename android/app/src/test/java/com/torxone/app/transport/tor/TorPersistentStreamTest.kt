@@ -8,6 +8,53 @@ import java.io.*
 import java.net.Socket
 
 class TorPersistentStreamTest {
+    @Test fun defaultSocketConnectUsesTwoMinuteBudget() = runBlocking {
+        var actualTimeout = 0
+        val socket = object : Socket() {
+            override fun connect(endpoint: java.net.SocketAddress, timeout: Int) {
+                actualTimeout = timeout
+            }
+            override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        }
+        val manager = TorPeerConnectionManager(socketFactory = { socket })
+        try {
+            manager.send("peer", route, 9050, onion, byteArrayOf(1))
+            assertEquals(120_000, actualTimeout)
+            assertEquals(120_000L, TorPeerConnectionManager.DEFAULT_SOCKET_TIMEOUT_MS)
+        } finally { manager.closeAll() }
+    }
+
+    @Test fun configuredConnectBudgetReachesActualSocket() = runBlocking {
+        var actualTimeout = 0
+        val socket = object : Socket() {
+            override fun connect(endpoint: java.net.SocketAddress, timeout: Int) {
+                actualTimeout = timeout
+            }
+            override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        }
+        val manager = TorPeerConnectionManager(socketFactory = { socket }, connectTimeoutMs = 5_000)
+        try {
+            manager.send("peer", route, 9050, onion, byteArrayOf(1))
+            assertEquals(5_000, actualTimeout)
+        } finally { manager.closeAll() }
+    }
+
+    @Test fun stalledConnectHasItsOwnSocketDeadline() = runBlocking {
+        val closed = java.util.concurrent.CountDownLatch(1)
+        val socket = object : Socket() {
+            override fun close() { closed.countDown() }
+            override fun isClosed() = closed.count == 0L
+        }
+        val manager = TorPeerConnectionManager(socketFactory = { socket }, connectTimeoutMs = 20,
+            connectSocket = { _, _ ->
+                assertTrue("Connection socket deadline must fire", closed.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                throw IOException("Synthetic connect deadline")
+            })
+        try {
+            try { manager.send("peer", route, 9050, onion, byteArrayOf(1)); fail("Expected deadline failure") }
+            catch (_: IOException) { assertTrue(socket.isClosed) }
+        } finally { manager.closeAll() }
+    }
     private val onion = "a".repeat(56) + ".onion"
     private val route = TorRoute("b".repeat(56) + ".onion")
     private class MemorySocket : Socket() {

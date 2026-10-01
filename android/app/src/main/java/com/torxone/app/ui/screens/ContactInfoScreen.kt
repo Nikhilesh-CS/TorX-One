@@ -41,6 +41,8 @@ fun ContactInfoScreen(
     onChatDeleted: () -> Unit,
     onOpenMedia: () -> Unit,
     onToggleVerification: ((Boolean) -> Unit)? = null,
+    nickname: String? = null,
+    onSaveNickname: (suspend (String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -48,9 +50,13 @@ fun ContactInfoScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showResetSessionConfirm by remember { mutableStateOf(false) }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
+    var showNicknameDialog by remember { mutableStateOf(false) }
+    var nicknameInput by remember { mutableStateOf("") }
+    var nicknameSaving by remember { mutableStateOf(false) }
+    var nicknameError by remember { mutableStateOf<String?>(null) }
 
     val isMuted = NotificationPolicy.isConversationMuted(conversation?.mutedUntil)
-    val contactName = contact?.displayName ?: conversation?.title ?: "Contact"
+    val contactName = nickname ?: contact?.displayName ?: conversation?.title ?: "Contact"
     val isVerified = contact?.verificationState == "VERIFIED"
     val fingerprint = remember(contact?.signingPublicKey) {
         val pub = contact?.signingPublicKey
@@ -101,6 +107,19 @@ fun ContactInfoScreen(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            if (contact != null && onSaveNickname != null) {
+                ListItem(
+                    headlineContent = { Text("Local nickname") },
+                    supportingContent = { Text(nickname ?: "Choose a name visible only to you") },
+                    trailingContent = { Icon(Icons.Default.Edit, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        nicknameInput = nickname.orEmpty()
+                        nicknameError = null
+                        showNicknameDialog = true
+                    }
+                )
+            }
 
             // Media, Links & Docs Card
             Card(
@@ -220,6 +239,38 @@ fun ContactInfoScreen(
                 )
             }
         }
+    }
+
+    if (showNicknameDialog && onSaveNickname != null) {
+        AlertDialog(
+            onDismissRequest = { if (!nicknameSaving) showNicknameDialog = false },
+            title = { Text("Local nickname") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(value = nicknameInput, onValueChange = { nicknameInput = it.take(60) },
+                        label = { Text("Nickname") }, singleLine = true, enabled = !nicknameSaving)
+                    Text("Only this device uses this name. Leave it empty to use their profile name.")
+                    nicknameError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !nicknameSaving, onClick = {
+                    coroutineScope.launch {
+                        nicknameSaving = true
+                        try {
+                            onSaveNickname(nicknameInput)
+                            showNicknameDialog = false
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            nicknameError = failure.message ?: "Unable to save nickname"
+                        } finally { nicknameSaving = false }
+                    }
+                }) { Text(if (nicknameSaving) "Saving…" else "Save") }
+            },
+            dismissButton = { TextButton(enabled = !nicknameSaving,
+                onClick = { showNicknameDialog = false }) { Text("Cancel") } }
+        )
     }
 
     // Mute Dialog

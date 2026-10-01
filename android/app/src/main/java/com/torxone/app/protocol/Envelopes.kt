@@ -43,7 +43,9 @@ data class SecureEnvelope(
     val expiresAt: Long? = null,
 
     /** Directional sequence number (Phase 7 & 8) — independent for each peer direction */
-    val directionSequence: Long = 0L
+    val directionSequence: Long = 0L,
+    /** Preserved future wire name; never interpret its payload as an existing feature. */
+    val unknownMessageType: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -157,7 +159,8 @@ enum class MessageType {
     QUEUE_ROTATE,
 
     // Presence
-    PRESENCE_UPDATE
+    PRESENCE_UPDATE,
+    UNKNOWN
 }
 
 /**
@@ -211,5 +214,6 @@ fun MessageType.requiresApplicationSequence(): Boolean = when (this) {
     MessageType.PROFILE_UPDATE,
     MessageType.CONNECTION_ROTATE,
     MessageType.QUEUE_ROTATE,
-    MessageType.PRESENCE_UPDATE -> false
+    MessageType.PRESENCE_UPDATE,
+    MessageType.UNKNOWN -> false
 }

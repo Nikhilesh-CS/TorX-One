@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "status": "NOT_APPROVED",
+  "candidate_source": "",
+  "candidate_apk_sha256": "",
+  "certificate_sha256": "",
+  "version_name": "0.1.0",
+  "version_code": 1,
+  "reviewer": "",
+  "reviewed_at_utc": "",
+  "checks": [
+    {"id": "migrations", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "unit_tests", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "android_tests", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "lint", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "optimized_device", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "native_dependencies", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "build_tool_dependencies", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "signing_upgrade", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "store_metadata", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "privacy_claims", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "threat_model", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "accessibility", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""},
+    {"id": "repository_protection", "status": "NOT_RUN", "evidence_path": "", "evidence_sha256": ""}
+  ]
+}

@@ -730,7 +730,10 @@ class EndToEndPipelineTest {
         relationshipId: String,
         conversationId: String,
         msgId: String,
-        text: String
+        text: String,
+        messageType: MessageType = MessageType.TEXT,
+        timestamp: Long = System.currentTimeMillis(),
+        expiresAt: Long? = null
     ) {
         val now = System.currentTimeMillis()
         val seq = sender.connectionManager.allocateSendSequence(relationshipId)
@@ -741,8 +744,10 @@ class EndToEndPipelineTest {
             senderIdentity = sender.identity.identityId,
             recipientBinding = recipient.identity.identityId,
             directionSequence = seq,
-            messageType = MessageType.TEXT,
-            timestamp = now,
+            messageType = messageType,
+            unknownMessageType = if (messageType == MessageType.UNKNOWN) "FUTURE_FEATURE" else null,
+            timestamp = timestamp,
+            expiresAt = expiresAt,
             payload = text.toByteArray(Charsets.UTF_8)
         )
         val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
@@ -772,6 +777,39 @@ class EndToEndPipelineTest {
             status = DeliveryStatus.QUEUED
         )
         sender.agent.enqueue(deliveryItem)
+    }
+
+    @Test
+    fun testUnknownFeatureCommitsOnceAndDoesNotBlockNextMessage() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            alice.fakeTransport.duplicateDelivery = true
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "future-message", "uninterpreted data", MessageType.UNKNOWN)
+            waitFor { bob.messageDao.exists("future-message") && alice.messageDao.getById("future-message")?.status == DeliveryStatus.DELIVERED.name }
+            assertEquals("This message requires a newer TorX version", bob.messageDao.getById("future-message")?.body)
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "after-future", "Normal next message")
+            waitFor { bob.messageDao.exists("after-future") && bob.connectionManager.getConnectionByRelationship("rel-alice-bob")?.recvSequence == 2L }
+            assertEquals(2, bob.messageDao.getMessagesForConversationDesc("conv-1").size)
+            assertEquals("Normal next message", bob.messageDao.getById("after-future")?.body)
+        } finally { alice.stop(); bob.stop() }
+    }
+
+    @Test fun expiredAuthenticatedTextIsTombstonedAckedAndNextSequenceArrives() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            alice.fakeTransport.duplicateDelivery = true
+            val now = System.currentTimeMillis()
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "expired-text", "Do not retain me",
+                timestamp = now - 86_400_000L, expiresAt = now - 1)
+            waitFor { bob.messageDao.exists("expired-text") && alice.messageDao.getById("expired-text")?.status == DeliveryStatus.DELIVERED.name }
+            val expired = bob.messageDao.getById("expired-text")!!
+            assertNull(expired.body)
+            assertNotNull(expired.deletedAt)
+            assertEquals(now - 1, expired.expiresAt)
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "after-expired", "Still works")
+            waitFor { bob.messageDao.exists("after-expired") && bob.connectionManager.getConnectionByRelationship("rel-alice-bob")?.recvSequence == 2L }
+            assertEquals("Still works", bob.messageDao.getById("after-expired")?.body)
+        } finally { alice.stop(); bob.stop() }
     }
 
     @Test

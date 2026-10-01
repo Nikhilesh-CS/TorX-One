@@ -1,0 +1,10 @@
+cohort,device_id,manufacturer,model,api_level,os_build,ram_mb,candidate_apk_sha256
+samsung,,,,,,,
+pixel,,,,,,,
+oneplus,,,,,,,
+xiaomi,,,,,,,
+motorola,,,,,,,
+nothing,,,,,,,
+low_end,,,,,,,
+oldest_supported,,,,,,,
+newest_available,,,,,,,

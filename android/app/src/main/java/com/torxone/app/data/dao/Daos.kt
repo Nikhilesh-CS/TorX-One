@@ -21,7 +21,9 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE conversationId = :id")
     fun observeById(id: String): Flow<ConversationEntity?>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    // REPLACE deletes the parent row and cascades through message/local-state
+    // foreign keys. Profile sync, group renames and pairing must update in place.
+    @Upsert
     suspend fun upsert(conversation: ConversationEntity)
 
     @Upsert
@@ -47,7 +49,7 @@ interface ConversationDao {
         time: Long
     )
 
-    @Query("UPDATE conversations SET last_message_preview = :preview WHERE last_message_id = :messageId")
+    @Query("UPDATE conversations SET last_message_preview = :preview WHERE last_message_id = :messageId AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.logical_message_id = :messageId AND m.expires_at IS NOT NULL AND m.expires_at <= CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))")
     suspend fun updateLastMessagePreviewIfLatest(messageId: String, preview: String?)
 
     @Query("UPDATE conversations SET is_pinned = :isPinned, pinned_at = :pinnedAt WHERE conversationId = :id")
@@ -114,7 +116,7 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE conversation_id = :conversationId AND direction = 'INCOMING' AND status != 'READ' ORDER BY created_at DESC")
     suspend fun getUnreadIncoming(conversationId: String): List<MessageEntity>
 
-    @Query("UPDATE messages SET body = :newBody, edit_version = :editVersion, edited_at = :editedAt WHERE logical_message_id = :messageId")
+    @Query("UPDATE messages SET body = :newBody, edit_version = :editVersion, edited_at = :editedAt WHERE logical_message_id = :messageId AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))")
     suspend fun updateBodyAndEdit(messageId: String, newBody: String, editVersion: Int, editedAt: Long)
 
     @Query("UPDATE messages SET body = null, deleted_at = :deletedAt WHERE logical_message_id = :messageId")

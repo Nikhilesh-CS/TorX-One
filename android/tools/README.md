@@ -1,5 +1,16 @@
 # Independent Tor transport check
 
+## Official master plan: external review and closed beta
+
+`prepare_review_bundle.py` generates a local hashed source overlay and bounded
+test/artifact manifest under `android/build/review/`. Nothing is uploaded.
+`validate_release_evidence.py --init-beta-results` creates the required 180-case
+NOT_RUN ledger without replacing existing results. Its default mode checks
+structure; `--require-complete` fails when audit, device, result or finding gates
+are incomplete. See `docs/PHASE_19_EXTERNAL_SECURITY_REVIEW.md` and
+`docs/PHASE_20_CLOSED_BETA.md`. Human results must be backed by sanitized evidence,
+not inferred from a local build or an onion diagnostic.
+
 Build requirements: JDK 17, Android SDK platform `platforms;android-37.1`, and the
 build tools selected by Gradle. The target SDK remains 36 and minimum SDK remains 26.
 Tor Android is resolved from Guardian Project's Maven repository at version 0.4.9.13.
@@ -103,3 +114,49 @@ Room lookup SQL in all 24 insertion orders. It checks that a healthy active
 connection outranks broken/newer rows and that a current connection generation
 wins before timestamps. Signing identities retain their separate secure lanes;
 QR selection additionally checks the session through SessionCrypto.
+# Supplemental real-device automation
+
+## Release candidate dependency verification
+
+Generate the resolved release inventory with `:app:securityInventory`, then run
+`python android/tools/scan_runtime_dependencies.py`. This sends only public Maven
+coordinates to OSV and writes a dated JSON report. Findings, empty inventories,
+network errors and pagination errors fail the command. Native/build-tool coverage
+remains a separate gate. Run `python android/tools/test_runtime_dependency_scan.py`
+for the response-handling regression suite. See `docs/PHASE_21_RELEASE_CANDIDATE.md`.
+
+`inventory_apk_native.py --apk APK --output JSON` hashes actual packaged shared
+libraries without extraction. It supplies byte identity for native review, not a
+CVE or licensing result. `test_native_inventory.py` exercises bounded ZIP parsing.
+
+The final signed-candidate gate invokes actual `apksigner` and `aapt` binaries,
+rejects debug certificates/debuggable packages, and compares an independently
+trusted certificate. For 1.0 it also requires the audit/beta APK hash and complete
+`release-approval.json` with matching version/certificate. The protected release
+workflow calls it automatically. Tool regressions are `test_signed_candidate.py`
+and `test_release_approval.py`; they use synthetic records, not release approvals.
+
+`test_media_expiry_queries.py` executes the production Room SQL on SQLite;
+`verify_privacy_scheduling_migrations.py` now covers schema 17 → 18 → 19 → 20.
+Device writer/restart/upgrade regressions live in `DisappearingDatabaseTest`.
+`test_backup_policy.py` verifies explicit legacy/cloud/device-transfer exclusions;
+these source checks do not simulate an OEM migration utility.
+
+After installing the matching debug app and Android test APK, run from the repository root:
+
+```powershell
+python -u android/tools/run_device_beta.py --adb C:/Android/sdk/platform-tools/adb.exe --serial DEVICE_SERIAL --network-cycles
+python -u android/tools/probe_tor_listener.py --adb C:/Android/sdk/platform-tools/adb.exe --serial DEVICE_SERIAL
+```
+
+The beta runner checks the installed APK hash, backup flag, component/provider
+access controls, Android instrumentation suite, relaunch, synthetic memory
+callback and actual radio toggles. Original radio states are restored in a
+`finally` block. Keep the phone unlocked; these checks do not clear app data.
+The listener probe discovers this device's local Tor endpoint and uses a bounded
+set of malformed connections through temporary ADB forwarding, then removes
+the forwarding. It does not contact another person's server.
+
+Sanitized JSON results are saved under `android/build/device-beta/`. Use these as
+supplemental engineering evidence: they do not close independent review, paired
+message/call delivery, physical memory pressure or the multi-device beta matrix.
