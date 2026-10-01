@@ -120,7 +120,7 @@ dependencies {
 
     // ── Security / Crypto ──
     implementation("androidx.security:security-crypto:1.1.0")
-    implementation("org.bouncycastle:bcprov-jdk18on:1.85")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
 
     // ── Nearby Connections ──
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
