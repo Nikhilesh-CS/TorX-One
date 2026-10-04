@@ -136,9 +136,10 @@ class TestGroupMessageDeliveryDao : GroupMessageDeliveryDao {
     ) {
         deliveries.values.firstOrNull { it.logicalMessageId == logicalMessageId && it.recipientIdentityId == recipientIdentityId }?.let {
             deliveries[it.deliveryId] = it.copy(
-                status = GroupDeliveryStatus.DELIVERED.name,
-                deliveredAt = deliveredAt,
-                updatedAt = updatedAt
+                status = if (it.status == GroupDeliveryStatus.READ.name || it.readAt != null)
+                    GroupDeliveryStatus.READ.name else GroupDeliveryStatus.DELIVERED.name,
+                deliveredAt = it.deliveredAt ?: deliveredAt,
+                updatedAt = maxOf(it.updatedAt, updatedAt)
             )
         }
     }
@@ -364,6 +365,7 @@ class TestOutboxStore : OutboxStore {
 }
 
 class TestOutboxDao(private val store: TestOutboxStore) : OutboxDao {
+    override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
     override suspend fun getPending(): List<OutboxEntity> = store.getPendingItems().map {
         OutboxEntity(
             deliveryId = it.deliveryId,

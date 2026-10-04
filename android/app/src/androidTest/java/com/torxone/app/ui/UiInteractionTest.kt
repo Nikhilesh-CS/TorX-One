@@ -35,6 +35,32 @@ class UiInteractionTest {
         compose.onNodeWithText("https://example.com/docs").assertDoesNotExist()
     }
 
+    @Test fun attachmentControlsRouteTheExactMediaIdAndFollowPersistedState() {
+        val state = mutableStateOf(com.torxone.app.chat.MediaUiModel("attachment", com.torxone.app.media.MediaType.DOCUMENT,
+            "attachment.bin", "application/octet-stream", 10, status = com.torxone.app.media.MediaStatus.UPLOADING))
+        val actions = mutableListOf<String>()
+        show { MaterialTheme { com.torxone.app.ui.components.MediaTransferControls(state.value,
+            onPause = { actions += "pause:$it" }, onResume = { actions += "resume:$it" },
+            onCancel = { actions += "cancel:$it" }) } }
+        compose.onNodeWithText("Pause transfer").performClick()
+        compose.runOnIdle { state.value = state.value.copy(status = com.torxone.app.media.MediaStatus.PAUSED) }
+        compose.onNodeWithText("Resume transfer").performClick()
+        compose.onNodeWithText("Cancel transfer").performClick()
+        compose.runOnIdle { assertEquals(listOf("pause:attachment", "resume:attachment", "cancel:attachment"), actions) }
+        compose.runOnIdle { state.value = state.value.copy(status = com.torxone.app.media.MediaStatus.DELIVERED) }
+        compose.onNodeWithText("Cancel transfer").assertDoesNotExist()
+        compose.onNodeWithText("Pause transfer").assertDoesNotExist()
+        compose.onNodeWithText("Resume transfer").assertDoesNotExist()
+    }
+
+    @Test fun attachmentControlsWithoutConsumersDoNotOfferDeadButtons() {
+        show { MaterialTheme { com.torxone.app.ui.components.MediaTransferControls(com.torxone.app.chat.MediaUiModel(
+            "attachment", com.torxone.app.media.MediaType.DOCUMENT, "file.bin", "application/octet-stream", 10,
+            status = com.torxone.app.media.MediaStatus.DOWNLOADING)) } }
+        compose.onNodeWithText("Pause transfer").assertDoesNotExist()
+        compose.onNodeWithText("Cancel transfer").assertDoesNotExist()
+    }
+
     @Test fun chatAppearanceControlsSaveActualLocalSelection() {
         var saved: com.torxone.app.data.entity.ConversationAppearanceEntity? = null
         show { MaterialTheme { com.torxone.app.ui.components.ConversationAppearanceDialog(

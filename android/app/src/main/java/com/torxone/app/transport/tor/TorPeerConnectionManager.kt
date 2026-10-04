@@ -1,21 +1,23 @@
 package com.torxone.app.transport.tor
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
+import com.torxone.app.transport.DeliveryDiagnostics
+import com.torxone.app.transport.DeliveryTimeouts
+import com.torxone.app.transport.TransportType
+import com.torxone.app.transport.TransportDestination
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import java.io.DataOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
-/** Bounded persistent SOCKS streams. Protocol ACKs, ordering and retries stay with TorXAgent. */
+/** Exact relationship ownership. ACK/order/replay stay with TorXAgent, never TCP. */
 class TorPeerConnectionManager(
     private val socketFactory: (Int) -> Socket = { port ->
         Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
@@ -23,96 +25,202 @@ class TorPeerConnectionManager(
     private val connectSocket: ((Socket, TorRoute) -> Unit)? = null,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val maxPeers: Int = 32,
-    private val idleMs: Long = 90_000,
-    private val writeTimeoutMs: Long = DEFAULT_SOCKET_TIMEOUT_MS,
-    private val connectTimeoutMs: Long = DEFAULT_SOCKET_TIMEOUT_MS
+    private val idleMs: Long = DeliveryTimeouts.STREAM_IDLE_MS,
+    private val writeTimeoutMs: Long = DeliveryTimeouts.FRAME_WRITE_MS,
+    private val connectTimeoutMs: Long = DeliveryTimeouts.SOCKS_ONION_CONNECT_MS,
+    private val headerTimeoutMs: Long = DeliveryTimeouts.HEADER_WRITE_MS,
+    private val attemptTimeoutMs: Long = DeliveryTimeouts.TOR_ATTEMPT_MS,
+    maxActive: Int = 8,
+    maxCallers: Int = 128,
+    maxCallersPerPeer: Int = 32
 ) {
-    companion object {
-        const val DEFAULT_SOCKET_TIMEOUT_MS = 120_000L
-    }
     private data class Peer(val route: TorRoute, val socksPort: Int, val returnOnion: String,
-                            val socket: Socket, val output: DataOutputStream, var activity: Long)
-    private val peers = LinkedHashMap<String, Peer>(16, 0.75f, true)
-    private val pending = ConcurrentHashMap.newKeySet<Socket>()
-    private val locks = Array(64) { Mutex() }
-    private val guard = Any()
-    private var generation = 0L
-    private val deadlines = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "Tor-stream-deadlines").apply { isDaemon = true }
+                            val socket: Socket, val output: DataOutputStream, var activity: Long,
+                            var idleExpiry: java.util.concurrent.ScheduledFuture<*>? = null)
+    private class PeerLane {
+        val mutex = Mutex()
+        var users = 0 // Includes waiters: never remove a mutex somebody can still acquire.
+        var generation = 0L
+        var connecting: Socket? = null
+        var peer: Peer? = null
     }
+    private val lanes = LinkedHashMap<String, PeerLane>(16, 0.75f, true)
+    private val guard = Any()
+    private val admission = TorOutboundAdmission(maxActive, maxCallers, minOf(maxCallersPerPeer, maxCallers))
+    private val deadlines = java.util.concurrent.ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "Tor-stream-deadlines").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
 
     init {
-        require(maxPeers > 0 && idleMs > 0 && writeTimeoutMs > 0)
+        require(maxPeers > 0 && idleMs > 0 && writeTimeoutMs > 0 && headerTimeoutMs > 0 && attemptTimeoutMs > 0)
         require(connectTimeoutMs in 1..Int.MAX_VALUE.toLong())
     }
 
-    suspend fun send(key: String, route: TorRoute, socksPort: Int, returnOnion: String, payload: ByteArray) {
-        locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
-            withContext(Dispatchers.IO) {
-                currentCoroutineContext().ensureActive()
-                val epoch = synchronized(guard) { generation }
-                val peer = synchronized(guard) {
-                    peers[key]?.takeIf { it.route == route && it.socksPort == socksPort &&
-                        it.returnOnion == returnOnion && !it.socket.isClosed && clock() - it.activity < idleMs }
-                        ?: run { peers.remove(key)?.socket?.close(); null }
-                } ?: connect(key, route, socksPort, returnOnion, epoch)
-                val timeout = deadlines.schedule({ runCatching { peer.socket.close() } }, writeTimeoutMs, TimeUnit.MILLISECONDS)
-                try {
-                    TorStreamFraming.writeFrame(peer.output, payload)
-                    currentCoroutineContext().ensureActive()
-                    synchronized(guard) { peer.activity = clock() }
-                } catch (error: Exception) {
-                    synchronized(guard) { if (peers[key] === peer) peers.remove(key) }
-                    runCatching { peer.socket.close() }
-                    // Do not replay here: the peer may have received this frame. The durable retry
-                    // sends the same delivery ID and the authenticated receiver deduplicates it.
-                    throw error
-                } finally { timeout.cancel(false) }
-            }
-        }
-    }
-
-    private fun connect(key: String, route: TorRoute, socksPort: Int, returnOnion: String, epoch: Long): Peer {
-        val socket = socketFactory(socksPort)
-        synchronized(guard) {
-            if (epoch != generation) { socket.close(); throw IOException("Tor network changed") }
-            pending.add(socket)
+    suspend fun send(key: String, route: TorRoute, socksPort: Int, returnOnion: String, payload: ByteArray,
+                     diagnostic: TransportDestination = TransportDestination("", relationshipId = key)) {
+        val reservation = admission.reserve(key)
+        val retired = mutableListOf<Socket>()
+        val (lane, epoch) = synchronized(guard) {
+            pruneUnused(retired)
+            lanes.getOrPut(key) { PeerLane() }.let { it.users++; it to it.generation }
         }
         try {
-            val connectDeadline = deadlines.schedule({ runCatching { socket.close() } }, connectTimeoutMs, TimeUnit.MILLISECONDS)
-            try {
-                // Use the same budget for SOCKS negotiation and the close deadline.
-                // A hardcoded shorter socket timeout would defeat the configured budget.
-                val connector = connectSocket
-                if (connector != null) connector(socket, route)
-                else socket.connect(
-                    InetSocketAddress.createUnresolved(route.onionHost, route.port),
-                    connectTimeoutMs.toInt()
-                )
-            } finally { connectDeadline.cancel(false) }
-            val output = DataOutputStream(socket.getOutputStream())
-            val timeout = deadlines.schedule({ runCatching { socket.close() } }, writeTimeoutMs, TimeUnit.MILLISECONDS)
-            try { TorStreamFraming.writeHeader(output, returnOnion); output.flush() }
-            finally { timeout.cancel(false) }
-            val peer = Peer(route, socksPort, returnOnion, socket, output, clock())
-            synchronized(guard) {
-                if (epoch != generation) throw IOException("Tor network changed")
-                while (peers.size >= maxPeers) {
-                    val oldest = peers.entries.first()
-                    peers.remove(oldest.key)
-                    runCatching { oldest.value.socket.close() }
+            closeSockets(retired)
+            val completed = withTimeoutOrNull(attemptTimeoutMs) {
+                lane.mutex.withLock {
+                    // A second send for this relationship waits on its own lane, not a global permit.
+                    reservation.activate()
+                    synchronized(guard) {
+                        if (lane.generation != epoch) throw IOException("Tor generation changed")
+                    }
+                    val stale = mutableListOf<Socket>()
+                    val reused = synchronized(guard) {
+                        lane.peer?.takeIf { it.route == route && it.socksPort == socksPort &&
+                            it.returnOnion == returnOnion && !it.socket.isClosed && clock() - it.activity < idleMs }
+                            ?: run { detachLane(lane, stale); null }
+                    }
+                    closeSockets(stale)
+                    if (reused != null) DeliveryDiagnostics.forDestination("stream_reused", diagnostic, TransportType.TOR)
+                    val peer = reused ?: connect(diagnostic, lane, route, socksPort, returnOnion, epoch)
+                    try {
+                        socketOperation(peer.socket, writeTimeoutMs) { TorStreamFraming.writeFrame(peer.output, payload) }
+                        currentCoroutineContext().ensureActive()
+                        synchronized(guard) {
+                            if (lane.generation != epoch || peer.socket.isClosed) throw IOException("Tor generation changed")
+                            peer.activity = clock()
+                            peer.idleExpiry?.cancel(false)
+                            peer.idleExpiry = deadlines.schedule({
+                                val expired = mutableListOf<Socket>()
+                                synchronized(guard) {
+                                    if (lane.peer === peer && lane.users == 0 && clock() - peer.activity >= idleMs) {
+                                        detachLane(lane, expired); pruneUnused(expired)
+                                    }
+                                }
+                                closeSockets(expired)
+                            }, idleMs, TimeUnit.MILLISECONDS)
+                        }
+                        DeliveryDiagnostics.forDestination("tor_write_success", diagnostic, TransportType.TOR)
+                    } catch (error: Exception) {
+                        peer.idleExpiry?.cancel(false)
+                        synchronized(guard) { if (lane.peer === peer) lane.peer = null }
+                        runCatching { peer.socket.close() }
+                        DeliveryDiagnostics.forDestination("tor_write_failed", diagnostic, TransportType.TOR,
+                            state = if (error is CancellationException) "CANCELLED" else "IO_FAILURE")
+                        throw error
+                    }
                 }
-                peers[key] = peer
-            }
-            return peer
-        } catch (error: Exception) { runCatching { socket.close() }; throw error }
-        finally { pending.remove(socket) }
+                true
+            } ?: false
+            if (!completed) throw SocketTimeoutException("Tor attempt deadline")
+        } finally {
+            try {
+                val expired = mutableListOf<Socket>()
+                synchronized(guard) { lane.users--; pruneUnused(expired) }
+                closeSockets(expired)
+            } finally { reservation.close() }
+        }
     }
 
-    fun closeAll() = synchronized(guard) {
-        generation++
-        pending.forEach { runCatching { it.close() } }
-        peers.values.forEach { runCatching { it.socket.close() } }
-        peers.clear()
+    /** Cancellation closes the OWNED socket even during a blocking native connect/write. */
+    private suspend fun socketOperation(socket: Socket, timeoutMs: Long, operation: () -> Unit) {
+        val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
+        val deadline = deadlines.schedule({ timedOut.set(true); runCatching { socket.close() } }, timeoutMs, TimeUnit.MILLISECONDS)
+        try {
+            val finished = withTimeoutOrNull(timeoutMs) {
+                coroutineScope {
+                    suspendCancellableCoroutine<Unit> { continuation ->
+                        continuation.invokeOnCancellation { runCatching { socket.close() } }
+                        launch(Dispatchers.IO) {
+                            try { operation(); continuation.resume(Unit) }
+                            catch (error: Exception) { continuation.resumeWithException(error) }
+                        }
+                    }
+                }
+                true
+            } ?: false
+            if (!finished) throw SocketTimeoutException("Tor operation deadline")
+        } catch (error: IOException) {
+            if (timedOut.get()) throw SocketTimeoutException("Tor operation deadline").apply { initCause(error) }
+            throw error
+        } finally { deadline.cancel(false) }
     }
+
+    private suspend fun connect(diagnostic: TransportDestination, lane: PeerLane, route: TorRoute, socksPort: Int,
+                                returnOnion: String, epoch: Long): Peer {
+        val socket = socketFactory(socksPort)
+        val owned = synchronized(guard) {
+            (lane.generation == epoch).also { if (it) lane.connecting = socket }
+        }
+        if (!owned) { runCatching { socket.close() }; throw IOException("Tor generation changed") }
+        val started = clock()
+        try {
+            socketOperation(socket, connectTimeoutMs) {
+                connectSocket?.invoke(socket, route) ?: socket.connect(
+                    InetSocketAddress.createUnresolved(route.onionHost, route.port), connectTimeoutMs.toInt())
+            }
+            DeliveryDiagnostics.forDestination("tor_connect_success", diagnostic, TransportType.TOR, elapsedMs = clock() - started)
+            val output = DataOutputStream(socket.getOutputStream())
+            socketOperation(socket, headerTimeoutMs) { TorStreamFraming.writeHeader(output, returnOnion); output.flush() }
+            val peer = Peer(route, socksPort, returnOnion, socket, output, clock())
+            synchronized(guard) {
+                if (lane.generation != epoch || socket.isClosed) throw IOException("Tor generation changed")
+                lane.peer = peer
+            }
+            DeliveryDiagnostics.forDestination("stream_created", diagnostic, TransportType.TOR)
+            return peer
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            DeliveryDiagnostics.forDestination(if (error is SocketTimeoutException) "tor_connect_timeout" else "tor_connect_failed",
+                diagnostic, TransportType.TOR, elapsedMs = clock() - started)
+            throw error
+        } finally { synchronized(guard) { if (lane.connecting === socket) lane.connecting = null } }
+    }
+
+    // Transfer ownership under the guard, then close outside it. Even socket close may block.
+    private fun detachLane(lane: PeerLane, retired: MutableList<Socket>) {
+        lane.connecting?.let(retired::add)
+        lane.connecting = null
+        lane.peer?.idleExpiry?.cancel(false)
+        lane.peer?.socket?.let(retired::add)
+        lane.peer = null
+    }
+
+    private fun closeSockets(sockets: List<Socket>) { sockets.forEach { runCatching { it.close() } } }
+
+    private fun pruneUnused(retired: MutableList<Socket>) {
+        val iterator = lanes.entries.iterator()
+        while (iterator.hasNext()) {
+            val lane = iterator.next().value
+            if (lane.users == 0 && (lane.peer == null || lane.peer!!.socket.isClosed || clock() - lane.peer!!.activity >= idleMs)) {
+                detachLane(lane, retired); iterator.remove()
+            }
+        }
+        var retained = lanes.values.count { it.users == 0 && it.peer != null }
+        val oldest = lanes.entries.iterator()
+        while (retained > maxPeers && oldest.hasNext()) {
+            val lane = oldest.next().value
+            if (lane.users == 0) { detachLane(lane, retired); oldest.remove(); retained-- }
+        }
+    }
+
+    fun invalidate(key: String) {
+        val retired = mutableListOf<Socket>()
+        synchronized(guard) {
+            lanes[key]?.let { it.generation++; detachLane(it, retired) }
+            pruneUnused(retired)
+        }
+        closeSockets(retired)
+        DeliveryDiagnostics.event("stream_invalidated", key, transport = TransportType.TOR)
+    }
+
+    fun closeAll() {
+        val retired = mutableListOf<Socket>()
+        val keys = synchronized(guard) {
+            lanes.map { (key, lane) -> lane.generation++; detachLane(lane, retired); key }.also { pruneUnused(retired) }
+        }
+        closeSockets(retired)
+        keys.forEach { DeliveryDiagnostics.event("stream_invalidated", it, transport = TransportType.TOR, state = "GENERATION_CHANGED") }
+    }
+
+    internal fun retainedLaneCount(): Int = synchronized(guard) { lanes.size }
 }

@@ -73,6 +73,7 @@ import kotlin.math.roundToInt
 fun ChatScreen(
     viewModel: com.torxone.app.groups.GroupChatViewModel,
     onBackClick: () -> Unit,
+    modifier: Modifier = Modifier,
     onHeaderClick: () -> Unit = {},
     onForward: ((List<String>) -> Unit)? = null,
     onSearch: (() -> Unit)? = null,
@@ -82,8 +83,7 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -150,6 +150,9 @@ fun ChatScreen(
         onSendVideo = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
         onDownloadMedia = viewModel::downloadMedia,
+        onCancelMediaTransfer = viewModel::cancelMediaTransfer,
+        onPauseMediaTransfer = viewModel::pauseMediaTransfer,
+        onResumeMediaTransfer = viewModel::downloadMedia,
         onStartVoiceRecording = {
             if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
                 viewModel.startVoiceRecording()
@@ -174,9 +177,10 @@ fun ChatScreen(
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
+    onBackClick: () -> Unit,
+    modifier: Modifier = Modifier,
     contactAvatar: String? = null,
     displayName: String? = null,
-    onBackClick: () -> Unit,
     onHeaderClick: () -> Unit = {},
     onStartVoiceCall: (() -> Unit)? = null,
     onStartVideoCall: (() -> Unit)? = null,
@@ -189,8 +193,7 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -299,6 +302,8 @@ fun ChatScreen(
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
         onDownloadMedia = viewModel::downloadMedia,
         onCancelMediaTransfer = viewModel::cancelMediaTransfer,
+        onPauseMediaTransfer = viewModel::pauseMediaTransfer,
+        onResumeMediaTransfer = viewModel::downloadMedia,
         onHeaderClick = onHeaderClick,
         onBackClick = onBackClick,
         onStartVoiceCall = onStartVoiceCall?.let {
@@ -331,9 +336,10 @@ fun ChatScreen(
 @Composable
 fun ChatScreen(
     contactName: String,
-    contactAvatar: String? = null,
     messages: List<MessageUiModel>,
     composerText: String,
+    modifier: Modifier = Modifier,
+    contactAvatar: String? = null,
     presence: PresenceStatus = PresenceStatus.UNKNOWN,
     lastSeenAt: Long? = null,
     isTyping: Boolean = false,
@@ -358,7 +364,9 @@ fun ChatScreen(
     onSendImage: (String, ByteArray, String) -> Unit = { _, _, _ -> },
     onSendVideo: (String, ByteArray, String) -> Unit = { _, _, _ -> },
     onSendDocument: (String, ByteArray, String) -> Unit = { _, _, _ -> },
-    onCancelMediaTransfer: (String) -> Unit = {},
+    onCancelMediaTransfer: ((String) -> Unit)? = null,
+    onPauseMediaTransfer: ((String) -> Unit)? = null,
+    onResumeMediaTransfer: ((String) -> Unit)? = null,
     onDownloadMedia: ((String) -> Unit)? = null,
     onRequestMessageInfo: ((MessageUiModel) -> Unit)? = null,
     onHeaderClick: () -> Unit = {},
@@ -375,8 +383,7 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -718,6 +725,9 @@ fun ChatScreen(
                             onDownloadMedia?.let { download -> { download(media.mediaId) } })
                     },
                     onDownload = onDownloadMedia?.let { download -> { message.media?.let { download(it.mediaId) } } },
+                    onCancelTransfer = onCancelMediaTransfer,
+                    onPauseTransfer = onPauseMediaTransfer,
+                    onResumeTransfer = onResumeMediaTransfer,
                     onQuoteClick = { targetMsgId ->
                         coroutineScope.launch {
                             val targetIndex = messages.indexOfFirst { it.logicalMessageId == targetMsgId }
@@ -998,6 +1008,9 @@ private fun MessageBubble(
     onSelectionClick: (() -> Unit)? = null,
     onMediaClick: (MediaUiModel) -> Unit,
     onDownload: (() -> Unit)?,
+    onCancelTransfer: ((String) -> Unit)?,
+    onPauseTransfer: ((String) -> Unit)?,
+    onResumeTransfer: ((String) -> Unit)?,
     onQuoteClick: (String) -> Unit,
     onToggleReaction: (String) -> Unit
 ) {
@@ -1117,6 +1130,8 @@ private fun MessageBubble(
                                 MediaType.DOCUMENT -> DocumentBubbleView(media, isOutgoing, onDownload)
                                 MediaType.AUDIO -> com.torxone.app.ui.components.AudioPlayback(media, Modifier.fillMaxWidth(), onDownload)
                             }
+                            com.torxone.app.ui.components.MediaTransferControls(media,
+                                onPause = onPauseTransfer, onResume = onResumeTransfer, onCancel = onCancelTransfer)
                             Spacer(modifier = Modifier.height(4.dp))
                         }
 

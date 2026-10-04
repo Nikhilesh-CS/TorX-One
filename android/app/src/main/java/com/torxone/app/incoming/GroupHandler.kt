@@ -82,7 +82,7 @@ class GroupHandler(
             }
             val now = System.currentTimeMillis()
 
-            Log.i(TAG, "[GROUP INVITE] Received invite to ${payload.title} (${payload.groupId.take(8)}) from ${envelope.senderIdentity.take(8)}")
+            Log.i(TAG, "[GROUP INVITE] Received authenticated invitation")
 
             val conversation = ConversationEntity(
                 conversationId = payload.groupId,
@@ -113,7 +113,7 @@ class GroupHandler(
                     val contact = contactsByIdentity[m.identityId]
                     if (m.state == GroupMemberState.ACTIVE &&
                         (contact == null || contact.relationshipId.isBlank())) {
-                        Log.w(TAG, "Rejecting group roster: no pairwise relationship for ${m.identityId.take(8)}")
+                        Log.w(TAG, "Rejecting group roster: no pairwise relationship")
                         return false
                     }
                     if (m.identityId == envelope.senderIdentity &&
@@ -156,7 +156,7 @@ class GroupHandler(
 
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle group create/invite: ${e.message}")
+            Log.e(TAG, "Failed to handle group create/invite")
             false
         }
     }
@@ -174,13 +174,13 @@ class GroupHandler(
             val group = groupDao.getById(payload.groupId) ?: return false
 
             if (payload.memberIdentity.isBlank() || payload.memberIdentity == ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
-                Log.w(TAG, "Rejecting member joined: invalid member identity '${payload.memberIdentity}'")
+                Log.w(TAG, "Rejecting member joined: invalid member identity")
                 return false
             }
 
             // Strict epoch progression: epoch must be current + 1
             if (payload.epoch != group.epoch + 1L) {
-                Log.w(TAG, "Rejecting member joined: non-sequential epoch (current=${group.epoch}, received=${payload.epoch})")
+                Log.w(TAG, "Rejecting member joined: non-sequential epoch")
                 return false
             }
 
@@ -188,18 +188,18 @@ class GroupHandler(
             if (isSelfJoin) {
                 // Self-join: sender MUST match member identity
                 if (envelope.senderIdentity != payload.memberIdentity) {
-                    Log.w(TAG, "Rejecting self-join: sender '${envelope.senderIdentity}' != member '${payload.memberIdentity}'")
+                    Log.w(TAG, "Rejecting self-join: sender != member")
                     return false
                 }
                 val existing = groupMemberDao.getMember(payload.groupId, payload.memberIdentity)
                 if (existing == null || existing.state != GroupMemberState.INVITED.name) {
-                    Log.w(TAG, "Rejecting self-join: member is not invited (state='${existing?.state}')")
+                    Log.w(TAG, "Rejecting self-join: member is not invited")
                     return false
                 }
             } else {
                 // Admin broadcast: sender MUST match actor identity
                 if (envelope.senderIdentity != payload.actorIdentity) {
-                    Log.w(TAG, "Rejecting admin broadcast: sender '${envelope.senderIdentity}' != actor '${payload.actorIdentity}'")
+                    Log.w(TAG, "Rejecting admin broadcast: sender != actor")
                     return false
                 }
                 val isActorOwnerOrAdmin = (group.creatorIdentityId == payload.actorIdentity) || run {
@@ -208,7 +208,7 @@ class GroupHandler(
                         (actor.role == GroupMemberRole.OWNER.name || actor.role == GroupMemberRole.ADMIN.name)
                 }
                 if (!isActorOwnerOrAdmin) {
-                    Log.w(TAG, "Rejecting member joined: actor '${payload.actorIdentity}' is not an active OWNER or ADMIN")
+                    Log.w(TAG, "Rejecting member joined: actor is not an active OWNER or ADMIN")
                     return false
                 }
             }
@@ -217,7 +217,7 @@ class GroupHandler(
 
             val memberContact = contactDao.getByRemoteIdentityId(payload.memberIdentity)
             if (memberContact == null || memberContact.relationshipId.isBlank()) {
-                Log.w(TAG, "Rejecting member joined: no pairwise relationship for ${payload.memberIdentity.take(8)}")
+                Log.w(TAG, "Rejecting member joined: no pairwise relationship")
                 return false
             }
             if (payload.memberIdentity == envelope.senderIdentity &&
@@ -242,10 +242,10 @@ class GroupHandler(
                 groupMemberDao.upsert(memberEntity)
             }
 
-            Log.i(TAG, "[GROUP JOINED] Member ${payload.memberIdentity.take(8)} joined ${payload.groupId.take(8)} at epoch ${payload.epoch}")
+            Log.i(TAG, "[GROUP JOINED] Member join recorded")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle member joined: ${e.message}")
+            Log.e(TAG, "Failed to handle member joined")
             false
         }
     }
@@ -264,13 +264,13 @@ class GroupHandler(
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
             if (payload.actorIdentity != envelope.senderIdentity) {
-                Log.w(TAG, "Rejecting member remove: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                Log.w(TAG, "Rejecting member remove: actorIdentity != envelope sender")
                 return false
             }
 
             // Phase 11: Strict epoch progression (must be current epoch + 1)
             if (payload.newEpoch != group.epoch + 1L) {
-                Log.w(TAG, "Rejecting member remove: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                Log.w(TAG, "Rejecting member remove: non-sequential epoch")
                 return false
             }
 
@@ -287,7 +287,7 @@ class GroupHandler(
 
             if (!isSelfLeave) {
                 if (!isAuthorizedAdmin) {
-                    Log.w(TAG, "Rejecting unauthorized member remove by non-admin ${payload.actorIdentity.take(8)}")
+                    Log.w(TAG, "Rejecting unauthorized member remove by non-admin")
                     return false
                 }
                 // Nobody removes OWNER
@@ -316,10 +316,10 @@ class GroupHandler(
                 )
             }
 
-            Log.i(TAG, "[GROUP REMOVE] Target ${payload.targetIdentity.take(8)} marked $newState by ${payload.actorIdentity.take(8)} at epoch ${payload.newEpoch}")
+            Log.i(TAG, "[GROUP REMOVE] Member removal recorded")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle member remove: ${e.message}")
+            Log.e(TAG, "Failed to handle member remove")
             false
         }
     }
@@ -338,13 +338,13 @@ class GroupHandler(
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
             if (payload.actorIdentity != envelope.senderIdentity) {
-                Log.w(TAG, "Rejecting role change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                Log.w(TAG, "Rejecting role change: actorIdentity != envelope sender")
                 return false
             }
 
             // Phase 11: Strict epoch progression (must be current epoch + 1)
             if (payload.newEpoch != group.epoch + 1L) {
-                Log.w(TAG, "Rejecting role change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                Log.w(TAG, "Rejecting role change: non-sequential epoch")
                 return false
             }
 
@@ -361,10 +361,10 @@ class GroupHandler(
                 groupMemberDao.updateRole(payload.groupId, payload.targetIdentity, payload.newRole.name)
             }
 
-            Log.i(TAG, "[GROUP ROLE] Changed ${payload.targetIdentity.take(8)} to ${payload.newRole} at epoch ${payload.newEpoch}")
+            Log.i(TAG, "[GROUP ROLE] Member role updated")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle role change: ${e.message}")
+            Log.e(TAG, "Failed to handle role change")
             false
         }
     }
@@ -383,13 +383,13 @@ class GroupHandler(
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
             if (payload.actorIdentity != envelope.senderIdentity) {
-                Log.w(TAG, "Rejecting name change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                Log.w(TAG, "Rejecting name change: actorIdentity != envelope sender")
                 return false
             }
 
             // Phase 11: Strict epoch progression (must be current epoch + 1)
             if (payload.newEpoch != group.epoch + 1L) {
-                Log.w(TAG, "Rejecting name change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                Log.w(TAG, "Rejecting name change: non-sequential epoch")
                 return false
             }
 
@@ -409,10 +409,10 @@ class GroupHandler(
                 }
             }
 
-            Log.i(TAG, "[GROUP NAME] Updated title to '${payload.newTitle}' at epoch ${payload.newEpoch}")
+            Log.i(TAG, "[GROUP NAME] Title updated")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle name change: ${e.message}")
+            Log.e(TAG, "Failed to handle name change")
             false
         }
     }
@@ -431,13 +431,13 @@ class GroupHandler(
 
             // Phase 10: Verify actor identity matches authenticated envelope sender identity BEFORE role lookup
             if (payload.actorIdentity != envelope.senderIdentity) {
-                Log.w(TAG, "Rejecting avatar change: actorIdentity '${payload.actorIdentity}' != envelope sender '${envelope.senderIdentity}'")
+                Log.w(TAG, "Rejecting avatar change: actorIdentity != envelope sender")
                 return false
             }
 
             // Phase 11: Strict epoch progression (must be current epoch + 1)
             if (payload.newEpoch != group.epoch + 1L) {
-                Log.w(TAG, "Rejecting avatar change: non-sequential epoch (current=${group.epoch}, received=${payload.newEpoch})")
+                Log.w(TAG, "Rejecting avatar change: non-sequential epoch")
                 return false
             }
 
@@ -457,10 +457,10 @@ class GroupHandler(
                 }
             }
 
-            Log.i(TAG, "[GROUP AVATAR] Updated avatar at epoch ${payload.newEpoch}")
+            Log.i(TAG, "[GROUP AVATAR] Avatar updated")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to handle avatar change: ${e.message}")
+            Log.e(TAG, "Failed to handle avatar change")
             false
         }
     }

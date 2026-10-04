@@ -74,7 +74,7 @@ class CallCoordinator(
 
     override fun onCreateOffer(session: CallSession) {
         scope.launch {
-        Log.d(TAG, "onCreateOffer: callId=${session.callId}")
+        Log.d(TAG, "onCreateOffer")
         if (!prepareMedia(session)) return@launch
         webRtcClient.createOffer { sdp ->
             scope.launch {
@@ -90,7 +90,7 @@ class CallCoordinator(
     }
 
     override fun onIncomingCall(session: CallSession, sdpOffer: String) {
-        Log.d(TAG, "onIncomingCall: callId=${session.callId}")
+        Log.d(TAG, "onIncomingCall")
         remoteOffers[session.callId] = sdpOffer
         scope.launch {
             val contact = contactDao.getByRelationshipId(session.relationshipId)
@@ -101,7 +101,7 @@ class CallCoordinator(
 
     override fun onCreateAnswer(session: CallSession) {
         scope.launch {
-        Log.d(TAG, "onCreateAnswer: callId=${session.callId}")
+        Log.d(TAG, "onCreateAnswer")
         callNotificationManager.cancelIncomingNotification()
         if (!prepareMedia(session)) return@launch
         val sdpOffer = remoteOffers.remove(session.callId)
@@ -112,7 +112,7 @@ class CallCoordinator(
                 }
             }
         } else {
-            Log.e(TAG, "Cannot create answer: missing remote SDP offer for ${session.callId}")
+            Log.e(TAG, "Cannot create answer: missing remote SDP offer")
             scope.launch { callManager.onCallFailed(session.callId, "Remote SDP offer is unavailable") }
             webRtcClient.closePeerConnection(session.callId)
             audioRouteManager.stopCallAudio()
@@ -129,7 +129,7 @@ class CallCoordinator(
     }
 
     override fun onRemoteAnswer(session: CallSession, sdpAnswer: String) {
-        Log.d(TAG, "onRemoteAnswer: callId=${session.callId}")
+        Log.d(TAG, "onRemoteAnswer")
         webRtcClient.setRemoteAnswer(sdpAnswer)
     }
 
@@ -150,7 +150,7 @@ class CallCoordinator(
     }
 
     override fun onCallConnected(session: CallSession) {
-        Log.d(TAG, "onCallConnected: callId=${session.callId}")
+        Log.d(TAG, "onCallConnected")
         callNotificationManager.cancelIncomingNotification()
         val selectedSpeaker = if (session.hasExplicitAudioRouteSelection) {
             session.isSpeakerOn
@@ -166,7 +166,7 @@ class CallCoordinator(
     }
 
     override fun onCallEnded(session: CallSession) {
-        Log.d(TAG, "onCallEnded: callId=${session.callId}")
+        Log.d(TAG, "onCallEnded")
         remoteOffers.remove(session.callId)
         webRtcClient.release()
         audioRouteManager.stopCallAudio()

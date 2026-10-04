@@ -142,6 +142,7 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     // ── ZXing (QR gen/scan) ──
     implementation("com.google.zxing:core:3.5.3")

@@ -22,7 +22,11 @@ sealed class TransportAvailability {
 data class TransportDestination(
     val address: String,
     val hints: Map<String, String> = emptyMap(),
-    val relationshipId: String? = null
+    val relationshipId: String? = null,
+    /** Diagnostics only; these fields never grant route or peer authorization. */
+    val deliveryId: String? = null,
+    val conversationId: String? = null,
+    val applicationSequence: Long? = null
 )
 
 sealed class TransportResult {
@@ -45,4 +49,11 @@ interface Transport {
 /** A transport that can decide whether it owns a destination's explicit route. */
 interface AddressableTransport {
     fun canRoute(destination: TransportDestination): Boolean
+    /** Refresh only authenticated route authority; never infer identity from a transport header. */
+    suspend fun prepareRoute(destination: TransportDestination): Boolean = canRoute(destination)
+}
+
+/** Implementations with persistent/native resources must abort owned IO promptly on cancellation. */
+interface RecoverableTransport {
+    fun invalidate(destination: TransportDestination)
 }

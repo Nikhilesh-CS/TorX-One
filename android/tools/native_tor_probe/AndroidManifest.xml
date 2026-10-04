@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.torxone.app.probe">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="36" />
+    <application android:hasCode="true" android:debuggable="false"
+        android:label="Tor Native Capture" />
+    <instrumentation
+        android:name="com.torxone.app.transport.tor.NativeTorReadinessInstrumentation"
+        android:targetPackage="com.torxone.app"
+        android:functionalTest="false"
+        android:handleProfiling="false" />
+</manifest>

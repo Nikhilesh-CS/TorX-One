@@ -143,7 +143,7 @@ class WebRtcClient(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 val cid = activeCallId ?: return
-                Log.d(TAG, "[ICE] State changed: $state for call=${cid.take(8)}")
+                Log.d(TAG, "[ICE] Connection state changed")
                 scope.launch {
                     when (state) {
                         PeerConnection.IceConnectionState.CONNECTED,
@@ -197,7 +197,7 @@ class WebRtcClient(
             if (channel != null) attachMediaChannel(callId, channel)
         }
 
-        Log.i(TAG, "PeerConnection created; ICE=${if (relayOnly) "RELAY" else "ALL"}")
+        Log.i(TAG, "PeerConnection created")
     }
 
     private fun attachMediaChannel(callId: String, channel: DataChannel) {
@@ -259,7 +259,7 @@ class WebRtcClient(
                 } else if (relayOnly && local != null && remote != null) {
                     scope.launch { callManager.onCallFailed(callId, "Non-relay media path rejected") }
                 } else if (local != null && remote != null) {
-                    Log.i(TAG, "Selected ICE pair: ${local.members["candidateType"]}/${remote.members["candidateType"]}")
+                    Log.i(TAG, "Selected ICE pair")
                 }
             }
             }
@@ -331,7 +331,7 @@ class WebRtcClient(
         synchronized(pendingIceCandidates) {
             val pc = peerConnection
             if (pc != null && isRemoteDescriptionSet) {
-                Log.d(TAG, "[ICE DRAIN] Flushing ${pendingIceCandidates.size} buffered ICE candidates")
+                Log.d(TAG, "[ICE DRAIN] Flushing buffered ICE candidates")
                 for (cand in pendingIceCandidates) {
                     pc.addIceCandidate(cand)
                 }
@@ -356,7 +356,7 @@ class WebRtcClient(
                         callback(sdp.description)
                     }
                     override fun onSetFailure(error: String) {
-                        Log.e(TAG, "setLocalDescription for offer failed: $error")
+                        Log.e(TAG, "setLocalDescription for offer failed")
                         scope.launch {
                             activeCallId?.let { callManager.onCallFailed(it, "Set local offer failed: $error") }
                         }
@@ -366,7 +366,7 @@ class WebRtcClient(
                 }, sdp)
             }
             override fun onCreateFailure(error: String) {
-                Log.e(TAG, "Create offer failed: $error")
+                Log.e(TAG, "Create offer failed")
                 scope.launch {
                     activeCallId?.let { callManager.onCallFailed(it, "Create offer failed: $error") }
                 }
@@ -395,7 +395,7 @@ class WebRtcClient(
                                 callback(sdp.description)
                             }
                             override fun onSetFailure(error: String) {
-                                Log.e(TAG, "setLocalDescription for answer failed: $error")
+                                Log.e(TAG, "setLocalDescription for answer failed")
                                 scope.launch {
                                     activeCallId?.let { callManager.onCallFailed(it, "Set local answer failed: $error") }
                                 }
@@ -405,7 +405,7 @@ class WebRtcClient(
                         }, sdp)
                     }
                     override fun onCreateFailure(error: String) {
-                        Log.e(TAG, "Create answer failed: $error")
+                        Log.e(TAG, "Create answer failed")
                         scope.launch {
                             activeCallId?.let { callManager.onCallFailed(it, "Create answer failed: $error") }
                         }
@@ -415,7 +415,7 @@ class WebRtcClient(
                 }, constraints)
             }
             override fun onSetFailure(error: String) {
-                Log.e(TAG, "Set remote offer failed: $error")
+                Log.e(TAG, "Set remote offer failed")
                 scope.launch {
                     activeCallId?.let { callManager.onCallFailed(it, "Set remote offer failed: $error") }
                 }
@@ -434,7 +434,7 @@ class WebRtcClient(
                 drainPendingIceCandidates()
             }
             override fun onSetFailure(error: String) {
-                Log.e(TAG, "Set remote answer failed: $error")
+                Log.e(TAG, "Set remote answer failed")
                 scope.launch {
                     activeCallId?.let { callManager.onCallFailed(it, "Set remote answer failed: $error") }
                 }
@@ -468,7 +468,7 @@ class WebRtcClient(
 
     fun setMicrophoneEnabled(enabled: Boolean) {
         localAudioTrack?.setEnabled(enabled)
-        Log.d(TAG, "Microphone ${if (enabled) "enabled" else "muted"}")
+        Log.d(TAG, "Microphone setting updated")
     }
 
     fun setCameraEnabled(enabled: Boolean) {
@@ -478,16 +478,16 @@ class WebRtcClient(
         } else {
             try { videoCapturer?.stopCapture() } catch (_: Exception) {}
         }
-        Log.d(TAG, "Camera ${if (enabled) "enabled" else "disabled"}")
+        Log.d(TAG, "Camera setting updated")
     }
 
     fun switchCamera() {
         videoCapturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
             override fun onCameraSwitchDone(isFrontCamera: Boolean) {
-                Log.d(TAG, "Camera switched to ${if (isFrontCamera) "front" else "back"}")
+                Log.d(TAG, "Camera switched")
             }
             override fun onCameraSwitchError(error: String) {
-                Log.e(TAG, "Camera switch failed: $error")
+                Log.e(TAG, "Camera switch failed")
             }
         })
     }
@@ -597,7 +597,7 @@ class WebRtcClient(
     private val noOpSdpObserver = object : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription) {}
         override fun onSetSuccess() {}
-        override fun onCreateFailure(error: String) { Log.e(TAG, "SDP op failed: $error") }
-        override fun onSetFailure(error: String) { Log.e(TAG, "SDP op failed: $error") }
+        override fun onCreateFailure(error: String) { Log.e(TAG, "SDP op failed") }
+        override fun onSetFailure(error: String) { Log.e(TAG, "SDP op failed") }
     }
 }

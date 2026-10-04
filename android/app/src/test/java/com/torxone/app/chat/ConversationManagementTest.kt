@@ -230,6 +230,7 @@ class ConversationManagementTest {
     }
 
     class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
+        override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
         override suspend fun getPending(): List<OutboxEntity> {
             return store.getPendingItems().map {
                 OutboxEntity(
@@ -246,7 +247,9 @@ class ConversationManagementTest {
                     nextAttemptAt = it.nextAttemptAt,
                     createdAt = it.createdAt,
                     updatedAt = it.updatedAt,
-                    expectsAck = it.expectsAck
+                    expectsAck = it.expectsAck,
+                    applicationSequence = it.applicationSequence,
+                    relationshipId = it.relationshipId
                 )
             }
         }
@@ -266,7 +269,9 @@ class ConversationManagementTest {
                 nextAttemptAt = item.nextAttemptAt,
                 createdAt = item.createdAt,
                 updatedAt = item.updatedAt,
-                expectsAck = item.expectsAck
+                expectsAck = item.expectsAck,
+                applicationSequence = item.applicationSequence,
+                relationshipId = item.relationshipId
             ))
         }
 
@@ -387,7 +392,7 @@ class ConversationManagementTest {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                       it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
+                       it.status == DeliveryStatus.TRANSPORT_ACCEPTED || it.status == DeliveryStatus.WAITING_FOR_PEER)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -401,7 +406,7 @@ class ConversationManagementTest {
         }
 
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = DeliveryStatus.RETRY_WAIT, attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
         }
 
         override suspend fun removeByMessageId(logicalMessageId: String) {
@@ -411,6 +416,7 @@ class ConversationManagementTest {
                 insertOrder.remove(key)
             }
         }
+        override suspend fun removeByDeliveryId(deliveryId: String) { items.remove(deliveryId); insertOrder.remove(deliveryId) }
     }
 
     class InMemoryProcessedStore : ProcessedEnvelopeStore {

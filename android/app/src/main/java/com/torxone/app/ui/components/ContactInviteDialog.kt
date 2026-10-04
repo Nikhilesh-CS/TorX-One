@@ -19,6 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -52,8 +55,12 @@ fun ContactInviteDialog(
     }
 
     Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        onDismissRequest = { if (!uiState.addingContact) onDismiss() },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = !uiState.addingContact,
+            dismissOnClickOutside = !uiState.addingContact
+        )
     ) {
         Surface(
             modifier = Modifier
@@ -70,84 +77,44 @@ fun ContactInviteDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 // Verification Confirmation Step (Section 6)
-                if (uiState.pendingInviteValidation != null) {
+                if (uiState.pendingEndpointUpdate != null) {
+                    val pending = uiState.pendingEndpointUpdate!!
+                    Text("Update ${pending.contact.displayName}'s address?", style = MaterialTheme.typography.titleLarge)
+                    Text("This QR points to a different device address. Update it only if this contact just shared the QR with you. An older QR may prevent messages from reaching them.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    uiState.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    if (uiState.updatingEndpoint) CircularProgressIndicator()
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(onClick = viewModel::dismissEndpointUpdate, enabled = !uiState.updatingEndpoint,
+                            modifier = Modifier.weight(1f)) { Text("Keep current") }
+                        Button(onClick = viewModel::confirmEndpointUpdate, enabled = !uiState.updatingEndpoint,
+                            modifier = Modifier.weight(1f)) { Text("Update address") }
+                    }
+                } else if (uiState.pendingInviteValidation != null) {
                     val valid = uiState.pendingInviteValidation!!
-                    Text(
-                        text = "Add Contact",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "Add \"${valid.invite.displayName}\"?",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Verify safety fingerprint before connecting:",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Surface(
-                                color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = valid.fingerprint,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(12.dp)
-                                )
+                    ContactInviteConfirmation(
+                        state = uiState,
+                        onCancel = viewModel::dismissValidation,
+                        onConfirm = {
+                            viewModel.confirmAddContact { convId ->
+                                onDismiss()
+                                onContactAdded(convId, valid.invite.displayName)
                             }
                         }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { viewModel.dismissValidation() },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cancel")
-                        }
-                        Button(
-                            onClick = {
-                                viewModel.confirmAddContact { convId ->
-                                    onDismiss()
-                                    onContactAdded(convId, valid.invite.displayName)
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Accept & Connect")
-                        }
-                    }
+                    )
                 } else {
                     // Tab selector: My Invite vs Enter Invite
                     TabRow(selectedTabIndex = selectedTab) {
                         Tab(
                             selected = selectedTab == 0,
+                            enabled = !uiState.addingContact,
                             onClick = { selectedTab = 0 },
                             text = { Text("My QR") },
                             icon = { Icon(Icons.Default.QrCode, contentDescription = null) }
                         )
                         Tab(
                             selected = selectedTab == 1,
+                            enabled = !uiState.addingContact,
                             onClick = { selectedTab = 1 },
                             text = { Text("Add Peer") },
                             icon = { Icon(Icons.Default.VpnKey, contentDescription = null) }
@@ -225,6 +192,7 @@ fun ContactInviteDialog(
                             // Fallback Enter/Paste Peer Invite
                             OutlinedTextField(
                                 value = pasteInviteText,
+                                enabled = !uiState.addingContact,
                                 onValueChange = { pasteInviteText = it },
                                 label = { Text("Or paste invite link (torx://contact/...)") },
                                 placeholder = { Text("torx://contact/eyJ...") },
@@ -238,7 +206,7 @@ fun ContactInviteDialog(
                                         viewModel.onQrScanned(pasteInviteText.trim())
                                     }
                                 },
-                                enabled = pasteInviteText.isNotBlank(),
+                                enabled = !uiState.addingContact && pasteInviteText.isNotBlank(),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("Validate & Connect")
@@ -256,11 +224,68 @@ fun ContactInviteDialog(
 
                     TextButton(
                         onClick = onDismiss,
+                        enabled = !uiState.addingContact,
                         modifier = Modifier.align(Alignment.End)
                     ) {
                         Text("Close")
                     }
                 }
+            }
+        }
+    }
+}
+
+/** The confirmation stays visible after a failed commit so the error is actionable. */
+@Composable
+internal fun ContactInviteConfirmation(
+    state: ContactsUiState,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val valid = state.pendingInviteValidation ?: return
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text("Add Contact", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Add \"${valid.invite.displayName}\"?", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text("Verify safety fingerprint before connecting:", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()) {
+                    Text(valid.fingerprint, style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center, modifier = Modifier.padding(12.dp))
+                }
+            }
+        }
+        state.error?.let { error ->
+            Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        }
+        if (state.addingContact) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                Text("Connecting securely…", modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = onCancel, enabled = !state.addingContact, modifier = Modifier.weight(1f)) {
+                Text("Cancel")
+            }
+            Button(onClick = onConfirm, enabled = !state.addingContact, modifier = Modifier.weight(1f)) {
+                Text("Accept & Connect")
             }
         }
     }

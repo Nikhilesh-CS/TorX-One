@@ -32,14 +32,14 @@ class GmsNearbyConnectionsAdapter(
     override fun startAdvertising(endpointName: String, serviceId: String, callback: ConnectionLifecycleCallback): Boolean {
         val options = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
         client.startAdvertising(endpointName, serviceId, callback, options)
-            .addOnFailureListener { e -> Log.e(TAG, "startAdvertising failed: ${e.message}") }
+            .addOnFailureListener { e -> Log.e(TAG, "startAdvertising failed") }
         return true
     }
 
     override fun startDiscovery(serviceId: String, callback: EndpointDiscoveryCallback): Boolean {
         val options = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
         client.startDiscovery(serviceId, callback, options)
-            .addOnFailureListener { e -> Log.e(TAG, "startDiscovery failed: ${e.message}") }
+            .addOnFailureListener { e -> Log.e(TAG, "startDiscovery failed") }
         return true
     }
 
@@ -57,19 +57,19 @@ class GmsNearbyConnectionsAdapter(
 
     override fun requestConnection(endpointName: String, endpointId: String, callback: ConnectionLifecycleCallback): Boolean {
         client.requestConnection(endpointName, endpointId, callback)
-            .addOnFailureListener { e -> Log.e(TAG, "requestConnection failed: ${e.message}") }
+            .addOnFailureListener { e -> Log.e(TAG, "requestConnection failed") }
         return true
     }
 
     override fun acceptConnection(endpointId: String, callback: PayloadCallback): Boolean {
         client.acceptConnection(endpointId, callback)
-            .addOnFailureListener { e -> Log.e(TAG, "acceptConnection failed: ${e.message}") }
+            .addOnFailureListener { e -> Log.e(TAG, "acceptConnection failed") }
         return true
     }
 
     override fun rejectConnection(endpointId: String): Boolean {
         client.rejectConnection(endpointId)
-            .addOnFailureListener { e -> Log.e(TAG, "rejectConnection failed: ${e.message}") }
+            .addOnFailureListener { e -> Log.e(TAG, "rejectConnection failed") }
         return true
     }
 

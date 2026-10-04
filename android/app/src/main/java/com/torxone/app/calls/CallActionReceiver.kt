@@ -30,7 +30,7 @@ class CallActionReceiver : BroadcastReceiver() {
 
         when (intent.action) {
             CallNotificationManager.ACTION_ANSWER -> {
-                Log.d(TAG, "Answer action for call=$callId")
+                Log.d(TAG, "Answer action")
                 val activeSession = callManager.activeCall.value
                 val isVideo = activeSession?.type == CallType.VIDEO
                 val audioGranted = com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)
@@ -42,7 +42,7 @@ class CallActionReceiver : BroadcastReceiver() {
                 }
 
                 if (!permissionsGranted) {
-                    Log.w(TAG, "Required permissions not granted (isVideo=$isVideo, audio=$audioGranted, camera=$cameraGranted); opening activity to handle permission flow")
+                    Log.w(TAG, "Call permissions missing; opening permission flow")
                     val callIntent = Intent(context, com.torxone.app.MainActivity::class.java).apply {
                         action = "ACTION_ANSWER_CALL"
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -59,35 +59,35 @@ class CallActionReceiver : BroadcastReceiver() {
                         callManager.acceptCall(callId)
                         app.callNotificationManager.cancelIncomingNotification()
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to accept call: ${e.message}", e)
+                        Log.e(TAG, "Failed to accept call")
                     } finally {
                         pendingResult.finish()
                     }
                 }
             }
             CallNotificationManager.ACTION_DECLINE -> {
-                Log.d(TAG, "Decline action for call=$callId")
+                Log.d(TAG, "Decline action")
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.Main.immediate).launch {
                     try {
                         callManager.declineCall(callId)
                         app.callNotificationManager.cancelAll()
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to decline call: ${e.message}", e)
+                        Log.e(TAG, "Failed to decline call")
                     } finally {
                         pendingResult.finish()
                     }
                 }
             }
             CallNotificationManager.ACTION_HANGUP -> {
-                Log.d(TAG, "Hangup action for call=$callId")
+                Log.d(TAG, "Hangup action")
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.Main.immediate).launch {
                     try {
                         callManager.hangUp(callId)
                         app.callNotificationManager.cancelAll()
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to hang up call: ${e.message}", e)
+                        Log.e(TAG, "Failed to hang up call")
                     } finally {
                         pendingResult.finish()
                     }

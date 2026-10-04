@@ -19,33 +19,30 @@ class DeleteHandler(
         val delete = try {
             MessageDelete.fromByteArray(envelope.payload)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode MessageDelete: ${e.message}")
+            Log.e(TAG, "Failed to decode MessageDelete")
             return false
         }
 
         val targetMsg = messageDao.getById(delete.targetMessageId)
         if (targetMsg == null) {
-            Log.w(TAG, "Delete target ${delete.targetMessageId.take(8)} not found")
+            Log.w(TAG, "Delete target not found")
             return false
         }
         if (targetMsg.conversationId != (envelope.groupMetadata?.groupId ?: envelope.conversationId)) return false
 
         // Rule 1: Only original sender may delete
         if (targetMsg.senderId != envelope.senderIdentity) {
-            Log.w(
-                TAG,
-                "Delete rejected: sender ${envelope.senderIdentity.take(8)} is not original author ${targetMsg.senderId.take(8)}"
-            )
+            Log.w(TAG, "Delete rejected: sender is not original author")
             return false
         }
 
         // Rule 2: If already deleted, idempotent no-op
         if (targetMsg.deletedAt != null) {
-            Log.d(TAG, "Message ${delete.targetMessageId.take(8)} already deleted (idempotent)")
+            Log.d(TAG, "Message already deleted (idempotent)")
             return true
         }
 
-        Log.i(TAG, "[DELETE] Converting msg=${delete.targetMessageId.take(8)} to tombstone")
+        Log.i(TAG, "[DELETE] Converting to tombstone")
 
         messageDao.markDeleted(
             messageId = delete.targetMessageId,

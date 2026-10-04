@@ -125,7 +125,7 @@ class PresenceService(
      * Handle incoming decrypted PRESENCE_UPDATE protocol packet.
      */
     @Synchronized fun onPresenceUpdateReceived(relationshipId: String, update: PresenceUpdate) {
-        Log.d(TAG, "[RX PRESENCE] rel=${relationshipId.take(8)} state=${update.state}")
+        Log.d(TAG, "[RX PRESENCE]")
         val stateFlow = getOrCreateState(relationshipId)
         val receivedAt = System.currentTimeMillis()
         // Do not let a delayed/offline replay or a future peer clock fabricate activity.
@@ -200,7 +200,7 @@ class PresenceService(
      * Handle incoming decrypted TYPING_START protocol packet.
      */
     fun onTypingStartReceived(relationshipId: String) {
-        Log.d(TAG, "[RX TYPING] Peer ${relationshipId.take(8)} started typing")
+        Log.d(TAG, "[RX TYPING] Peer started typing")
         val stateFlow = getOrCreateState(relationshipId)
         val now = System.currentTimeMillis()
         val expiresAt = now + TYPING_SAFETY_TIMEOUT_MS
@@ -217,7 +217,7 @@ class PresenceService(
         cancelTypingSafetyTimer(relationshipId)
         typingTimeoutJobs[relationshipId] = coroutineScope.launch {
             delay(TYPING_SAFETY_TIMEOUT_MS)
-            Log.d(TAG, "[TYPING TIMEOUT] Auto-clearing typing state for $relationshipId")
+            Log.d(TAG, "[TYPING TIMEOUT] Auto-clearing typing state")
             stateFlow.update { it.copy(isTyping = false, typingExpiresAt = null) }
         }
     }
@@ -226,7 +226,7 @@ class PresenceService(
      * Handle incoming decrypted TYPING_STOP protocol packet.
      */
     fun onTypingStopReceived(relationshipId: String) {
-        Log.d(TAG, "[RX TYPING] Peer ${relationshipId.take(8)} stopped typing")
+        Log.d(TAG, "[RX TYPING] Peer stopped typing")
         cancelTypingSafetyTimer(relationshipId)
         val stateFlow = getOrCreateState(relationshipId)
         stateFlow.update { it.copy(isTyping = false, typingExpiresAt = null) }
@@ -243,7 +243,7 @@ class PresenceService(
         val onlineVisible = appSettingsRepository?.onlineVisible?.first() ?: true
         val lastSeenVisible = appSettingsRepository?.lastSeenVisible?.first() ?: true
         if (state == PresenceState.ONLINE && !onlineVisible) {
-            Log.d(TAG, "Online status disabled in settings; suppressing ONLINE update to $relationshipId")
+            Log.d(TAG, "Online status disabled in settings; suppressing ONLINE update")
             return
         }
         val payload = PresenceUpdate(state = state, lastSeenVisible = lastSeenVisible).toByteArray()
@@ -327,7 +327,7 @@ class PresenceService(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to send ephemeral $messageType: ${e.message}")
+            Log.w(TAG, "Failed to send ephemeral")
         }
     }
 }

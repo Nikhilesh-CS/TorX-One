@@ -58,7 +58,7 @@ class AudioRouteManager(context: Context) {
         // Default to earpiece for voice calls
         setRoute(if (isSpeaker) AudioRoute.SPEAKER else AudioRoute.EARPIECE)
 
-        Log.i(TAG, "Call audio started. Route=${if (isSpeaker) "SPEAKER" else "EARPIECE"}")
+        Log.i(TAG, "Call audio started")
     }
 
     /**
@@ -74,7 +74,7 @@ class AudioRouteManager(context: Context) {
             audioManager.isSpeakerphoneOn = previousSpeakerState
         }
         abandonAudioFocus()
-        Log.i(TAG, "Call audio stopped. Mode restored to $previousAudioMode")
+        Log.i(TAG, "Call audio stopped. Mode restored")
     }
 
     /**
@@ -98,9 +98,9 @@ class AudioRouteManager(context: Context) {
             }
             val device = audioManager.availableCommunicationDevices.firstOrNull { it.type in requestedTypes }
             if (device != null && audioManager.setCommunicationDevice(device)) {
-                Log.d(TAG, "Audio communication device set to $route")
+                Log.d(TAG, "Audio communication device set")
             } else {
-                Log.w(TAG, "Requested audio route $route is unavailable")
+                Log.w(TAG, "Requested audio route is unavailable")
             }
             return
         }
@@ -121,7 +121,7 @@ class AudioRouteManager(context: Context) {
                 audioManager.isSpeakerphoneOn = false
             }
         }
-        Log.d(TAG, "Audio route set to $route")
+        Log.d(TAG, "Audio route set")
     }
 
     fun getCurrentRoute(): AudioRoute {
@@ -174,7 +174,7 @@ class AudioRouteManager(context: Context) {
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_LOSS,
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                        Log.w(TAG, "Audio focus lost: $focusChange")
+                        Log.w(TAG, "Audio focus lost")
                     }
                     AudioManager.AUDIOFOCUS_GAIN -> {
                         Log.d(TAG, "Audio focus gained")
@@ -185,7 +185,7 @@ class AudioRouteManager(context: Context) {
 
         val result = audioManager.requestAudioFocus(focusRequest!!)
         hasAudioFocus = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-        Log.d(TAG, "Audio focus request result: $result")
+        Log.d(TAG, "Audio focus request result")
     }
 
     private fun abandonAudioFocus() {

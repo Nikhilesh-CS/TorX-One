@@ -98,7 +98,7 @@ class NearbyTransport(
             scope.launch {
                 repo.autoConnectNearby.collect { enabled ->
                     autoConnectEnabled = enabled
-                    Log.d(TAG, "autoConnectNearby setting updated: $enabled")
+                    Log.d(TAG, "autoConnectNearby setting updated")
                 }
             }
         }
@@ -109,7 +109,7 @@ class NearbyTransport(
 
     fun bindQueueToEndpoint(queueAddress: String, endpointId: String) {
         directRouteTable.bindQueue(queueAddress, endpointId)
-        Log.d(TAG, "[ROUTING] Bound queue ${queueAddress.take(8)} -> endpoint $endpointId")
+        Log.d(TAG, "[ROUTING] Queue endpoint bound")
     }
 
     val payloadCallback = object : PayloadCallback() {
@@ -117,7 +117,7 @@ class NearbyTransport(
             if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
             if (bytes.size > MAX_DIRECT_FRAME_SIZE) {
-                Log.w(TAG, "[RX REJECT] Received frame exceeding MAX_DIRECT_FRAME_SIZE: ${bytes.size} bytes")
+                Log.w(TAG, "[RX REJECT] Frame exceeds size limit")
                 return
             }
 
@@ -126,12 +126,12 @@ class NearbyTransport(
             val frame = try {
                 NearbyWireFrame.decode(bytes)
             } catch (e: Exception) {
-                Log.w(TAG, "[RX REJECT] Malformed wire frame from $endpointId: ${e.message}")
+                Log.w(TAG, "[RX REJECT] Malformed wire frame")
                 return
             }
             when (frame) {
                 is NearbyWireFrame.Data -> {
-                    Log.d(TAG, "[RX DATA] Received ${frame.payload.size} data bytes from endpoint $endpointId")
+                    Log.d(TAG, "[RX DATA] Received data bytes from endpoint")
                     val channel = inboundChannels.computeIfAbsent(endpointId) {
                         Channel<ByteArray>(capacity = 64).also { inbound ->
                             inboundJobs[endpointId] = scope.launch {
@@ -149,7 +149,7 @@ class NearbyTransport(
                         }
                     }
                     if (channel.trySend(frame.payload).isFailure) {
-                        Log.w(TAG, "[RX BACKPRESSURE] Inbound queue saturated for $endpointId; disconnecting to preserve wire order")
+                        Log.w(TAG, "[RX BACKPRESSURE] Queue saturated; disconnecting to preserve wire order")
                         connectionsAdapter.disconnectFromEndpoint(endpointId)
                         cleanupEndpoint(endpointId)
                     }
@@ -167,7 +167,7 @@ class NearbyTransport(
                     sendControlMessage(endpointId, NearbyWireFrame.Control.Pong)
                 }
                 is NearbyWireFrame.Control.Pong -> {
-                    Log.d(TAG, "[HEARTBEAT] Received PONG from endpoint $endpointId")
+                    Log.d(TAG, "[HEARTBEAT] Received PONG from endpoint")
                 }
             }
         }
@@ -176,14 +176,14 @@ class NearbyTransport(
             val deferred = pendingTransfers[update.payloadId] ?: return
             when (update.status) {
                 PayloadTransferUpdate.Status.SUCCESS -> {
-                    Log.i(TAG, "[TX COMPLETE] Payload ${update.payloadId} transferred to $endpointId")
+                    Log.i(TAG, "[TX COMPLETE] Payload transferred")
                     deferred.complete(TransportResult.Accepted(TransportType.NEARBY))
                     pendingTransfers.remove(update.payloadId)
                     payloadIdToEndpoint.remove(update.payloadId)
                 }
                 PayloadTransferUpdate.Status.FAILURE,
                 PayloadTransferUpdate.Status.CANCELED -> {
-                    Log.w(TAG, "[TX FAIL] Payload ${update.payloadId} failed with status=${update.status}")
+                    Log.w(TAG, "[TX FAIL] Payload failed")
                     deferred.complete(TransportResult.Failed(TransportType.NEARBY, "Transfer failed with status ${update.status}"))
                     pendingTransfers.remove(update.payloadId)
                     payloadIdToEndpoint.remove(update.payloadId)
@@ -244,7 +244,7 @@ class NearbyTransport(
     fun bindInviteEndpoint(inviteId: String, endpointId: String) {
         val queueAddress = "invite-$inviteId"
         directRouteTable.bindQueue(queueAddress, endpointId)
-        Log.i(TAG, "[BOOTSTRAP ROUTE] Explicitly bound $queueAddress -> endpoint $endpointId")
+        Log.i(TAG, "[BOOTSTRAP ROUTE] Queue endpoint explicitly bound")
     }
 
     fun computeRelHint(relationshipId: String): String {
@@ -285,18 +285,18 @@ class NearbyTransport(
     val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
             if (!autoConnectEnabled) {
-                Log.w(TAG, "autoConnectNearby disabled; rejecting incoming connection from $endpointId")
+                Log.w(TAG, "autoConnectNearby disabled; rejecting incoming connection")
                 connectionsAdapter.rejectConnection(endpointId)
                 return
             }
-            Log.d(TAG, "Connection initiated from $endpointId (${connectionInfo.endpointName}), accepting")
+            Log.d(TAG, "Connection initiated; accepting")
             _healthState.value = TransportHealthState.CONNECTING
             connectionsAdapter.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
             if (resolution.status.isSuccess) {
-                Log.i(TAG, "Connected to Nearby endpoint: $endpointId, beginning auth handshake")
+                Log.i(TAG, "Nearby connected; beginning authentication")
                 directRouteTable.registerEndpoint(endpointId)
                 endpointHandshakeStates[endpointId] = EndpointHandshakeState.CONNECTED
                 _healthState.value = TransportHealthState.AUTHENTICATING
@@ -315,13 +315,13 @@ class NearbyTransport(
                 sendControlMessage(endpointId, hello)
                 updateAvailability()
             } else {
-                Log.w(TAG, "Connection failed to endpoint: $endpointId (${resolution.status.statusMessage})")
+                Log.w(TAG, "Connection failed to endpoint")
                 cleanupEndpoint(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            Log.i(TAG, "Disconnected from Nearby endpoint: $endpointId")
+            Log.i(TAG, "Disconnected from Nearby endpoint")
             cleanupEndpoint(endpointId)
         }
     }
@@ -329,10 +329,10 @@ class NearbyTransport(
     val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val remoteName = info.endpointName
-            Log.d(TAG, "Discovered endpoint $endpointId ($remoteName)")
+            Log.d(TAG, "Discovered endpoint")
 
             if (!autoConnectEnabled) {
-                Log.d(TAG, "autoConnectNearby is disabled in settings; suppressing auto connection to $endpointId")
+                Log.d(TAG, "autoConnectNearby is disabled in settings; suppressing auto connection")
                 return
             }
 
@@ -341,10 +341,10 @@ class NearbyTransport(
             val remoteTieBreaker = remoteName.removePrefix("TorX_").toLongOrNull(16)
             if (remoteTieBreaker != null) {
                 if (localTieBreaker > remoteTieBreaker) {
-                    Log.i(TAG, "[ARBITRATION] Local ($localTieBreaker) > Remote ($remoteTieBreaker): requesting connection to $endpointId")
+                    Log.i(TAG, "[ARBITRATION] Local > Remote : requesting connection")
                     connectionsAdapter.requestConnection(localEndpointName, endpointId, connectionLifecycleCallback)
                 } else {
-                    Log.i(TAG, "[ARBITRATION] Local ($localTieBreaker) <= Remote ($remoteTieBreaker): waiting for remote peer to request")
+                    Log.i(TAG, "[ARBITRATION] Local <= Remote : waiting for remote peer to request")
                 }
             } else {
                 // Peer using non-standard naming format: request connection
@@ -353,16 +353,16 @@ class NearbyTransport(
         }
 
         override fun onEndpointLost(endpointId: String) {
-            Log.d(TAG, "Lost Nearby endpoint: $endpointId")
+            Log.d(TAG, "Lost Nearby endpoint")
         }
     }
 
     private fun handleHelloReceived(endpointId: String, hello: NearbyWireFrame.Control.Hello) {
-        Log.d(TAG, "[HANDSHAKE] Received HELLO from $endpointId (v=${hello.protocolVersion}, maxFrame=${hello.maxFrameSize})")
+        Log.d(TAG, "[HANDSHAKE] Received HELLO")
         if (hello.protocolVersion != NEARBY_PROTOCOL_VERSION || hello.challenge.size != 16 ||
             hello.maxFrameSize !in 1..MAX_DIRECT_FRAME_SIZE
         ) {
-            Log.w(TAG, "[HANDSHAKE REJECT] Unsupported or invalid HELLO from $endpointId")
+            Log.w(TAG, "[HANDSHAKE REJECT] Unsupported or invalid HELLO")
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
             return
@@ -432,7 +432,7 @@ class NearbyTransport(
     private fun handleAuthProofReceived(endpointId: String, proofMsg: NearbyWireFrame.Control.AuthProof) {
         val challenge = localChallenges[endpointId]
         if (challenge == null) {
-            Log.w(TAG, "[AUTH FAIL] No local challenge found for endpoint $endpointId")
+            Log.w(TAG, "[AUTH FAIL] No local challenge found for endpoint")
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
             return
@@ -440,7 +440,7 @@ class NearbyTransport(
 
         val conn = connectionManager?.getConnectionByRelationship(proofMsg.relationshipId)
         if (conn == null || conn.sendQueueId.isBlank() || conn.recvQueueId.isBlank()) {
-            Log.w(TAG, "[AUTH] Unknown or invalid relationship ${proofMsg.relationshipId.take(8)} from $endpointId")
+            Log.w(TAG, "[AUTH] Unknown or invalid relationship")
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
             return
@@ -450,7 +450,7 @@ class NearbyTransport(
         val expectedProof = IdentityCrypto.hmacSha256(conn.recvAuth, proofData)
 
         if (MessageDigest.isEqual(expectedProof, proofMsg.proof)) {
-            Log.i(TAG, "[AUTH SUCCESS] Verified relationship ${conn.relationshipId.take(8)} with endpoint $endpointId")
+            Log.i(TAG, "[AUTH SUCCESS] Verified relationship with endpoint")
             directRouteTable.bindRoute(
                 relationshipId = conn.relationshipId,
                 endpointId = endpointId,
@@ -464,9 +464,9 @@ class NearbyTransport(
             updateAvailability()
 
             // Reconnect recovery: trigger immediate retry so all queued messages flush
-            agent?.triggerImmediateRetry()
+            agent?.triggerImmediateRetry(relationshipId = conn.relationshipId)
         } else {
-            Log.e(TAG, "[AUTH REJECT] Invalid capability proof for relationship ${conn.relationshipId.take(8)} from $endpointId")
+            Log.e(TAG, "[AUTH REJECT] Invalid capability proof for relationship")
             // Disconnect peer upon cryptographic authentication failure (M25)
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
@@ -477,7 +477,7 @@ class NearbyTransport(
         val expectedState = endpointHandshakeStates[endpointId]
         val expectedRel = endpointExpectedAuthOk[endpointId]
         if (expectedState != EndpointHandshakeState.AUTH_OK_EXPECTED || expectedRel != authOk.relationshipId) {
-            Log.w(TAG, "[AUTH OK REJECT] Unexpected AUTH_OK from $endpointId for relationship ${authOk.relationshipId.take(8)} (state=$expectedState, expectedRel=$expectedRel)")
+            Log.w(TAG, "[AUTH OK REJECT] Unexpected authenticated route confirmation")
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
             return
@@ -485,13 +485,13 @@ class NearbyTransport(
 
         val conn = connectionManager?.getConnectionByRelationship(authOk.relationshipId)
         if (conn == null || conn.sendQueueId.isBlank() || conn.recvQueueId.isBlank()) {
-            Log.w(TAG, "[AUTH OK REJECT] Missing or invalid connection for relationship ${authOk.relationshipId}")
+            Log.w(TAG, "[AUTH OK REJECT] Missing or invalid connection for relationship")
             connectionsAdapter.disconnectFromEndpoint(endpointId)
             cleanupEndpoint(endpointId)
             return
         }
 
-        Log.i(TAG, "[AUTH OK] Peer confirmed route for relationship ${authOk.relationshipId.take(8)}")
+        Log.i(TAG, "[AUTH OK] Peer confirmed route for relationship")
         directRouteTable.bindRoute(
             relationshipId = authOk.relationshipId,
             endpointId = endpointId,
@@ -504,14 +504,14 @@ class NearbyTransport(
         updateAvailability()
 
         // Reconnect recovery: trigger immediate retry
-        agent?.triggerImmediateRetry()
+        agent?.triggerImmediateRetry(relationshipId = conn.relationshipId)
     }
 
     private fun sendControlMessage(endpointId: String, msg: NearbyWireFrame.Control) {
         val encoded = msg.encode()
         val payload = Payload.fromBytes(encoded)
         connectionsAdapter.sendPayload(endpointId, payload) { e ->
-            Log.e(TAG, "Failed to send control message to $endpointId: ${e.message}")
+            Log.e(TAG, "Failed to send control message")
         }
     }
 
@@ -545,7 +545,7 @@ class NearbyTransport(
 
     fun start() {
         if (!started.compareAndSet(false, true)) return
-        Log.i(TAG, "Starting Nearby advertising and discovery (tieBreaker=${localTieBreaker.toString(16)})")
+        Log.i(TAG, "Starting Nearby advertising and discovery")
         _healthState.value = TransportHealthState.DISCOVERING
         connectionsAdapter.startAdvertising(localEndpointName, SERVICE_ID, connectionLifecycleCallback)
         connectionsAdapter.startDiscovery(SERVICE_ID, endpointDiscoveryCallback)
@@ -585,11 +585,11 @@ class NearbyTransport(
                     val idleMs = now - lastSeen
 
                     if (idleMs > STALE_DISCONNECT_THRESHOLD_MS) {
-                        Log.w(TAG, "[STALE] Endpoint $endpointId silent for ${idleMs}ms, disconnecting")
+                        Log.w(TAG, "[STALE] Endpoint inactive; disconnecting")
                         connectionsAdapter.disconnectFromEndpoint(endpointId)
                         cleanupEndpoint(endpointId)
                     } else if (idleMs > STALE_PING_THRESHOLD_MS) {
-                        Log.d(TAG, "[HEARTBEAT] Pinging idle endpoint $endpointId")
+                        Log.d(TAG, "[HEARTBEAT] Pinging idle endpoint")
                         sendControlMessage(endpointId, NearbyWireFrame.Control.Ping)
                     }
                 }
@@ -652,7 +652,7 @@ class NearbyTransport(
 
         try {
             connectionsAdapter.sendPayload(targetEndpoint, nearbyPayload) { e ->
-                Log.e(TAG, "sendPayload call failed: ${e.message}")
+                Log.e(TAG, "sendPayload call failed")
                 deferred.complete(TransportResult.Failed(type, e.message ?: "sendPayload failed"))
                 pendingTransfers.remove(nearbyPayload.id)
                 payloadIdToEndpoint.remove(nearbyPayload.id)
@@ -669,6 +669,7 @@ class NearbyTransport(
         } catch (e: Exception) {
             pendingTransfers.remove(nearbyPayload.id)
             payloadIdToEndpoint.remove(nearbyPayload.id)
+            if (e is kotlinx.coroutines.CancellationException) throw e
             return TransportResult.Failed(type, e.message ?: "Send exception")
         } finally {
             semaphore.release()

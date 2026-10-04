@@ -6,8 +6,6 @@ import com.torxone.app.connection.Connection
 import com.torxone.app.data.dao.ContactDao
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /** Separate silent WebRTC lane. Voice/video calls retain their own manager and resources. */
 class FileRtcClient(
@@ -24,7 +22,9 @@ class FileRtcClient(
     val manager = CallManager(signaling, scope = scope, localIdentityIdProvider = localIdentity)
     val handler = CallHandler(manager, contacts, authorizeDataOffer = authorizeOffer)
     private val rtc = WebRtcClient(context, manager)
-    private val mutex = Mutex()
+    private val sendGate = FileRtcSendGate()
+    private val connectionDeadline = FileRtcConnectionDeadline(manager, scope)
+    private var prepareJob: Job? = null
     private val retryAfter = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private var idleJob: Job? = null
     @Volatile private var lastActivity = 0L
@@ -46,7 +46,13 @@ class FileRtcClient(
                     return
                 }
                 prepare(session) {
-                    rtc.createAnswer(sdpOffer) { sdp -> scope.launch { manager.onLocalAnswerReady(session.callId, sdp) } }
+                    rtc.createAnswer(sdpOffer) { sdp ->
+                        scope.launch {
+                            val active = manager.activeCall.value
+                            if (active?.callId == session.callId && active.state == CallState.INCOMING_RINGING)
+                                manager.onLocalAnswerReady(session.callId, sdp)
+                        }
+                    }
                 }
             }
             override fun onCreateAnswer(session: CallSession) {}
@@ -54,8 +60,17 @@ class FileRtcClient(
             override fun onRemoteIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
                 rtc.addRemoteIceCandidate(sdpMid, sdpMLineIndex, candidate)
             }
-            override fun onCallConnected(session: CallSession) { startIdleWatch(session.callId) }
-            override fun onCallEnded(session: CallSession) { idleJob?.cancel(); rtc.release() }
+            override fun onCallConnected(session: CallSession) {
+                connectionDeadline.cancel()
+                startIdleWatch(session.callId)
+            }
+            override fun onCallEnded(session: CallSession) {
+                connectionDeadline.cancel()
+                prepareJob?.cancel()
+                prepareJob = null
+                idleJob?.cancel()
+                rtc.release()
+            }
             override fun onRestartRequested(session: CallSession) {
                 rtc.createOffer(iceRestart = true) { sdp -> scope.launch { manager.onLocalRestartOfferReady(session.callId, sdp) } }
             }
@@ -70,17 +85,22 @@ class FileRtcClient(
     }
 
     private fun prepare(session: CallSession, action: () -> Unit) {
-        scope.launch {
-        try {
-            val relayOnly = relayOnlyProvider()
-            if (manager.activeCall.value?.callId != session.callId) return@launch
-            rtc.initialize()
-            rtc.createPeerConnection(session.callId, relayOnly)
-            action()
-        } catch (error: Exception) {
-            if (error is CancellationException) throw error
-            manager.onCallFailed(session.callId, "File connection is unavailable; using Tor")
-        }
+        connectionDeadline.start(session.callId)
+        prepareJob?.cancel()
+        prepareJob = scope.launch {
+            try {
+                val relayOnly = relayOnlyProvider()
+                val active = manager.activeCall.value
+                if (active?.callId != session.callId || active.state !in setOf(
+                        CallState.OUTGOING_PREPARING, CallState.INCOMING_RINGING)) return@launch
+                rtc.initialize()
+                rtc.createPeerConnection(session.callId, relayOnly)
+                action()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                prepareJob = null
+                manager.onCallFailed(session.callId, "File connection is unavailable; using Tor")
+            }
         }
     }
 
@@ -99,20 +119,20 @@ class FileRtcClient(
         }
     }
 
-    suspend fun send(queue: String, frame: ByteArray): Boolean = mutex.withLock {
-        if (relayOnlyProvider() && com.torxone.app.BuildConfig.TORX_TURN_URLS.isBlank()) return@withLock false
-        val connection = connectionForQueue(queue) ?: return@withLock false
+    suspend fun send(queue: String, frame: ByteArray): Boolean = sendGate.sendWhenIdle {
+        if (relayOnlyProvider() && com.torxone.app.BuildConfig.TORX_TURN_URLS.isBlank()) return@sendWhenIdle false
+        val connection = connectionForQueue(queue) ?: return@sendWhenIdle false
         val now = android.os.SystemClock.elapsedRealtime()
         var session = manager.activeCall.value
-        if (session?.state != CallState.CONNECTED && (retryAfter[queue] ?: 0) > now) return@withLock false
+        if (session?.state != CallState.CONNECTED && (retryAfter[queue] ?: 0) > now) return@sendWhenIdle false
         if (session == null) {
-            if ((retryAfter[queue] ?: 0) > now) return@withLock false
-            val contact = contacts.getByRelationshipId(connection.relationshipId) ?: return@withLock false
+            if ((retryAfter[queue] ?: 0) > now) return@sendWhenIdle false
+            val contact = contacts.getByRelationshipId(connection.relationshipId) ?: return@sendWhenIdle false
             session = withContext(Dispatchers.Main.immediate) {
                 manager.startOutgoingCall(contact.conversationId, connection.relationshipId, contact.remoteIdentityId, CallType.DATA)
-            } ?: return@withLock false
+            } ?: return@sendWhenIdle false
         }
-        if (session.relationshipId != connection.relationshipId) return@withLock false
+        if (session.relationshipId != connection.relationshipId) return@sendWhenIdle false
         val callId = session.callId
         lastActivity = now
         val ready = withTimeoutOrNull(8_000) {
@@ -120,7 +140,7 @@ class FileRtcClient(
         }
         if (ready?.callId != callId || ready.state != CallState.CONNECTED) {
             retryAfter[queue] = android.os.SystemClock.elapsedRealtime() + 60_000
-            return@withLock false
+            return@sendWhenIdle false
         }
         val accepted = rtc.sendDedicatedMedia(connection.relationshipId, frame)
         if (accepted) retryAfter.remove(queue)

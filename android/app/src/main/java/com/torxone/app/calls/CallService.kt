@@ -76,7 +76,7 @@ open class CallService(
             messageType = MessageType.CALL_OFFER,
             payload = CallProtocolCodec.encodeOffer(payload)
         )
-        Log.d(TAG, "[SEND] CALL_OFFER call=${session.callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_OFFER")
     }
 
     override suspend fun sendRinging(session: CallSession) {
@@ -86,7 +86,7 @@ open class CallService(
             messageType = MessageType.CALL_RINGING,
             payload = CallProtocolCodec.encodeRinging(payload)
         )
-        Log.d(TAG, "[SEND] CALL_RINGING call=${session.callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_RINGING")
     }
 
     override suspend fun sendCallAnswer(session: CallSession, sdpAnswer: String) {
@@ -99,7 +99,7 @@ open class CallService(
             messageType = MessageType.CALL_ANSWER,
             payload = CallProtocolCodec.encodeAnswer(payload)
         )
-        Log.d(TAG, "[SEND] CALL_ANSWER call=${session.callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_ANSWER")
     }
 
     override suspend fun sendIceCandidate(session: CallSession, sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
@@ -126,7 +126,7 @@ open class CallService(
             messageType = MessageType.CALL_CONNECTED,
             payload = CallProtocolCodec.encodeConnected(payload)
         )
-        Log.d(TAG, "[SEND] CALL_CONNECTED call=${session.callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_CONNECTED")
     }
 
     override suspend fun sendEnd(session: CallSession, reason: CallEndReason) {
@@ -141,7 +141,7 @@ open class CallService(
             messageType = MessageType.CALL_END,
             payload = CallProtocolCodec.encodeEnd(payload)
         )
-        Log.d(TAG, "[SEND] CALL_END call=${session.callId.take(8)} reason=$reason")
+        Log.d(TAG, "[SEND] CALL_END")
     }
 
     override suspend fun sendDecline(session: CallSession) {
@@ -151,7 +151,7 @@ open class CallService(
             messageType = MessageType.CALL_DECLINE,
             payload = CallProtocolCodec.encodeDecline(payload)
         )
-        Log.d(TAG, "[SEND] CALL_DECLINE call=${session.callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_DECLINE")
     }
 
     override suspend fun sendBusy(callId: String, conversationId: String, relationshipId: String, peerIdentityId: String) {
@@ -171,7 +171,7 @@ open class CallService(
             messageType = MessageType.CALL_BUSY,
             payload = CallProtocolCodec.encodeBusy(payload)
         )
-        Log.d(TAG, "[SEND] CALL_BUSY call=${callId.take(8)}")
+        Log.d(TAG, "[SEND] CALL_BUSY")
     }
 
     // ─── Call History ────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ open class CallService(
                 durationMs = durationMs
             )
         )
-        Log.d(TAG, "[HISTORY] Persisted call=${session.callId.take(8)} outcome=$outcome")
+        Log.d(TAG, "[HISTORY] Call record persisted")
     }
 
     // ─── Core Signaling Plumbing ─────────────────────────────────────────

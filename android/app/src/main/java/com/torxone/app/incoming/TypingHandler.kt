@@ -19,11 +19,11 @@ class TypingHandler(
     fun handleTypingEvent(connection: Connection, envelope: SecureEnvelope) {
         when (envelope.messageType) {
             MessageType.TYPING_START -> {
-                Log.d(TAG, "[TYPING] Received TYPING_START from ${connection.relationshipId.take(8)}")
+                Log.d(TAG, "[TYPING] Received TYPING_START")
                 presenceService.onTypingStartReceived(connection.relationshipId)
             }
             MessageType.TYPING_STOP -> {
-                Log.d(TAG, "[TYPING] Received TYPING_STOP from ${connection.relationshipId.take(8)}")
+                Log.d(TAG, "[TYPING] Received TYPING_STOP")
                 presenceService.onTypingStopReceived(connection.relationshipId)
             }
             else -> {}

@@ -19,6 +19,7 @@ enum class MediaType {
 enum class MediaStatus {
     PREPARING,
     QUEUED,
+    PAUSED,
     UPLOADING,
     SENT,
     DELIVERED,

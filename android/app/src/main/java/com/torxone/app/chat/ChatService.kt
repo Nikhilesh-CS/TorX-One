@@ -116,7 +116,7 @@ class ChatService(
 
         val expiresAt = securityPolicyService?.expiryForSend(conversationId, listOf(relationshipId), now)
 
-        Log.d(TAG, "[SEND] msg=${messageId.take(8)} to conv=${conversationId.take(8)} replyTo=${replyToMessageId?.take(8)}")
+        Log.d(TAG, "[SEND] Preparing message")
 
         val sendResult = sendCoordinator.sendSequenced(
             relationshipId = relationshipId,
@@ -183,7 +183,7 @@ class ChatService(
             }
         )
 
-        Log.d(TAG, "[QUEUE] msg=${messageId.take(8)} queued for delivery at seq ${sendResult.sequence}")
+        Log.d(TAG, "[QUEUE] Sequenced message queued")
         return messageId
     }
 
@@ -245,7 +245,7 @@ class ChatService(
     ) {
         val readReceiptsEnabled = appSettingsRepository?.readReceiptsEnabled?.first() ?: true
         if (!readReceiptsEnabled) {
-            Log.d(TAG, "Read receipts disabled in settings; suppressing read receipt for conv=$conversationId")
+            Log.d(TAG, "Read receipts disabled in settings; suppressing read receipt")
             return
         }
         if (recipientId.isBlank() || recipientId == com.torxone.app.data.entity.ContactEntity.REMOTE_IDENTITY_UNKNOWN) {
@@ -291,10 +291,10 @@ class ChatService(
                 relationshipId = relationshipId
             )
 
-            Log.i(TAG, "[READ RECEIPT] Enqueueing READ up to ${upToMessageId.take(8)} for conv=${conversationId.take(8)}")
+            Log.i(TAG, "[READ RECEIPT] Enqueueing receipt")
             agent.enqueue(deliveryItem)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send read receipt: ${e.message}")
+            Log.e(TAG, "Failed to send read receipt")
         }
     }
 
@@ -343,7 +343,7 @@ class ChatService(
     suspend fun setChatPinned(conversationId: String, isPinned: Boolean) {
         val pinnedAt = if (isPinned) System.currentTimeMillis() else null
         conversationDao.setPinned(conversationId, isPinned, pinnedAt)
-        Log.i(TAG, "[PIN] Conversation $conversationId pinned=$isPinned")
+        Log.i(TAG, "[PIN] Conversation setting updated")
     }
 
     /**
@@ -352,7 +352,7 @@ class ChatService(
     suspend fun setChatArchived(conversationId: String, isArchived: Boolean) {
         val archivedAt = if (isArchived) System.currentTimeMillis() else null
         conversationDao.setArchived(conversationId, isArchived, archivedAt)
-        Log.i(TAG, "[ARCHIVE] Conversation $conversationId archived=$isArchived")
+        Log.i(TAG, "[ARCHIVE] Conversation setting updated")
     }
 
     /**
@@ -360,7 +360,7 @@ class ChatService(
      */
     suspend fun setChatMuted(conversationId: String, mutedUntil: Long?) {
         conversationDao.setMutedUntil(conversationId, mutedUntil)
-        Log.i(TAG, "[MUTE] Conversation $conversationId mutedUntil=$mutedUntil")
+        Log.i(TAG, "[MUTE] Conversation setting updated")
     }
 
     /**
@@ -369,7 +369,7 @@ class ChatService(
      */
     suspend fun markChatUnread(conversationId: String, unread: Boolean = true) {
         conversationDao.updateManuallyUnread(conversationId, unread)
-        Log.i(TAG, "[MANUAL UNREAD] Conversation $conversationId unread=$unread")
+        Log.i(TAG, "[MANUAL UNREAD] Conversation setting updated")
     }
 
     /**
@@ -408,13 +408,13 @@ class ChatService(
                     val file = java.io.File(media.localPath)
                     if (file.exists()) file.delete()
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to delete media file: ${media.localPath}", e)
+                    Log.w(TAG, "Failed to delete media file")
                 }
             }
         }
 
         notificationManager?.cancelForConversation(conversationId)
-        Log.i(TAG, "[DELETE CHAT] Conversation $conversationId deleted locally (including media)")
+        Log.i(TAG, "[DELETE CHAT] Conversation deleted locally (including media)")
         return true
     }
 
@@ -423,7 +423,7 @@ class ChatService(
      */
     suspend fun resetSession(relationshipId: String) {
         sessionCrypto.resetSession(relationshipId)
-        Log.i(TAG, "[SESSION RESET] Double ratchet session cleared for $relationshipId")
+        Log.i(TAG, "[SESSION RESET] Double ratchet session cleared")
     }
 
     /**
@@ -511,9 +511,9 @@ class ChatService(
                 }
             )
 
-            Log.i(TAG, "[REACTION] Enqueued reaction $emoji on msg=${targetMessageId.take(8)}")
+            Log.i(TAG, "[REACTION] Enqueued reaction")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send reaction: ${e.message}")
+            Log.e(TAG, "Failed to send reaction")
         }
     }
 
@@ -612,9 +612,9 @@ class ChatService(
             newText = newText
         )
 
-            Log.i(TAG, "[EDIT] Enqueued edit for msg=${targetMessageId.take(8)} version=$newVersion")
+            Log.i(TAG, "[EDIT] Enqueued edit")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send edit: ${e.message}")
+            Log.e(TAG, "Failed to send edit")
             return false
         }
         return true
@@ -703,9 +703,9 @@ class ChatService(
             messageId = targetMessageId
         )
 
-            Log.i(TAG, "[DELETE] Enqueued delete for msg=${targetMessageId.take(8)}")
+            Log.i(TAG, "[DELETE] Enqueued delete")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send delete: ${e.message}")
+            Log.e(TAG, "Failed to send delete")
             return false
         }
         return true
@@ -754,7 +754,7 @@ class ChatService(
         // Notify notification manager to update active notifications
         notificationManager?.onMessageDeletedLocally(conversationId, messageId)
 
-        Log.i(TAG, "[DELETE FOR ME] Message $messageId hidden locally for conversation $conversationId")
+        Log.i(TAG, "[DELETE FOR ME] Message hidden locally")
         return true
     }
 
@@ -852,7 +852,7 @@ class ChatService(
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 failures++
-                Log.w(TAG, "Failed to broadcast profile update to ${connection.relationshipId}: ${e.message}")
+                Log.w(TAG, "Failed to broadcast profile update")
             }
         }
         check(failures == 0) { "Profile saved locally, but updates for $failures contact(s) could not be queued. Try Save again." }

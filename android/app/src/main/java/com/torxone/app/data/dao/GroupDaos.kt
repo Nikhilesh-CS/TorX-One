@@ -120,9 +120,9 @@ interface GroupMessageDeliveryDao {
 
     @Query("""
         UPDATE group_message_deliveries 
-        SET status = 'DELIVERED', 
-            delivered_at = :deliveredAt, 
-            updated_at = :updatedAt 
+        SET status = CASE WHEN status = 'READ' OR read_at IS NOT NULL THEN 'READ' ELSE 'DELIVERED' END,
+            delivered_at = COALESCE(delivered_at, :deliveredAt),
+            updated_at = MAX(updated_at, :updatedAt)
         WHERE logical_message_id = :logicalMessageId AND recipient_identity_id = :recipientIdentityId
     """)
     suspend fun markDelivered(

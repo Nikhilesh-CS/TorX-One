@@ -1,6 +1,7 @@
 package com.torxone.app.ui
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -22,6 +23,36 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ConnectionUxInteractionTest {
+    @Test fun failedTorCanRestartWithNoQueuedMessagesAndSendingPaused() {
+        var torRetries = 0
+        var messageRetries = 0
+        val state = ConnectionUxSnapshot(headline = "Sending paused", pendingDeliveries = 0,
+            sendingPaused = true, torRetryAvailable = true, paths = listOf(
+                ConnectionPathInfo("Tor", "Unavailable: Tor recovery budget exhausted; restart Tor to retry")))
+        compose.setContent { MaterialTheme { ConnectionDashboardDialog(state, {},
+            onRetry = { messageRetries++ }, onRetryTor = { torRetries++ }) } }
+        compose.onNodeWithText("Restart Tor").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithText("Retry queued messages").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(1, torRetries)
+            assertEquals(0, messageRetries)
+        }
+    }
+
+    @Test fun torRestartDisappearsWhileStartingAndWhenReady() {
+        val state = mutableStateOf(ConnectionUxSnapshot(torRetryAvailable = true,
+            paths = listOf(ConnectionPathInfo("Tor", "Stopped"))))
+        compose.setContent { MaterialTheme { ConnectionDashboardDialog(state.value, {}, onRetryTor = {}) } }
+        compose.onNodeWithText("Restart Tor").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(torRetryAvailable = false,
+            paths = listOf(ConnectionPathInfo("Tor", "Starting"))) }
+        compose.onNodeWithText("Restart Tor").assertDoesNotExist()
+        compose.onNodeWithText("Starting").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(
+            paths = listOf(ConnectionPathInfo("Tor", "Ready locally; peer route configured", true))) }
+        compose.onNodeWithText("Restart Tor").assertDoesNotExist()
+    }
+
     @Test fun pausedQueueOffersResumeAndSuppressesRetryButton() {
         var resumes = 0
         compose.setContent { MaterialTheme { ConnectionDashboardDialog(

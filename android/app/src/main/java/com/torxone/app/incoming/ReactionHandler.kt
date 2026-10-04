@@ -20,13 +20,13 @@ class ReactionHandler(
         val reaction = try {
             MessageReaction.fromByteArray(envelope.payload)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode MessageReaction: ${e.message}")
+            Log.e(TAG, "Failed to decode MessageReaction")
             return false
         }
 
         val targetMsg = messageDao.getById(reaction.targetMessageId)
         if (targetMsg == null) {
-            Log.w(TAG, "Target message ${reaction.targetMessageId.take(8)} for reaction not found")
+            Log.w(TAG, "Target message for reaction not found")
             return false
         }
 
@@ -41,7 +41,7 @@ class ReactionHandler(
 
         when (reaction.operation) {
             ReactionOperation.ADD -> {
-                Log.d(TAG, "[REACTION ADD] user=${senderId.take(8)} emoji=${reaction.emoji} on msg=${reaction.targetMessageId.take(8)}")
+                Log.d(TAG, "[REACTION ADD]")
                 reactionDao.insertOrUpdate(
                     ReactionEntity(
                         messageId = reaction.targetMessageId,
@@ -53,7 +53,7 @@ class ReactionHandler(
                 )
             }
             ReactionOperation.REMOVE -> {
-                Log.d(TAG, "[REACTION REMOVE] user=${senderId.take(8)} emoji=${reaction.emoji} on msg=${reaction.targetMessageId.take(8)}")
+                Log.d(TAG, "[REACTION REMOVE]")
                 reactionDao.remove(
                     messageId = reaction.targetMessageId,
                     senderId = senderId,

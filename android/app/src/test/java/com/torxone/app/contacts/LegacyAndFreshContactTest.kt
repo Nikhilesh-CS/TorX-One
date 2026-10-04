@@ -58,6 +58,7 @@ class LegacyAndFreshContactTest {
             override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {}
             override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {}
             override suspend fun removeByMessageId(logicalMessageId: String) {}
+            override suspend fun removeByDeliveryId(deliveryId: String) {}
         }
         val inMemoryProcessed = object : ProcessedEnvelopeStore {
             override suspend fun isProcessed(envelopeId: String) = false
@@ -222,6 +223,7 @@ class LegacyAndFreshContactTest {
     private fun connQueue(relId: String) = "q-send-$relId"
 
     class FakeOutboxDao : OutboxDao {
+        override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
         val items = ConcurrentHashMap<String, OutboxEntity>()
         override suspend fun getPending(): List<OutboxEntity> = items.values.toList()
         override suspend fun insert(item: OutboxEntity) { items[item.deliveryId] = item }

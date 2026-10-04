@@ -16,6 +16,6 @@ object ProtocolLimits {
     /** Maximum identifier length (UUID / queue ID) */
     const val MAX_ID_LENGTH = 128
 
-    /** Maximum allowed wall-clock timestamp skew (24 hours) */
+    /** Maximum future timestamp skew; durable past timestamps may reflect offline delivery. */
     const val MAX_TIMESTAMP_SKEW_MS = 24 * 60 * 60 * 1000L
 }

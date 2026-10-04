@@ -283,8 +283,23 @@ class TorXOneApplication : Application() {
             outboxStore = createOutboxStore(),
             processedStore = createProcessedStore(),
             relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId },
-            isDeliveryPaused = { item -> item.conversationId.isNotBlank() &&
-                item.conversationId in settingsRepository.pausedConversations.first() }
+            committedMessageStatus = { logicalMessageId ->
+                database.messageDao().getById(logicalMessageId)?.let { message ->
+                    when {
+                        message.readAt != null || message.status == "READ" -> DeliveryStatus.READ
+                        message.deliveredAt != null || message.status == "DELIVERED" -> DeliveryStatus.DELIVERED
+                        else -> DeliveryStatus.entries.firstOrNull { it.name == message.status } ?: DeliveryStatus.QUEUED
+                    }
+                }
+            },
+            isDeliveryPaused = { item ->
+                val relationshipId = item.relationshipId.takeIf(String::isNotBlank)
+                    ?: connectionManager.getConnectionBySendQueue(item.queueAddress)?.relationshipId
+                val connection = if (item.applicationSequence != null && relationshipId != null)
+                    database.connectionDao().getByRelationshipId(relationshipId) else null
+                (item.conversationId.isNotBlank() && item.conversationId in settingsRepository.pausedConversations.first()) ||
+                    (item.applicationSequence != null && (connection?.state != "ACTIVE" || connection.connectionId != item.connectionId))
+            }
         )
 
         // 7. Direct Route Table & Presence Service
@@ -374,7 +389,11 @@ class TorXOneApplication : Application() {
                 fallback = com.torxone.app.media.RoutedDedicatedMediaTransport(transportRouter)
             ),
             groupMessageDeliveryDao = database.groupMessageDeliveryDao(),
-            securityPolicyService = securityPolicyService
+            groupDao = database.groupDao(),
+            securityPolicyService = securityPolicyService,
+            onMissingChunks = { relationship ->
+                transportRouter.invalidateRelationship(com.torxone.app.transport.TransportDestination("", relationshipId = relationship))
+            }
         )
         val mediaHandler = MediaHandler(
             mediaService = mediaService,
@@ -544,7 +563,10 @@ class TorXOneApplication : Application() {
                     getLocalIdentityId()?.let { identity ->
                         runCatching { chatService.broadcastProfileUpdate(identity,
                             settingsRepository.displayName.first(), settingsRepository.about.first(), current - knownRelationships) }
-                            .onFailure { android.util.Log.w("TorXOneApplication", "Profile sync could not be queued", it) }
+                            .onFailure {
+                                if (it is kotlinx.coroutines.CancellationException) throw it
+                                android.util.Log.w("TorXOneApplication", "Profile sync could not be queued")
+                            }
                     }
                 }
                 knownRelationships = current
@@ -554,6 +576,9 @@ class TorXOneApplication : Application() {
             dispatcher = incomingDispatcher,
             dedicatedMediaFrameHandler = mediaService::handleDedicatedMediaFrame
         )
+        incomingTransportHub.admittedMediaFrameHandler = { bytes, type, authenticate ->
+            mediaService.handleDedicatedMediaFrame(bytes, type, null, authenticate)
+        }
         applicationScope.launch {
             torXRadioManager.incomingFrames.collect { frame ->
                 val payload = runCatching {
@@ -585,6 +610,11 @@ class TorXOneApplication : Application() {
             peerTorEndpoints = peerTorEndpoints,
             relationshipForQueue = { connectionManager.getConnectionBySendQueue(it)?.relationshipId })
         transportRouter.registerTransport(torTransport)
+        peerTorEndpoints.onVerifiedEndpointChanged = { relationship ->
+            transportRouter.resetRelationship(relationship)
+            agent.triggerImmediateRetry(relationshipId = relationship)
+            applicationScope.launch { mediaService.recoverDeliveryPath(relationship) }
+        }
 
         // 9b. Nearby Transport
         nearbyTransport = NearbyTransport(
@@ -795,14 +825,20 @@ class TorXOneApplication : Application() {
                 torBootstrapManager.start()
                 com.torxone.app.transport.tor.NetworkRecoveryMonitor(
                     this@TorXOneApplication, applicationScope, torTransport,
-                    retry = { agent.triggerImmediateRetry() },
+                    retry = {
+                        transportRouter.resetTorHealth()
+                        agent.triggerImmediateRetry()
+                        applicationScope.launch { mediaService.recoverDeliveryPath() }
+                    },
                     closeIncoming = { onionEndpointManager.closePeerConnections() }
                 ).start()
                 applicationScope.launch {
                     torController.state.collect { state ->
                         if (state is com.torxone.app.transport.tor.TorConnectionState.Ready) {
+                            transportRouter.resetTorHealth()
                             recoverIncompleteBootstraps()
                             agent.triggerImmediateRetry()
+                            mediaService.recoverDeliveryPath()
                         } else {
                             torTransport.closePendingConnections()
                             onionEndpointManager.closePeerConnections()
@@ -816,10 +852,16 @@ class TorXOneApplication : Application() {
                 ) {
                     nearbyTransport.start()
                     runCatching { torXRadioManager.start() }
-                        .onFailure { android.util.Log.w("TorXOneApplication", "TorX Radio discovery unavailable", it) }
+                        .onFailure {
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            android.util.Log.w("TorXOneApplication", "TorX Radio discovery unavailable")
+                        }
                 }
                 runCatching { haLowGatewayManager.start() }
-                    .onFailure { android.util.Log.w("TorXOneApplication", "TorX HaLow discovery unavailable", it) }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.w("TorXOneApplication", "TorX HaLow discovery unavailable")
+                    }
 
                 // Recover any interrupted media transfers, fan-outs, and incomplete bootstraps
                 mediaService.recoverPendingTransfersOnStartup()
@@ -829,17 +871,19 @@ class TorXOneApplication : Application() {
                 // Anchor Tor, Nearby, and outbox processing to a sticky foreground
                 // service after every successful process initialization.
                 runCatching { com.torxone.app.service.TorXCoreService.start(this@TorXOneApplication) }
-                    .onFailure { android.util.Log.w("TorXOneApplication", "Core foreground service start deferred", it) }
+                    .onFailure { android.util.Log.w("TorXOneApplication", "Core foreground service start deferred") }
 
                 runtimeInitialized = true
                 _initState.value = AppInitState.Ready(cachedLocalIdentityId)
                 applicationScope.launch {
                     runCatching { scheduledMessageService.recover() }.onFailure {
-                        android.util.Log.w("TorXOneApplication", "Scheduled-message recovery will retry", it)
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.w("TorXOneApplication", "Scheduled-message recovery will retry")
                     }
                 }
             } catch (e: Throwable) {
-                android.util.Log.e("TorXOneApplication", "Async app initialization failed", e)
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                android.util.Log.e("TorXOneApplication", "Async app initialization failed")
                 _initState.value = AppInitState.Failed(e)
             }
         }
@@ -929,12 +973,18 @@ class TorXOneApplication : Application() {
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            android.util.Log.e("TorXOneApplication", "Error during bootstrap restart recovery: ${e.message}", e)
+            android.util.Log.e("TorXOneApplication", "Bootstrap restart recovery will retry")
         }
     }
 
     private fun createOutboxStore(): OutboxStore {
         val dao = database.outboxDao()
+        fun OutboxEntity.toDeliveryItem() = DeliveryItem(
+            deliveryId = deliveryId, logicalMessageId = logicalMessageId, conversationId = conversationId,
+            connectionId = connectionId, queueAddress = queueAddress, ciphertext = ciphertext,
+            queueAuthenticator = queueAuthenticator, status = DeliveryStatus.valueOf(status), priority = priority,
+            attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, createdAt = createdAt, updatedAt = updatedAt,
+            expectsAck = expectsAck, applicationSequence = applicationSequence, relationshipId = relationshipId)
         return object : OutboxStore {
             override suspend fun insert(item: DeliveryItem) {
                 dao.insert(
@@ -960,34 +1010,36 @@ class TorXOneApplication : Application() {
             }
 
             override suspend fun getPendingItems(): List<DeliveryItem> {
-                return dao.getPending().map { entity ->
-                    DeliveryItem(
-                        deliveryId = entity.deliveryId,
-                        logicalMessageId = entity.logicalMessageId,
-                        conversationId = entity.conversationId,
-                        connectionId = entity.connectionId,
-                        queueAddress = entity.queueAddress,
-                        ciphertext = entity.ciphertext,
-                        queueAuthenticator = entity.queueAuthenticator,
-                        status = DeliveryStatus.valueOf(entity.status),
-                        priority = entity.priority,
-                        attemptCount = entity.attemptCount,
-                        nextAttemptAt = entity.nextAttemptAt,
-                        createdAt = entity.createdAt,
-                        updatedAt = entity.updatedAt,
-                        expectsAck = entity.expectsAck,
-                        applicationSequence = entity.applicationSequence,
-                        relationshipId = entity.relationshipId
-                    )
+                return dao.getPending().map { it.toDeliveryItem() }
+            }
+
+            override suspend fun getByDeliveryId(deliveryId: String): DeliveryItem? =
+                dao.getByDeliveryId(deliveryId)?.toDeliveryItem()
+
+            override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
+                database.withTransaction {
+                    val pending = dao.getByDeliveryId(deliveryId)
+                    dao.updateStatus(deliveryId, status.name)
+                    updatePendingMessage(pending, status)
                 }
             }
 
-            override suspend fun updateStatus(deliveryId: String, status: DeliveryStatus) {
-                dao.updateStatus(deliveryId, status.name)
+            override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
+                database.withTransaction {
+                    val pending = dao.getByDeliveryId(deliveryId)
+                    dao.updateRetry(deliveryId, attemptCount, nextAttemptAt)
+                    updatePendingMessage(pending, DeliveryStatus.RETRY_WAIT)
+                }
             }
 
-            override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-                dao.updateRetry(deliveryId, attemptCount, nextAttemptAt)
+            private suspend fun updatePendingMessage(pending: OutboxEntity?, status: DeliveryStatus) {
+                if (pending == null || database.conversationDao().getById(pending.conversationId)?.type != com.torxone.app.data.entity.ConversationType.DIRECT) return
+                val message = database.messageDao().getById(pending.logicalMessageId) ?: return
+                if (message.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING &&
+                    message.deliveredAt == null && message.readAt == null && message.deletedAt == null &&
+                    message.status !in setOf("DELIVERED", "READ", "EXPIRED")) {
+                    database.messageDao().updateStatus(message.logicalMessageId, status.name)
+                }
             }
 
             override suspend fun removeByMessageId(logicalMessageId: String) {

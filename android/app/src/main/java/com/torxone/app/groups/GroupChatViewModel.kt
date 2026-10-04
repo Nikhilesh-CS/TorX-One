@@ -367,6 +367,26 @@ class GroupChatViewModel(
         }
     }
 
+    fun cancelMediaTransfer(mediaId: String) {
+        viewModelScope.launch {
+            try { requireNotNull(mediaService) { "Media service unavailable" }.cancelTransfer(mediaId) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Unable to cancel this transfer. Try again.") }
+            }
+        }
+    }
+
+    fun pauseMediaTransfer(mediaId: String) {
+        viewModelScope.launch {
+            try { requireNotNull(mediaService) { "Media service unavailable" }.pauseTransfer(mediaId) }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Unable to pause this transfer. Try again.") }
+            }
+        }
+    }
+
     fun sendImage(fileName: String, bytes: ByteArray, mimeType: String) {
         if (!_uiState.value.isParticipantActive) return
         viewModelScope.launch {

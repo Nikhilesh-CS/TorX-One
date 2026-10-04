@@ -45,11 +45,17 @@ class RoutedDedicatedMediaTransport(
 /** Use an authenticated online RTC lane when available, otherwise the durable Tor path. */
 class HybridDedicatedMediaTransport(
     private val rtcSend: suspend (TransportDestination, ByteArray) -> Boolean,
-    private val fallback: DedicatedMediaTransport
+    private val fallback: DedicatedMediaTransport,
+    private val rtcAttemptTimeoutMs: Long = 40_000L
 ) : DedicatedMediaTransport {
+    init { require(rtcAttemptTimeoutMs > 0) }
+
     override suspend fun send(destination: TransportDestination, frame: DedicatedMediaFrame): TransportResult {
         val rtcAccepted = try {
-            rtcSend(destination, DedicatedMediaFrameCodec.encode(frame))
+            // Covers lane setup as well as receiver ACK; a stalled optional lane releases Tor.
+            kotlinx.coroutines.withTimeoutOrNull(rtcAttemptTimeoutMs) {
+                rtcSend(destination, DedicatedMediaFrameCodec.encode(frame))
+            } ?: false
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             false

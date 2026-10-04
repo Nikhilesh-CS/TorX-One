@@ -57,7 +57,7 @@ class MessageLinkIndex(private val db: TorXDatabase) {
                 try { if (drainBatch() == 0) break; yield() }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: Exception) {
-                    android.util.Log.w("MessageLinkIndex", "Local link indexing will retry", failure)
+                    android.util.Log.w("MessageLinkIndex", "Local link indexing will retry")
                     delay(5_000)
                 }
             }

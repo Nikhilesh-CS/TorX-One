@@ -82,7 +82,18 @@ def prepare():
     for name in ["android/app/build/outputs/apk/debug/app-debug.apk",
                  "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
                  "android/app/build/outputs/apk/release/app-release-unsigned.apk",
+                 "android/app/build/outputs/apk/release/app-release.apk",
                  "android/app/build/outputs/mapping/release/mapping.txt",
+                 "android/build/release-repair-validation.json",
+                 "android/build/release-repair/signed-candidate-verification.json",
+                 "android/build/release-repair/signing-identity.json",
+                 "android/build/release-repair/signing-certificate.der",
+                 "android/build/release-repair/tor-jni-contract.json",
+                 "android/build/device-validation/latest.json",
+                 "android/build/device-validation/20261003/native-framework-probe/native-tor-probe.apk",
+                 "android/build/device-validation/20261003/native-framework-probe/native-tor-probe-build.json",
+                 "android/build/release-repair/osv-runtime-scan.json",
+                 "android/build/release-repair/native-libraries.json",
                  "android/build/phase21/osv-runtime-scan.json",
                  "android/build/phase21/native-libraries.json",
                  "android/build/phase21/local-validation.json"]:
@@ -91,6 +102,8 @@ def prepare():
             artifacts.append(dict(path=name, size=path.stat().st_size, sha256=digest(path),
                                   source_correspondence="NOT_ATTESTED",
                                   signing="Unsigned optimized APK; not distributable" if name.endswith("app-release-unsigned.apk")
+                                  else "Release signing identity; verify recorded certificate separately" if name.endswith("app-release.apk")
+                                  else "Framework test instrumentation; CAPTURE_ONLY; verify certificate separately" if name.endswith("native-tor-probe.apk")
                                   else "Debug artifact; verify certificate separately" if name.endswith(".apk")
                                   else "Not a signed application artifact"))
     manifest = dict(schema_version=1, generated_at_utc=stamp, base_commit=head,

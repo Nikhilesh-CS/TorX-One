@@ -41,7 +41,7 @@ import java.io.File
 fun openMedia(context: android.content.Context, media: MediaUiModel, onDownload: (() -> Unit)? = null) {
     val source = media.localPath?.let(::File)?.takeIf(File::isFile)
     if (source == null) {
-        if (onDownload != null && media.status in setOf(com.torxone.app.media.MediaStatus.QUEUED, com.torxone.app.media.MediaStatus.FAILED)) {
+        if (onDownload != null && media.status in setOf(com.torxone.app.media.MediaStatus.QUEUED, com.torxone.app.media.MediaStatus.PAUSED, com.torxone.app.media.MediaStatus.FAILED)) {
             onDownload()
             return
         }
@@ -94,7 +94,7 @@ fun AudioPlayback(media: MediaUiModel, modifier: Modifier = Modifier, onDownload
         onDispose { lifecycle.removeObserver(observer); audioManager.abandonAudioFocusRequest(focus); player.release() }
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        if (media.localPath == null && onDownload != null && media.status in setOf(com.torxone.app.media.MediaStatus.QUEUED, com.torxone.app.media.MediaStatus.FAILED)) {
+        if (media.localPath == null && onDownload != null && media.status in setOf(com.torxone.app.media.MediaStatus.QUEUED, com.torxone.app.media.MediaStatus.PAUSED, com.torxone.app.media.MediaStatus.FAILED)) {
             TextButton(onClick = onDownload) { Text("Download") }
         }
         IconButton(enabled = ready, onClick = {

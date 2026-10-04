@@ -149,6 +149,7 @@ class MediaTransferTest {
             updatedAt: Long
         ): Int {
             val transfer = transfers[transferId] ?: return 0
+            if (transfer.status !in setOf(TransferStatus.ACTIVE.name, TransferStatus.QUEUED.name)) return 0
             val completed = transfer.chunkBitmask.split(',').filter { it.isNotBlank() }.mapNotNull { it.toIntOrNull() }
             if (chunkIndex in completed) return 0
             val updatedChunks = completed + chunkIndex
@@ -172,7 +173,7 @@ class MediaTransferTest {
             transfers.values.filter { it.status == "ACTIVE" || it.status == "QUEUED" || it.status == "PAUSED" }
 
         override suspend fun getAllActiveMediaIds(): List<String> =
-            transfers.values.filter { it.status == "ACTIVE" || it.status == "QUEUED" || it.status == "PAUSED" }.map { it.mediaId }
+            transfers.values.filter { it.status in setOf("ACTIVE", "QUEUED", "PAUSED", "FAILED", "IDLE") }.map { it.mediaId }
 
         override suspend fun deleteByTransferId(transferId: String) {
             transfers.remove(transferId)
@@ -261,6 +262,8 @@ class MediaTransferTest {
     }
 
     class TestOutboxDao : OutboxDao {
+        override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
+        var beforeInsert: suspend (OutboxEntity) -> Unit = {}
         private val seqCounter = AtomicLong(0)
         private val insertOrder = ConcurrentHashMap<String, Long>()
         val items = ConcurrentHashMap<String, OutboxEntity>()
@@ -280,6 +283,7 @@ class MediaTransferTest {
         }
 
         override suspend fun insert(item: OutboxEntity) {
+            beforeInsert(item)
             insertOrder.putIfAbsent(item.deliveryId, seqCounter.incrementAndGet())
             items[item.deliveryId] = item
         }
@@ -444,7 +448,9 @@ class MediaTransferTest {
         var incomingHub: IncomingTransportHub? = null
     }
 
-    private suspend fun setupPair(dedicatedMedia: Boolean = false): Pair<TestNode, TestNode> {
+    private suspend fun setupPair(dedicatedMedia: Boolean = false,
+                                  recoveryIdleMs: Long = MediaService.DEFAULT_RECOVERY_IDLE_MS,
+                                  onMissingChunks: (String) -> Unit = {}): Pair<TestNode, TestNode> {
         val alice = TestNode("alice")
         val bob = TestNode("bob")
 
@@ -489,6 +495,14 @@ class MediaTransferTest {
         )
         alice.connManager.registerConnection(connA)
         bob.connManager.registerConnection(connB)
+        val aliceContacts = com.torxone.app.agent.EndToEndPipelineTest.InMemoryContactDao().apply {
+            upsert(ContactEntity("alice-bob", relationshipId, "Bob", signingPublicKey = bob.identityKey.publicKey,
+                conversationId = "conv_alice_bob", remoteIdentityId = bob.identityId))
+        }
+        val bobContacts = com.torxone.app.agent.EndToEndPipelineTest.InMemoryContactDao().apply {
+            upsert(ContactEntity("bob-alice", relationshipId, "Alice", signingPublicKey = alice.identityKey.publicKey,
+                conversationId = "conv_alice_bob", remoteIdentityId = alice.identityId))
+        }
 
         val aliceSendCoordinator = RelationshipSendCoordinator(
             connectionManager = alice.connManager,
@@ -516,9 +530,13 @@ class MediaTransferTest {
             outboxDao = alice.outboxDao,
             localIdentityIdProvider = { alice.identityId },
             mediaStorage = alice.mediaStorage,
+            contactDao = aliceContacts,
             relationshipSendCoordinator = aliceSendCoordinator,
             sessionStore = alice.sessionStore,
-            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(alice.router)) else null
+            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(alice.router)) else null,
+            recoveryIdleMs = recoveryIdleMs,
+            chunkRetryBaseMs = 10,
+            onMissingChunks = onMissingChunks
         )
 
         bob.mediaService = MediaService(
@@ -532,9 +550,12 @@ class MediaTransferTest {
             outboxDao = bob.outboxDao,
             localIdentityIdProvider = { bob.identityId },
             mediaStorage = bob.mediaStorage,
+            contactDao = bobContacts,
             relationshipSendCoordinator = bobSendCoordinator,
             sessionStore = bob.sessionStore,
-            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(bob.router)) else null
+            dedicatedMediaTransport = if (dedicatedMedia) HybridDedicatedMediaTransport({ _, _ -> false }, RoutedDedicatedMediaTransport(bob.router)) else null,
+            recoveryIdleMs = recoveryIdleMs,
+            chunkRetryBaseMs = 10
         )
 
         alice.chatService = ChatService(
@@ -688,6 +709,194 @@ class MediaTransferTest {
 
         alice.agent.stop()
         bob.agent.stop()
+    }
+
+    @Test
+    fun dedicatedTorAcceptanceDoesNotHideMissingChunkAndReceiverRepairsIt() = runBlocking {
+        val invalidations = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val (alice, bob) = setupPair(dedicatedMedia = true, recoveryIdleMs = 150,
+            onMissingChunks = { invalidations += it })
+        val replayAllowed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val sentChunks = ConcurrentHashMap<Int, java.util.concurrent.atomic.AtomicInteger>()
+        alice.router.registerTransport(object : Transport {
+            override val type = TransportType.TOR
+            override fun availability() = flowOf<TransportAvailability>(TransportAvailability.Available)
+            override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult {
+                if (DedicatedMediaFrameCodec.isDedicatedMediaFrame(payload)) {
+                    val frame = DedicatedMediaFrameCodec.decode(payload)
+                    sentChunks.computeIfAbsent(frame.chunkIndex) { java.util.concurrent.atomic.AtomicInteger() }.incrementAndGet()
+                    if (frame.chunkIndex == 1 && !replayAllowed.get()) return TransportResult.Accepted(type)
+                }
+                return if (bob.incomingHub!!.onRawFrameReceived(payload, type)) TransportResult.Accepted(type)
+                else TransportResult.Failed(type, "Receiver rejected frame")
+            }
+        })
+        try {
+            val bytes = ByteArray(45 * 1024) { (it % 251).toByte() }
+            alice.mediaService!!.sendMedia("conv_alice_bob", "rel_alice_bob", alice.identityId, bob.identityId,
+                MediaType.DOCUMENT, "lost-chunk.bin", "application/octet-stream", bytes)
+            withTimeout(10_000) {
+                while (alice.mediaTransferDao.transfers.values.none { it.completedChunks == it.totalChunks }) delay(10)
+            }
+            val media = alice.mediaDao.mediaMap.values.first()
+            assertNotEquals(MediaStatus.DELIVERED.name, media.status)
+            assertFalse(bob.mediaDao.mediaMap.values.any { it.status == MediaStatus.COMPLETE.name })
+            replayAllowed.set(true)
+            withTimeout(10_000) {
+                while (alice.mediaDao.getById(media.mediaId)?.status != MediaStatus.DELIVERED.name) delay(10)
+            }
+            assertArrayEquals(bytes, File(bob.mediaDao.getById(media.mediaId)!!.localPath!!).readBytes())
+            assertTrue(sentChunks.getValue(1).get() >= 2)
+            assertEquals(1, sentChunks.getValue(0).get())
+            assertTrue(invalidations.isNotEmpty())
+            assertTrue(invalidations.all { it == "rel_alice_bob" })
+        } finally { alice.agent.stop(); bob.agent.stop() }
+    }
+
+    @Test
+    fun dedicatedChunkNetworkFailuresStopAfterFiniteAttemptsWithoutDiscardingTransfer() = runBlocking {
+        val (alice, bob) = setupPair(dedicatedMedia = true)
+        val failedWrites = java.util.concurrent.atomic.AtomicInteger()
+        alice.router.registerTransport(object : Transport {
+            override val type = TransportType.TOR
+            override fun availability() = flowOf<TransportAvailability>(TransportAvailability.Available)
+            override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult {
+                if (DedicatedMediaFrameCodec.isDedicatedMediaFrame(payload)) {
+                    failedWrites.incrementAndGet()
+                    return TransportResult.Failed(type, "Peer unreachable")
+                }
+                return if (bob.incomingHub!!.onRawFrameReceived(payload, type)) TransportResult.Accepted(type)
+                else TransportResult.Failed(type, "Receiver rejected frame")
+            }
+        })
+        try {
+            alice.mediaService!!.sendMedia("conv_alice_bob", "rel_alice_bob", alice.identityId, bob.identityId,
+                MediaType.DOCUMENT, "offline.bin", "application/octet-stream", ByteArray(100) { 7 })
+            withTimeout(10_000) { while (failedWrites.get() < MediaService.DEFAULT_CHUNK_ATTEMPTS) delay(10) }
+            delay(250)
+            assertEquals(MediaService.DEFAULT_CHUNK_ATTEMPTS, failedWrites.get())
+            val transfer = alice.mediaTransferDao.transfers.values.single()
+            assertEquals(TransferStatus.QUEUED.name, transfer.status)
+            assertEquals(0, transfer.completedChunks)
+            assertTrue(File(transfer.tempEncryptedPath).exists())
+            assertNotEquals(MediaStatus.DELIVERED.name, alice.mediaDao.mediaMap.values.single().status)
+        } finally { alice.agent.stop(); bob.agent.stop() }
+    }
+
+    @Test
+    fun receiverReconciliationStopsAfterBoundedRoundsAndVerifiedRecoveryRestartsIt() = runBlocking {
+        val (alice, bob) = setupPair(dedicatedMedia = true, recoveryIdleMs = 80)
+        val dropChunks = java.util.concurrent.atomic.AtomicBoolean(true)
+        val chunkWrites = java.util.concurrent.atomic.AtomicInteger()
+        alice.router.registerTransport(object : Transport {
+            override val type = TransportType.TOR
+            override fun availability() = flowOf<TransportAvailability>(TransportAvailability.Available)
+            override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult {
+                if (DedicatedMediaFrameCodec.isDedicatedMediaFrame(payload)) {
+                    chunkWrites.incrementAndGet()
+                    if (dropChunks.get()) return TransportResult.Accepted(type)
+                }
+                return if (bob.incomingHub!!.onRawFrameReceived(payload, type)) TransportResult.Accepted(type)
+                else TransportResult.Failed(type, "Receiver rejected frame")
+            }
+        })
+        try {
+            alice.mediaService!!.sendMedia("conv_alice_bob", "rel_alice_bob", alice.identityId, bob.identityId,
+                MediaType.DOCUMENT, "blackhole.bin", "application/octet-stream", ByteArray(100) { 7 })
+            withTimeout(10_000) {
+                while (bob.mediaTransferDao.transfers.values.none { it.status == TransferStatus.QUEUED.name }) delay(10)
+            }
+            val stoppedWrites = chunkWrites.get()
+            delay(350)
+            assertEquals("Quiet transfer must not keep replaying accepted bytes", stoppedWrites, chunkWrites.get())
+            assertNotEquals(MediaStatus.DELIVERED.name, alice.mediaDao.mediaMap.values.first().status)
+            dropChunks.set(false)
+            bob.mediaService!!.recoverDeliveryPath("some-other-peer")
+            delay(100)
+            assertEquals(stoppedWrites, chunkWrites.get())
+            bob.mediaService!!.recoverDeliveryPath("rel_alice_bob")
+            withTimeout(10_000) {
+                while (alice.mediaDao.mediaMap.values.none { it.status == MediaStatus.DELIVERED.name }) delay(10)
+            }
+        } finally { alice.agent.stop(); bob.agent.stop() }
+    }
+
+    @Test
+    fun receiverCompletionIsRecoverableWhenDurableConfirmationInsertFails() = runBlocking {
+        val (alice, bob) = setupPair(dedicatedMedia = true, recoveryIdleMs = 100)
+        val failedCompletion = java.util.concurrent.atomic.AtomicBoolean(false)
+        val allowCompletion = java.util.concurrent.atomic.AtomicBoolean(false)
+        bob.outboxDao.beforeInsert = { item ->
+            if (item.applicationSequence != null && bob.mediaDao.mediaMap.values.any { it.status == MediaStatus.COMPLETE.name } &&
+                !allowCompletion.get()) {
+                failedCompletion.set(true)
+                throw java.io.IOException("Simulated completion transaction failure")
+            }
+        }
+        try {
+            val bytes = ByteArray(300) { it.toByte() }
+            alice.mediaService!!.sendMedia("conv_alice_bob", "rel_alice_bob", alice.identityId, bob.identityId,
+                MediaType.DOCUMENT, "completion.bin", "application/octet-stream", bytes)
+            withTimeout(10_000) { while (!failedCompletion.get()) delay(5) }
+            val received = bob.mediaDao.mediaMap.values.first()
+            assertNotEquals("Receiver must remain recoverable until completion signal commits", TransferStatus.COMPLETED.name,
+                bob.mediaTransferDao.getByMediaId(received.mediaId)!!.status)
+            assertArrayEquals(bytes, File(received.localPath!!).readBytes())
+            val retainedCiphertext = File(bob.mediaTransferDao.getByMediaId(received.mediaId)!!.tempEncryptedPath)
+            assertTrue("Receiver ciphertext must survive a failed completion transaction", retainedCiphertext.isFile)
+            allowCompletion.set(true)
+            bob.mediaService!!.recoverPendingTransfersOnStartup()
+            withTimeout(10_000) {
+                while (alice.mediaDao.getById(received.mediaId)?.status != MediaStatus.DELIVERED.name) delay(10)
+            }
+            assertEquals(TransferStatus.COMPLETED.name, bob.mediaTransferDao.getByMediaId(received.mediaId)!!.status)
+            withTimeout(5_000) { while (retainedCiphertext.exists()) delay(5) }
+        } finally { alice.agent.stop(); bob.agent.stop() }
+    }
+
+    @Test
+    fun authenticatedMediaAdmissionRejectsBeforeFileAndBitmapPersistence() = runBlocking {
+        val (alice, bob) = setupPair(dedicatedMedia = true)
+        val mediaId = UUID.randomUUID().toString()
+        val messageId = UUID.randomUUID().toString()
+        val key = MediaCrypto.generateMediaKey()
+        val plaintext = byteArrayOf(1, 2, 3, 4)
+        val ciphertext = MediaCrypto.encrypt(key, plaintext)
+        val relationship = "rel_alice_bob"
+        bob.msgDao.insertIfAbsent(MessageEntity(messageId, "conv_alice_bob", alice.identityId,
+            MessageType.FILE.name, "attachment.bin", MessageDirection.INCOMING, DeliveryStatus.DELIVERED.name))
+        bob.mediaDao.insert(MediaEntity(mediaId, messageId, "conv_alice_bob", MediaType.DOCUMENT.name,
+            "application/octet-stream", "attachment.bin", plaintext.size.toLong(),
+            encryptedSha256 = MediaCrypto.sha256Hex(ciphertext), mediaKey = key, status = MediaStatus.QUEUED.name))
+        bob.mediaTransferDao.upsert(MediaTransferEntity(mediaId, mediaId, "conv_alice_bob", relationship,
+            TransferDirection.DOWNLOAD.name, 1, MediaService.DEFAULT_CHUNK_SIZE,
+            tempEncryptedPath = bob.mediaStorage.getTempEncryptedFile(mediaId).absolutePath,
+            status = TransferStatus.ACTIVE.name, totalBytes = ciphertext.size.toLong()))
+        val frame = DedicatedMediaFrame(mediaId, 0, 1,
+            DedicatedMediaChunkCrypto.encrypt(key, mediaId, relationship, 0, 1, ciphertext))
+        val raw = DedicatedMediaFrameCodec.encode(frame)
+        var admittedRelationship: String? = null
+        var admissionCalls = 0
+        try {
+            assertFalse(bob.mediaService!!.handleDedicatedMediaFrame(raw, TransportType.TOR, null) {
+                admittedRelationship = it
+                admissionCalls++
+                false
+            })
+            assertEquals(relationship, admittedRelationship)
+            assertEquals(1, admissionCalls)
+            assertEquals("", bob.mediaTransferDao.getByMediaId(mediaId)!!.chunkBitmask)
+            assertFalse(bob.mediaStorage.getTempEncryptedFile(mediaId).exists())
+            assertNull(bob.mediaDao.getById(mediaId)!!.localPath)
+
+            val tampered = raw.copyOf().also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
+            assertFalse(bob.mediaService!!.handleDedicatedMediaFrame(tampered, TransportType.TOR, null) {
+                admissionCalls++
+                true
+            })
+            assertEquals("Failed AEAD must never claim a peer quota", 1, admissionCalls)
+            assertEquals("", bob.mediaTransferDao.getByMediaId(mediaId)!!.chunkBitmask)
+        } finally { alice.agent.stop(); bob.agent.stop() }
     }
 
     @Test

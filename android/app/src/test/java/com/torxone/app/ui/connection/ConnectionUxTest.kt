@@ -8,6 +8,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ConnectionUxTest {
+    @Test fun terminalSequenceExposesBlockedRepairAndCannotOfferRetryOrAnAttemptTime() {
+        for (status in listOf("FAILED", "EXPIRED")) {
+            val terminal = outbox(status).copy(applicationSequence = 1)
+            val state = requireNotNull(ConnectionUxPresentation.terminalOrderedHead(status, 1))
+            assertEquals("Delivery blocked · repair required", state.first)
+            assertTrue(state.second.contains(status.lowercase()))
+            assertTrue(state.second.contains("does not reset"))
+            // Even a mismatched restored message status must not offer a retry
+            // which cannot resume its terminal ordered delivery.
+            val info = MessageInfoPresentation.from(message(), listOf(terminal))
+            assertFalse(info.canRetry)
+            assertTrue(info.rows.first { it.label == "Delivery stage" }.value!!.contains("blocks later messages"))
+            assertNull(info.rows.first { it.label == "Next scheduled attempt" }.timestamp)
+            assertNull(ConnectionUxPresentation.terminalOrderedHead(status, null))
+        }
+        assertNull(ConnectionUxPresentation.terminalOrderedHead("WAITING_FOR_PEER", 1))
+    }
+
+    @Test fun waitingPeerExposesRepairAndDoesNotClaimAnAutomaticRetryTime() {
+        val item = OutboxEntity("waiting", "message", "conversation", "connection", "queue",
+            byteArrayOf(1), ByteArray(32), "WAITING_FOR_PEER", attemptCount = 8, nextAttemptAt = 400)
+        val info = MessageInfoPresentation.from(MessageEntity("message", "conversation", "sender", "TEXT", "fixture",
+            MessageDirection.OUTGOING, "WAITING_FOR_PEER"), listOf(item))
+        assertTrue(info.canRetry)
+        assertTrue(info.rows.first { it.label == "Delivery stage" }.value!!.contains("rescan"))
+        assertNull(info.rows.first { it.label == "Next scheduled attempt" }.timestamp)
+        assertNull(info.rows.first { it.label == "Delivered (peer ACK)" }.timestamp)
+    }
+
     private fun message(direction: MessageDirection = MessageDirection.OUTGOING, status: String = "QUEUED") =
         MessageEntity("message", "conversation", "sender", "TEXT", "hello", direction, status, createdAt = 100)
     private fun outbox(status: String = "QUEUED", messageId: String = "message") = OutboxEntity(
@@ -107,5 +136,15 @@ class ConnectionUxTest {
         assertTrue(state.sendingPaused)
         assertEquals(3, state.pendingDeliveries)
         assertEquals(7, state.pendingControlDeliveries)
+    }
+
+    @Test fun torRecoveryIsAvailableWithAnEmptyPausedQueue() {
+        val state = ConnectionUxPresentation.create("Wi-Fi", true,
+            listOf(ConnectionPathInfo("Tor", "Unavailable: restart Tor to retry")), false, false,
+            pending = 0, nearbySearching = false, sendingPaused = true, torRetryAvailable = true)
+        assertTrue(state.torRetryAvailable)
+        assertTrue(state.sendingPaused)
+        assertEquals(0, state.pendingDeliveries)
+        assertEquals("Sending paused", state.headline)
     }
 }

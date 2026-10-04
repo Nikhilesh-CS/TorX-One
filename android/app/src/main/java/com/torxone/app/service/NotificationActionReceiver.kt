@@ -42,13 +42,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
                 val replyText = remoteInput?.getCharSequence(TorXNotificationManager.KEY_TEXT_REPLY)?.toString()
 
                 if (!replyText.isNullOrBlank()) {
-                    Log.i(TAG, "[INLINE REPLY] Sending reply in conv=$conversationId")
+                    Log.i(TAG, "[INLINE REPLY] Sending notification reply")
                     val pendingResult = goAsync()
                     CoroutineScope(Dispatchers.IO).launch {
                         try {
                             if (openIfLocked(context, app, conversationId)) return@launch
                             val conv = app.database.conversationDao().getById(conversationId) ?: run {
-                                Log.e(TAG, "[INLINE REPLY] Conversation not found: $conversationId")
+                                Log.e(TAG, "[INLINE REPLY] Conversation not found")
                                 return@launch
                             }
                             val isGroup = conv.type == com.torxone.app.data.entity.ConversationType.GROUP
@@ -66,13 +66,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                     return@launch
                                 }
                                 val contact = contactDao.getByConversationId(conversationId) ?: run {
-                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Contact missing for conv=$conversationId")
+                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Contact missing")
                                     return@launch
                                 }
                                 val relationshipId = contact.relationshipId
                                 val recipientId = contact.remoteIdentityId
                                 if (!contact.isRemoteIdentityKnown) {
-                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Security information for contact '${contact.displayName}' needs to be refreshed. Reconnect or re-add this contact.")
+                                    Log.e(TAG, "[INLINE REPLY] Fail closed: Security information for contact needs to be refreshed. Reconnect or re-add this contact")
                                     return@launch
                                 }
 
@@ -95,7 +95,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                 notificationManager.cancelForConversation(conversationId)
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "Failed to send inline reply: ${e.message}", e)
+                            Log.e(TAG, "Failed to send inline reply")
                         } finally {
                             pendingResult.finish()
                         }
@@ -104,13 +104,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
             }
 
             TorXNotificationManager.ACTION_MARK_AS_READ -> {
-                Log.i(TAG, "[MARK READ] Marking conv=$conversationId read from notification")
+                Log.i(TAG, "[MARK READ] Marking read from notification")
                 val pendingResult = goAsync()
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
                         if (openIfLocked(context, app, conversationId)) return@launch
                         val conv = app.database.conversationDao().getById(conversationId) ?: run {
-                            Log.e(TAG, "[MARK READ] Conversation not found: $conversationId")
+                            Log.e(TAG, "[MARK READ] Conversation not found")
                             return@launch
                         }
                         val isGroup = conv.type == com.torxone.app.data.entity.ConversationType.GROUP
@@ -124,13 +124,13 @@ class NotificationActionReceiver : BroadcastReceiver() {
                                 return@launch
                             }
                             val contact = contactDao.getByConversationId(conversationId) ?: run {
-                                Log.e(TAG, "[MARK READ] Fail closed: Contact missing for conv=$conversationId")
+                                Log.e(TAG, "[MARK READ] Fail closed: Contact missing")
                                 return@launch
                             }
                             val relationshipId = contact.relationshipId
                             val recipientId = contact.remoteIdentityId
                             if (!contact.isRemoteIdentityKnown) {
-                                Log.e(TAG, "[MARK READ] Fail closed: Security information for contact '${contact.displayName}' needs to be refreshed. Reconnect or re-add this contact.")
+                                Log.e(TAG, "[MARK READ] Fail closed: Security information for contact needs to be refreshed. Reconnect or re-add this contact")
                                 return@launch
                             }
 
@@ -143,7 +143,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
                             notificationManager.cancelForConversation(conversationId)
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to mark as read: ${e.message}", e)
+                        Log.e(TAG, "Failed to mark as read")
                     } finally {
                         pendingResult.finish()
                     }

@@ -63,6 +63,10 @@ class RelationshipSendCoordinator(
         return mutex.withLock {
             // 1. Read current durable sequence from database or connection
             val dbConn = connectionDao?.getByRelationshipId(relationshipId)
+            check(connectionDao == null || (dbConn != null && dbConn.state == "ACTIVE" && dbConn.connectionId == connection.connectionId &&
+                dbConn.generation == connection.generation)) {
+                "Pairing is incomplete or this secure connection changed. Wait for pairing confirmation before sending."
+            }
             val liveConnection = connectionManager.getConnectionByRelationship(relationshipId)
             val currentSeq = maxOf(
                 dbConn?.sendSequence ?: 0L,
@@ -93,7 +97,7 @@ class RelationshipSendCoordinator(
                     }
                 }
             } catch (e: Throwable) {
-                Log.e(TAG, "Failed sequenced send for relationship $relationshipId at seq $nextSeq: ${e.message}", e)
+                Log.e(TAG, "Failed sequenced send for relationship at seq")
                 throw e
             }
 
@@ -115,6 +119,11 @@ class RelationshipSendCoordinator(
     ): T {
         require(envelope.directionSequence == 0L) { "Unsequenced envelope must use sequence zero" }
         return getLock(relationshipId).withLock {
+            val dbConn = connectionDao?.getByRelationshipId(relationshipId)
+            check(connectionDao == null || (dbConn != null && dbConn.state == "ACTIVE" && dbConn.connectionId == connection.connectionId &&
+                dbConn.generation == connection.generation)) {
+                "Pairing is incomplete or this secure connection changed. Wait for pairing confirmation before sending."
+            }
             val envelopeBytes = ProtocolCodec.encodeSecureEnvelope(envelope)
             val aad = "torx-aad-v1:${connection.generation}:${connection.sendQueueId}".toByteArray(Charsets.UTF_8)
             var domainResult: T? = null

@@ -38,9 +38,9 @@ fun ConversationListScreen(
     onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit,
     onScanQrClick: () -> Unit,
+    modifier: Modifier = Modifier,
     onNewGroupClick: () -> Unit = {},
-    onSettingsClick: () -> Unit = {},
-    modifier: Modifier = Modifier
+    onSettingsClick: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -74,14 +74,15 @@ fun ConversationListScreen(
 @Composable
 fun ConversationListScreen(
     conversations: List<ConversationUiModel>,
+    onConversationClick: (String) -> Unit,
+    onScanQrClick: () -> Unit,
+    modifier: Modifier = Modifier,
     archivedCount: Int = 0,
     searchQuery: String = "",
     isSearching: Boolean = false,
     onSearchQueryChange: (String) -> Unit = {},
     onToggleSearch: (Boolean) -> Unit = {},
-    onConversationClick: (String) -> Unit,
     onArchivedClick: () -> Unit = {},
-    onScanQrClick: () -> Unit,
     onNewGroupClick: () -> Unit = {},
     onSettingsClick: () -> Unit = {},
     onPinClick: (ConversationUiModel) -> Unit = {},
@@ -90,8 +91,7 @@ fun ConversationListScreen(
     onUnmuteClick: (ConversationUiModel) -> Unit = {},
     onMarkReadClick: (ConversationUiModel) -> Unit = {},
     onMarkUnreadClick: (ConversationUiModel) -> Unit = {},
-    onDeleteChatClick: (ConversationUiModel) -> Unit = {},
-    modifier: Modifier = Modifier
+    onDeleteChatClick: (ConversationUiModel) -> Unit = {}
 ) {
     var selectedForActionSheet by remember { mutableStateOf<ConversationUiModel?>(null) }
     var conversationPendingMute by remember { mutableStateOf<ConversationUiModel?>(null) }

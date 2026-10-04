@@ -187,12 +187,13 @@ class NearbyTransportTest {
             items[deliveryId]?.let { items[deliveryId] = it.copy(status = status) }
         }
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = DeliveryStatus.RETRY_WAIT, attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
         }
         override suspend fun removeByMessageId(logicalMessageId: String) {
             val key = items.values.find { it.logicalMessageId == logicalMessageId }?.deliveryId
             if (key != null) items.remove(key)
         }
+        override suspend fun removeByDeliveryId(deliveryId: String) { items.remove(deliveryId) }
     }
 
     class InMemoryProcessed : ProcessedEnvelopeStore {
@@ -409,10 +410,25 @@ class NearbyTransportTest {
             }
         }
 
+        val recoveryStores = listOf(
+            com.torxone.app.agent.EndToEndPipelineTest.InMemoryOutboxStore(),
+            com.torxone.app.agent.EndToEndPipelineTest.InMemoryOutboxStore()
+        )
+        for (store in recoveryStores) {
+            for (relationship in listOf(relationshipId, "unrelated-peer")) {
+                store.insert(DeliveryItem(deliveryId = relationship, logicalMessageId = relationship,
+                    conversationId = relationship, connectionId = relationship, queueAddress = "$relationship-q",
+                    ciphertext = byteArrayOf(1), queueAuthenticator = ByteArray(32),
+                    status = DeliveryStatus.WAITING_FOR_PEER, attemptCount = 8, relationshipId = relationship))
+            }
+        }
+        val recoveryAgents = recoveryStores.map { TorXAgent(TransportRouter(), it) }
+
         val transportAlice = NearbyTransport(
             context = DummyContext(),
             incomingTransportHub = hubAlice,
             connectionManager = connManagerAlice,
+            agent = recoveryAgents[0],
             customEndpointName = "TorX_200",
             adapter = adapterAlice
         )
@@ -420,6 +436,7 @@ class NearbyTransportTest {
             context = DummyContext(),
             incomingTransportHub = hubBob,
             connectionManager = connManagerBob,
+            agent = recoveryAgents[1],
             customEndpointName = "TorX_100",
             adapter = adapterBob
         )
@@ -437,6 +454,15 @@ class NearbyTransportTest {
 
         assertTrue("Alice route must be authenticated and READY", transportAlice.directRouteTable.isReady(relationshipId))
         assertTrue("Bob route must be authenticated and READY", transportBob.directRouteTable.isReady(relationshipId))
+        var recoveryWait = 0
+        while (recoveryStores.any { it.items[relationshipId]?.status != DeliveryStatus.QUEUED } && recoveryWait++ < 50) delay(20)
+        for (store in recoveryStores) {
+            assertEquals(DeliveryStatus.QUEUED, store.items[relationshipId]!!.status)
+            assertEquals(0, store.items[relationshipId]!!.attemptCount)
+            assertEquals("Authenticated Nearby recovery belongs to one peer", DeliveryStatus.WAITING_FOR_PEER,
+                store.items["unrelated-peer"]!!.status)
+            assertEquals(8, store.items["unrelated-peer"]!!.attemptCount)
+        }
 
         // Send user data from Alice to Bob
         val sendResult = transportAlice.send(TransportDestination("q-a2b"), "Hello from Alice!".toByteArray())
@@ -460,6 +486,7 @@ class NearbyTransportTest {
 
         transportAlice.stop()
         transportBob.stop()
+        recoveryAgents.forEach(TorXAgent::stop)
     }
 
     @Test

@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
@@ -49,7 +50,7 @@ fun AvatarEditor(uri: Uri, onSaved: (String) -> Unit, onDismiss: () -> Unit) {
             while (options.outWidth / options.inSampleSize > 2048 || options.outHeight / options.inSampleSize > 2048) options.inSampleSize *= 2
             options.inJustDecodeBounds = false
             val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("Cannot decode image")
-            val orientation = android.media.ExifInterface(bytes.inputStream()).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)
+            val orientation = ExifInterface(bytes.inputStream()).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
             val matrix = android.graphics.Matrix().apply {
                 when (orientation) {
                     2 -> setScale(-1f, 1f); 3 -> setRotate(180f); 4 -> setScale(1f, -1f)
@@ -58,7 +59,10 @@ fun AvatarEditor(uri: Uri, onSaved: (String) -> Unit, onDismiss: () -> Unit) {
                 }
             }
             Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
-        }.onFailure { error = it.message }.getOrNull() }
+        }.onFailure {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            error = "This image could not be opened. Choose a supported image under 10 MB."
+        }.getOrNull() }
     }
     var zoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }

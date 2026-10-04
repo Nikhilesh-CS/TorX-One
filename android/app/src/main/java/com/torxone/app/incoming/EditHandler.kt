@@ -19,23 +19,20 @@ class EditHandler(
         val edit = try {
             MessageEdit.fromByteArray(envelope.payload)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode MessageEdit: ${e.message}")
+            Log.e(TAG, "Failed to decode MessageEdit")
             return false
         }
 
         val targetMsg = messageDao.getById(edit.targetMessageId)
         if (targetMsg == null) {
-            Log.w(TAG, "Edit target ${edit.targetMessageId.take(8)} not found")
+            Log.w(TAG, "Edit target not found")
             return false
         }
         if (targetMsg.conversationId != (envelope.groupMetadata?.groupId ?: envelope.conversationId)) return false
 
         // Rule 1: Only original sender may edit
         if (targetMsg.senderId != envelope.senderIdentity) {
-            Log.w(
-                TAG,
-                "Edit rejected: sender ${envelope.senderIdentity.take(8)} is not original author ${targetMsg.senderId.take(8)}"
-            )
+            Log.w(TAG, "Edit rejected: sender is not original author")
             return false
         }
 
@@ -46,23 +43,17 @@ class EditHandler(
             return true
         }
         if (targetMsg.deletedAt != null) {
-            Log.w(TAG, "Edit rejected: message ${edit.targetMessageId.take(8)} was already deleted")
+            Log.w(TAG, "Edit rejected: message was already deleted")
             return false
         }
 
         // Rule 3: new version > stored version; duplicate or older edit ignored
         if (targetMsg.editVersion == Int.MAX_VALUE || edit.editVersion != targetMsg.editVersion + 1) {
-            Log.d(
-                TAG,
-                "Edit rejected: incoming version ${edit.editVersion} is not the exact next version after ${targetMsg.editVersion}"
-            )
+            Log.d(TAG, "Edit rejected: incoming version is not the exact next version")
             return false
         }
 
-        Log.i(
-            TAG,
-            "[EDIT] Updating msg=${edit.targetMessageId.take(8)} to version=${edit.editVersion}"
-        )
+        Log.i(TAG, "[EDIT] Applying authenticated update")
 
         messageDao.updateBodyAndEdit(
             messageId = edit.targetMessageId,

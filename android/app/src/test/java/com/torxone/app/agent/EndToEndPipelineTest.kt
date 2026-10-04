@@ -40,7 +40,7 @@ class EndToEndPipelineTest {
                     (it.status == DeliveryStatus.QUEUED ||
                      it.status == DeliveryStatus.RETRY_WAIT ||
                      it.status == DeliveryStatus.TRANSMITTING ||
-                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED)
+                     it.status == DeliveryStatus.TRANSPORT_ACCEPTED || it.status == DeliveryStatus.WAITING_FOR_PEER)
                 }
                 .sortedWith(
                     compareByDescending<DeliveryItem> { it.priority }
@@ -54,7 +54,7 @@ class EndToEndPipelineTest {
         }
 
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = DeliveryStatus.RETRY_WAIT, attemptCount = attemptCount, nextAttemptAt = nextAttemptAt, updatedAt = System.currentTimeMillis()) }
         }
 
         override suspend fun removeByDeliveryId(deliveryId: String) {
@@ -205,6 +205,7 @@ class EndToEndPipelineTest {
     }
 
     class InMemoryOutboxDao(val store: InMemoryOutboxStore) : OutboxDao {
+        override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
         override suspend fun getPending(): List<OutboxEntity> {
             return store.getPendingItems().map {
                 OutboxEntity(
@@ -221,7 +222,9 @@ class EndToEndPipelineTest {
                     nextAttemptAt = it.nextAttemptAt,
                     createdAt = it.createdAt,
                     updatedAt = it.updatedAt,
-                    expectsAck = it.expectsAck
+                    expectsAck = it.expectsAck,
+                    applicationSequence = it.applicationSequence,
+                    relationshipId = it.relationshipId
                 )
             }
         }
@@ -240,7 +243,9 @@ class EndToEndPipelineTest {
                 nextAttemptAt = item.nextAttemptAt,
                 createdAt = item.createdAt,
                 updatedAt = item.updatedAt,
-                expectsAck = item.expectsAck
+                expectsAck = item.expectsAck,
+                applicationSequence = item.applicationSequence,
+                relationshipId = item.relationshipId
             ))
         }
         override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {
@@ -409,6 +414,8 @@ class EndToEndPipelineTest {
         val pendingInviteDao = InMemoryPendingInviteDao()
         val bootstrapStateDao = MemoryBootstrapStates()
         val consumedInviteDao = MemoryConsumedInvites()
+        val endpointDao = com.torxone.app.transport.tor.PeerTorEndpointRepositoryTest.MemoryEndpoints()
+        val peerTorEndpoints = com.torxone.app.transport.tor.PeerTorEndpointRepository(endpointDao)
         val identityRepo: InMemoryIdentityRepository
         val connectionManager = ConnectionManager(keyProtector = com.torxone.app.crypto.NoOpKeyProtector())
         val activeTracker = ActiveConversationTracker()
@@ -438,6 +445,7 @@ class EndToEndPipelineTest {
                 processedStore = processedDao,
                 coroutineDispatcher = Dispatchers.Default,
                 baseRetryDelayMs = 200L,
+                receiverAckTimeoutMs = 200L,
                 outboxPollIntervalMs = 50L
             )
             chatReceiver = ChatReceiver(messageDao, conversationDao, activeTracker)
@@ -457,7 +465,9 @@ class EndToEndPipelineTest {
                 connectionDao = connectionDao,
                 contactDao = contactDao,
                 conversationDao = conversationDao,
-                bootstrapStateDao = bootstrapStateDao, consumedInviteDao = consumedInviteDao
+                bootstrapStateDao = bootstrapStateDao, consumedInviteDao = consumedInviteDao,
+                peerTorEndpointDao = endpointDao, peerTorEndpoints = peerTorEndpoints,
+                sessionStore = sessionStore
             )
             incomingHub = IncomingTransportHub(dispatcher)
             transportRouter.registerTransport(fakeTransport)
@@ -467,6 +477,80 @@ class EndToEndPipelineTest {
         fun stop() {
             agent.stop()
         }
+    }
+
+    @Test fun torAdmissionRejectsBeforeRatchetCommitAndTheSameCiphertextCanBeRetried() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            val relationship = "rel-alice-bob"
+            val conn = alice.connectionManager.getConnectionByRelationship(relationship)!!
+            val envelope = SecureEnvelope(protocolVersion = 1, logicalMessageId = "quota-text",
+                conversationId = "conv-1", senderIdentity = alice.identity.identityId,
+                recipientBinding = bob.identity.identityId, directionSequence = 1,
+                messageType = MessageType.TEXT, timestamp = System.currentTimeMillis(), payload = "retained".toByteArray())
+            val aad = "torx-aad-v1:${conn.generation}:${conn.sendQueueId}".toByteArray()
+            val cipher = alice.sessionCrypto.encrypt(relationship, ProtocolCodec.encodeSecureEnvelope(envelope), aad).serialize()
+            val outer = OpaqueTransportEnvelope(version = 1, envelopeId = "quota-envelope",
+                queueAddress = conn.sendQueueId, opaqueCiphertext = cipher,
+                queueAuthenticator = IdentityCrypto.computeQueueAuthenticator(queueAuthSecret = conn.sendAuth,
+                    envelopeId = "quota-envelope", queueAddress = conn.sendQueueId, ciphertext = cipher))
+            val raw = ProtocolCodec.encodeTransportEnvelope(outer)
+            val before = bob.sessionStore.loadSession(relationship)!!
+            val admitted = mutableListOf<String>()
+            assertFalse(bob.incomingHub.onRawTorFrameReceived(raw) { admitted += it; false })
+            assertEquals(listOf(relationship), admitted)
+            val rejected = bob.sessionStore.loadSession(relationship)!!
+            assertArrayEquals(before.rootKey, rejected.rootKey)
+            assertEquals(before.receiveMessageNumber, rejected.receiveMessageNumber)
+            assertEquals(0L, bob.connectionManager.getConnectionByRelationship(relationship)!!.recvSequence)
+            assertTrue(bob.processedDao.records.isEmpty())
+            assertTrue(bob.messageDao.messages.isEmpty())
+            assertTrue(bob.outboxStore.items.isEmpty())
+            assertTrue(bob.incomingHub.onRawTorFrameReceived(raw) { it == relationship })
+            assertEquals("retained", bob.messageDao.getById("quota-text")?.body)
+            assertEquals(1L, bob.connectionManager.getConnectionByRelationship(relationship)!!.recvSequence)
+        } finally { alice.stop(); bob.stop() }
+    }
+
+    @Test fun unauthenticatedTorHeaderNeverAcquiresRelationshipQuota() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            val conn = alice.connectionManager.getConnectionByRelationship("rel-alice-bob")!!
+            val outer = OpaqueTransportEnvelope(version = 1, envelopeId = "untrusted",
+                queueAddress = conn.sendQueueId, opaqueCiphertext = byteArrayOf(1, 2, 3),
+                queueAuthenticator = ByteArray(32))
+            var called = false
+            assertFalse(bob.incomingHub.onRawTorFrameReceived(ProtocolCodec.encodeTransportEnvelope(outer)) { called = true; true })
+            assertFalse(called)
+            assertTrue(bob.processedDao.records.isEmpty())
+            assertTrue(bob.messageDao.messages.isEmpty())
+        } finally { alice.stop(); bob.stop() }
+    }
+
+    @Test fun signedBootstrapQuotaRejectionLeavesNoPairingAndRetryStillWorks() = runBlocking {
+        val alice = Node("Alice")
+        val bob = Node("Bob")
+        try {
+            val invite = bob.identityRepo.createContactInvite()
+            val pair = RelationshipService.establishFromInvite(alice.identity, invite, "new-contact")
+            val bootstrap = com.torxone.app.contacts.signedBootstrapPayload(alice.identity, invite.inviteId,
+                pair.aliceEphemeralPublicKey, "a".repeat(56) + ".onion")
+            val raw = ProtocolCodec.encodeTransportEnvelope(OpaqueTransportEnvelope(version = 1,
+                envelopeId = "quota-bootstrap", queueAddress = "invite-${invite.inviteId}",
+                opaqueCiphertext = bootstrap.toByteArray(), queueAuthenticator = ByteArray(32)))
+            var verifiedRelationship: String? = null
+            assertFalse(bob.incomingHub.onRawTorFrameReceived(raw) { verifiedRelationship = it; false })
+            assertEquals(pair.relationship.relationshipId, verifiedRelationship)
+            assertTrue(bob.connectionDao.connections.isEmpty())
+            assertTrue(bob.contactDao.contacts.isEmpty())
+            assertTrue(bob.consumedInviteDao.invites.isEmpty())
+            assertTrue(bob.endpointDao.rows.isEmpty())
+            assertNull(bob.sessionStore.loadSession(pair.relationship.relationshipId))
+            assertNotNull(bob.pendingInviteDao.getById(invite.inviteId))
+            assertTrue(bob.incomingHub.onRawTorFrameReceived(raw) { it == verifiedRelationship })
+            assertNotNull(bob.sessionStore.loadSession(pair.relationship.relationshipId))
+            assertEquals(1, bob.contactDao.contacts.size)
+        } finally { alice.stop(); bob.stop() }
     }
 
     private suspend fun waitFor(timeoutMs: Long = 5000, condition: suspend () -> Boolean) {
@@ -658,7 +742,7 @@ class EndToEndPipelineTest {
         waitFor { alice.messageDao.getById(messageId)?.status == DeliveryStatus.DELIVERED.name }
         val aliceMsg = alice.messageDao.getById(messageId)
         assertNotNull(aliceMsg)
-        assertEquals("Alice message status must be DELIVERED (✓✓)", DeliveryStatus.DELIVERED.name, aliceMsg!!.status)
+        assertEquals("Alice message status must be DELIVERED (âœ“âœ“)", DeliveryStatus.DELIVERED.name, aliceMsg!!.status)
         assertNotNull("DeliveredAt timestamp must be recorded", aliceMsg.deliveredAt)
 
         alice.stop()
@@ -774,7 +858,9 @@ class EndToEndPipelineTest {
             queueAddress = conn.sendQueueId,
             ciphertext = encryptedMsg.serialize(),
             queueAuthenticator = conn.sendAuth,
-            status = DeliveryStatus.QUEUED
+            status = DeliveryStatus.QUEUED,
+            relationshipId = relationshipId,
+            applicationSequence = seq
         )
         sender.agent.enqueue(deliveryItem)
     }
@@ -812,6 +898,57 @@ class EndToEndPipelineTest {
         } finally { alice.stop(); bob.stop() }
     }
 
+    @Test fun delayedDurableHeadCommitsOnceIsAckedAndUnblocksNextSequence() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            alice.fakeTransport.duplicateDelivery = true
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "offline-head", "Sent while you were offline",
+                timestamp = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000)
+            waitFor { alice.messageDao.getById("offline-head")?.status == DeliveryStatus.DELIVERED.name }
+            assertEquals("Sent while you were offline", bob.messageDao.getById("offline-head")?.body)
+            assertEquals(1, bob.messageDao.messages.size)
+            assertEquals(1L, bob.connectionManager.getConnectionByRelationship("rel-alice-bob")?.recvSequence)
+            sendMessage(alice, bob, "rel-alice-bob", "conv-1", "after-offline", "The next sequence")
+            waitFor { alice.messageDao.getById("after-offline")?.status == DeliveryStatus.DELIVERED.name }
+            assertEquals(2L, bob.connectionManager.getConnectionByRelationship("rel-alice-bob")?.recvSequence)
+            assertEquals(2, bob.messageDao.messages.size)
+        } finally { alice.stop(); bob.stop() }
+    }
+
+    @Test fun invalidFutureDurableTimestampDoesNotCommitRatchetOrSequence() = runBlocking {
+        val (alice, bob) = setupAliceAndBobNodes()
+        try {
+            val conn = alice.connectionManager.getConnectionByRelationship("rel-alice-bob")!!
+            val before = bob.sessionStore.loadSession("rel-alice-bob")!!
+            for (timestamp in listOf(0L, System.currentTimeMillis() + 2 * ProtocolLimits.MAX_TIMESTAMP_SKEW_MS)) {
+                val envelope = SecureEnvelope(protocolVersion = 1, logicalMessageId = "invalid-timestamp-$timestamp",
+                    conversationId = "conv-1", senderIdentity = alice.identity.identityId,
+                    recipientBinding = bob.identity.identityId, directionSequence = 1L,
+                    messageType = MessageType.TEXT, timestamp = timestamp.coerceAtLeast(1), payload = "invalid".toByteArray())
+                val encoded = ProtocolCodec.encodeSecureEnvelope(envelope)
+                if (timestamp == 0L) {
+                    // The normal encoder refuses invalid timestamps. Create the
+                    // malformed authenticated wire fixture before encryption.
+                    val input = java.io.DataInputStream(java.io.ByteArrayInputStream(encoded))
+                    input.readInt(); input.readShort()
+                    repeat(5) { input.readUTF() }
+                    java.nio.ByteBuffer.wrap(encoded).putLong(encoded.size - input.available(), 0L)
+                }
+                val encrypted = alice.sessionCrypto.encrypt("rel-alice-bob", encoded,
+                    "torx-aad-v1:${conn.generation}:${conn.sendQueueId}".toByteArray()).serialize()
+                val delivery = UUID.randomUUID().toString()
+                val frame = OpaqueTransportEnvelope(version = 1, envelopeId = delivery, queueAddress = conn.sendQueueId,
+                    opaqueCiphertext = encrypted, queueAuthenticator =
+                    IdentityCrypto.computeQueueAuthenticator(conn.sendAuth, delivery, conn.sendQueueId, encrypted))
+                assertFalse(bob.dispatcher.dispatch(ProtocolCodec.encodeTransportEnvelope(frame), TransportType.FAKE))
+                assertTrue(bob.messageDao.messages.isEmpty())
+                assertTrue(bob.processedDao.records.isEmpty())
+                assertEquals(0L, bob.connectionManager.getConnectionByRelationship("rel-alice-bob")?.recvSequence)
+                assertEquals(before.receiveMessageNumber, bob.sessionStore.loadSession("rel-alice-bob")?.receiveMessageNumber)
+            }
+        } finally { alice.stop(); bob.stop() }
+    }
+
     @Test
     fun testBidirectionalSimultaneousMessaging() = runBlocking {
         val (alice, bob) = setupAliceAndBobNodes()
@@ -840,7 +977,7 @@ class EndToEndPipelineTest {
             alice.messageDao.messages.values.count { it.direction == com.torxone.app.data.entity.MessageDirection.INCOMING } == 10
         }
 
-        // Wait for authenticated ACKs to confirm delivery on both sides (DELIVERED status = ✓✓)
+        // Wait for authenticated ACKs to confirm delivery on both sides (DELIVERED status = âœ“âœ“)
         waitFor(10000) {
             alice.messageDao.messages.values.filter { it.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING }
                 .all { it.status == DeliveryStatus.DELIVERED.name } &&
@@ -1068,8 +1205,9 @@ class EndToEndPipelineTest {
             bob.connectionManager.getConnectionByRelationship(relationshipId)?.connectionId)
         assertEquals(1, bob.contactDao.contacts.size)
         val tampered = bootstrapWire.copy(signature = ByteArray(64)).toByteArray()
-        val invalidRetry = ProtocolCodec.encodeTransportEnvelope(OpaqueTransportEnvelope(1,
-            bootstrapItem.deliveryId, "invite-${scannedInvite.inviteId}", tampered, ByteArray(32)))
+        val invalidRetry = ProtocolCodec.encodeTransportEnvelope(OpaqueTransportEnvelope(version = 1,
+            envelopeId = bootstrapItem.deliveryId, queueAddress = "invite-${scannedInvite.inviteId}",
+            opaqueCiphertext = tampered, queueAuthenticator = ByteArray(32)))
         assertFalse("Consumed invite retries must authenticate the existing peer",
             bob.dispatcher.dispatch(invalidRetry, TransportType.FAKE))
 
@@ -1114,6 +1252,18 @@ class EndToEndPipelineTest {
         assertEquals(advanced.sessionId, alice.sessionStore.loadSession(relationshipId)?.sessionId)
         assertEquals(responderSessionId, bob.sessionStore.loadSession(relationshipId)?.sessionId)
         assertEquals(bobConn.connectionId, bob.connectionManager.getConnectionByRelationship(relationshipId)?.connectionId)
+
+        // Consumed bootstrap replay may regenerate a confirmation ACK, but cannot
+        // replace the current authoritative endpoint with its old signed address.
+        val refreshedRoute = com.torxone.app.transport.tor.TorRoute("b".repeat(56) + ".onion")
+        bob.peerTorEndpoints.bindVerified(relationshipId, refreshedRoute)
+        val signedReplay = ProtocolCodec.encodeTransportEnvelope(OpaqueTransportEnvelope(version = 1,
+            envelopeId = "bootstrap-replay", queueAddress = "invite-${scannedInvite.inviteId}",
+            opaqueCiphertext = recoveryWire.toByteArray(), queueAuthenticator = ByteArray(32)))
+        assertTrue(bob.dispatcher.dispatch(signedReplay, TransportType.FAKE))
+        assertEquals(refreshedRoute, bob.peerTorEndpoints.resolve(relationshipId))
+        assertEquals(refreshedRoute.onionHost, bob.endpointDao.getByRelationshipId(relationshipId)?.onionAddress)
+        assertEquals(responderSessionId, bob.sessionStore.loadSession(relationshipId)?.sessionId)
 
         alice.stop()
         bob.stop()

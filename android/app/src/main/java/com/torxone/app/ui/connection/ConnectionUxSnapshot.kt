@@ -12,15 +12,24 @@ data class ConnectionUxSnapshot(
     val pendingDeliveries: Int = 0,
     val error: String? = null,
     val sendingPaused: Boolean = false,
-    val pendingControlDeliveries: Int = 0
+    val pendingControlDeliveries: Int = 0,
+    val torRetryAvailable: Boolean = false
 )
 
 /** Presentation deliberately separates local transport readiness from remote delivery proof. */
 object ConnectionUxPresentation {
+    /** Terminal sequenced ciphertext is retained as an ordered blocker, not a retry candidate. */
+    fun terminalOrderedHead(status: String?, applicationSequence: Long?): Pair<String, String>? {
+        if (applicationSequence == null) return null
+        val terminalStatus = status?.takeIf { it == "FAILED" || it == "EXPIRED" } ?: return null
+        return "Delivery blocked · repair required" to
+            "An earlier saved message is marked ${terminalStatus.lowercase()} and blocks later messages. Its delivery acknowledgement or an explicit repair of that saved delivery can clear the block. Reconnecting or retrying the route does not reset it."
+    }
+
     fun create(
         internet: String, internetValidated: Boolean?, paths: List<ConnectionPathInfo>,
         verified: Boolean?, sessionReady: Boolean?, pending: Int, nearbySearching: Boolean,
-        sendingPaused: Boolean = false, controls: Int = 0
+        sendingPaused: Boolean = false, controls: Int = 0, torRetryAvailable: Boolean = false
     ): ConnectionUxSnapshot {
         val tor = paths.firstOrNull { it.name == "Tor" }?.routeReady == true
         val nearby = paths.firstOrNull { it.name == "Nearby" }?.routeReady == true
@@ -50,6 +59,7 @@ object ConnectionUxPresentation {
                 null -> "No direct-peer verification record"
             },
             when (sessionReady) { true -> "Active Double Ratchet session"; false -> "No active session"; null -> "Session information unavailable" },
-            pending.coerceAtLeast(0), sendingPaused = sendingPaused, pendingControlDeliveries = controls.coerceAtLeast(0))
+            pending.coerceAtLeast(0), sendingPaused = sendingPaused,
+            pendingControlDeliveries = controls.coerceAtLeast(0), torRetryAvailable = torRetryAvailable)
     }
 }

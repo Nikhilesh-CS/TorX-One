@@ -111,7 +111,7 @@ class TorXNotificationManager(
         }
 
         if (!NotificationPolicy.shouldNotify(conversationId, isForeground, activeChat)) {
-            Log.d(TAG, "[NOTIFY SUPPRESSED] Conversation $conversationId is currently active in foreground")
+            Log.d(TAG, "[NOTIFY SUPPRESSED] Conversation is currently active in foreground")
             return
         }
 
@@ -319,9 +319,9 @@ class TorXNotificationManager(
                 .build()
 
             notificationManager.notify(notificationId, notification)
-            Log.d(TAG, "[NOTIFIED] Updated notification for conv=$conversationId on $channelId")
+            Log.d(TAG, "[NOTIFIED] Conversation notification updated")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to refresh conversation notification: ${e.message}")
+            Log.e(TAG, "Failed to refresh conversation notification")
         }
     }
 
@@ -352,6 +352,6 @@ class TorXNotificationManager(
     fun cancelForConversation(conversationId: String) {
         val notificationId = NotificationPolicy.getNotificationId(conversationId)
         notificationManager.cancel(notificationId)
-        Log.d(TAG, "[NOTIFICATION CANCELLED] Cancelled notification for conv=$conversationId")
+        Log.d(TAG, "[NOTIFICATION CANCELLED] Cancelled notification")
     }
 }

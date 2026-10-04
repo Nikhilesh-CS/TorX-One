@@ -130,7 +130,10 @@ fun CallScreen(
                 onClick = {
                     val intent = if (!notificationsEnabled) android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                         .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    else android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    else if (android.os.Build.VERSION.SDK_INT >= 34)
+                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                            android.net.Uri.parse("package:${context.packageName}"))
+                    else android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                         android.net.Uri.parse("package:${context.packageName}"))
                     runCatching { context.startActivity(intent) }
                 }

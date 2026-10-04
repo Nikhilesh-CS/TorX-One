@@ -15,11 +15,14 @@ class TorTransport(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val peerTorEndpoints: PeerTorEndpointRepository? = null,
     private val relationshipForQueue: (String) -> String? = { null }
-) : Transport, AddressableTransport {
+) : Transport, AddressableTransport, RecoverableTransport {
     override val type = TransportType.TOR
     private val peers = TorPeerConnectionManager()
 
     fun closePendingConnections() { peers.closeAll() }
+    override fun invalidate(destination: TransportDestination) {
+        peers.invalidate(destination.relationshipId ?: relationshipForQueue(destination.address) ?: "bootstrap:${destination.address}")
+    }
 
     private fun route(destination: TransportDestination): TorRoute? {
         val relationship = destination.relationshipId ?: relationshipForQueue(destination.address)
@@ -38,8 +41,16 @@ class TorTransport(
 
     override fun canRoute(destination: TransportDestination): Boolean {
         val present = route(destination) != null
-        Log.i("TORX_DIAG", "route_lookup queue=${destination.address.take(8)} present=$present")
+        DeliveryDiagnostics.forDestination("route_lookup", destination, type, present = present)
         return present
+    }
+
+    override suspend fun prepareRoute(destination: TransportDestination): Boolean {
+        val relationship = destination.relationshipId ?: relationshipForQueue(destination.address)
+        // Read the authoritative row before an attempt, including deletion/supersession.
+        // Cache-only canRoute remains a cheap UI read; it never authorizes a send by itself.
+        if (relationship != null) peerTorEndpoints?.refresh(relationship)
+        return canRoute(destination)
     }
 
     override suspend fun send(destination: TransportDestination, payload: ByteArray): TransportResult =
@@ -52,15 +63,15 @@ class TorTransport(
             val route = route(destination)
                 ?: return@withContext TransportResult.Failed(type, "No Tor route for destination")
             try {
-                Log.i("TORX_DIAG", "tor_outbound queue=${destination.address.take(8)} routePresent=true")
                 val relationship = destination.relationshipId ?: relationshipForQueue(destination.address)
                 peers.send(relationship ?: "bootstrap:${destination.address}", route,
-                    state.socksPort, state.onionAddress, payload)
+                    state.socksPort, state.onionAddress, payload, destination)
                 TransportResult.Accepted(type)
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                Log.w("TORX_DIAG", "tor_send_failed queue=${destination.address.take(8)} type=${e.javaClass.simpleName}")
-                TransportResult.Failed(type, e.message ?: e.javaClass.simpleName)
+                DeliveryDiagnostics.forDestination("tor_send_failed", destination, type,
+                    state = if (e is java.net.SocketTimeoutException) "TIMEOUT" else "IO_FAILURE")
+                TransportResult.Failed(type, if (e is java.net.SocketTimeoutException) "Tor connect or write timed out" else "Tor peer unreachable")
             }
         }
 

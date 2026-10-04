@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -11,6 +12,7 @@ import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.torxone.app.TorXOneApplication
 
@@ -31,6 +33,7 @@ class TorXCoreService : Service() {
     }
 
     companion object {
+        private const val TAG = "TorXCoreService"
         private const val CHANNEL_SERVICE = "torx_core_service_channel"
         const val CORE_SERVICE_NOTIFICATION_ID = 8001
 
@@ -52,14 +55,23 @@ class TorXCoreService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(CORE_SERVICE_NOTIFICATION_ID, buildForegroundNotification())
-        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        networkWakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TorXOne:Networking")
-            .apply { setReferenceCounted(false) }
-        renewNetworkWakeLock.run()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Promotion can be denied when Android recreates this service while the app
+        // is in the background. Stop this start before acquiring CPU resources or
+        // starting networking; a visible activity can request a fresh start later.
+        if (!promoteToForeground()) {
+            releaseNetworkWakeLock()
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (networkWakeLock == null) {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            networkWakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TorXOne:Networking")
+                .apply { setReferenceCounted(false) }
+            renewNetworkWakeLock.run()
+        }
         val app = applicationContext as? TorXOneApplication
         if (app != null) {
             app.agent.start()
@@ -75,6 +87,23 @@ class TorXCoreService : Service() {
         return START_STICKY
     }
 
+    private fun promoteToForeground(): Boolean {
+        try {
+            startForeground(CORE_SERVICE_NOTIFICATION_ID, buildForegroundNotification())
+            return true
+        } catch (error: IllegalStateException) {
+            // Only the expected platform restriction is recoverable here. Preserve
+            // cancellation and surface unrelated service/configuration failures.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                error !is ForegroundServiceStartNotAllowedException
+            ) {
+                throw error
+            }
+            Log.w(TAG, "Core foreground start denied; waiting for a visible app start")
+            return false
+        }
+    }
+
     override fun onDestroy() {
         releaseNetworkWakeLock()
         super.onDestroy()
@@ -82,7 +111,7 @@ class TorXCoreService : Service() {
         // tearing transports down here creates an avoidable delivery outage meanwhile.
     }
 
-    @android.annotation.TargetApi(35)
+    @androidx.annotation.RequiresApi(35)
     override fun onTimeout(startId: Int, fgsType: Int) {
         // Respect Android's foreground-service time budget and release CPU resources.
         releaseNetworkWakeLock()

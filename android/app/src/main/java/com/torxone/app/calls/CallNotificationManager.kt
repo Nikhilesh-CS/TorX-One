@@ -155,7 +155,7 @@ class CallNotificationManager(private val context: Context) {
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(INCOMING_NOTIFICATION_ID, notification)
-        Log.d(TAG, "Incoming call notification shown for $callerName")
+        Log.d(TAG, "Incoming call notification shown")
     }
 
     /**

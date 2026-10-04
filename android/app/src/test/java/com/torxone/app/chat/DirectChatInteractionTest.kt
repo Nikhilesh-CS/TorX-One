@@ -217,12 +217,13 @@ class DirectChatInteractionTest {
             items[deliveryId]?.let { items[deliveryId] = it.copy(status = status) }
         }
         override suspend fun updateRetry(deliveryId: String, attemptCount: Int, nextAttemptAt: Long) {
-            items[deliveryId]?.let { items[deliveryId] = it.copy(attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
+            items[deliveryId]?.let { items[deliveryId] = it.copy(status = DeliveryStatus.RETRY_WAIT, attemptCount = attemptCount, nextAttemptAt = nextAttemptAt) }
         }
         override suspend fun removeByMessageId(logicalMessageId: String) {
             val key = items.values.find { it.logicalMessageId == logicalMessageId }?.deliveryId
             if (key != null) items.remove(key)
         }
+        override suspend fun removeByDeliveryId(deliveryId: String) { items.remove(deliveryId) }
     }
 
     class InMemoryProcessedStore : ProcessedEnvelopeStore {
@@ -400,6 +401,7 @@ class DirectChatInteractionTest {
         val handler = DeliveryReceiptHandler(
             messageDao = messageDao,
             outboxDao = object : OutboxDao {
+                override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
                 override suspend fun getPending(): List<OutboxEntity> = emptyList()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
@@ -695,6 +697,7 @@ class DirectChatInteractionTest {
             },
             chatReceiver = ChatReceiver(msgDaoAlice, convDaoAlice, trackerAlice),
             deliveryReceiptHandler = DeliveryReceiptHandler(msgDaoAlice, object : OutboxDao {
+                override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
                 override suspend fun getPending() = emptyList<OutboxEntity>()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}
@@ -723,6 +726,7 @@ class DirectChatInteractionTest {
             },
             chatReceiver = ChatReceiver(msgDaoBob, convDaoBob, trackerBob),
             deliveryReceiptHandler = DeliveryReceiptHandler(msgDaoBob, object : OutboxDao {
+                override suspend fun getByDeliveryId(deliveryId: String) = getPending().firstOrNull { it.deliveryId == deliveryId }
                 override suspend fun getPending() = emptyList<OutboxEntity>()
                 override suspend fun insert(item: OutboxEntity) {}
                 override suspend fun updateStatus(deliveryId: String, status: String, now: Long) {}

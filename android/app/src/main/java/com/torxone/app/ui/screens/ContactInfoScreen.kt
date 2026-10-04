@@ -40,10 +40,10 @@ fun ContactInfoScreen(
     onBackClick: () -> Unit,
     onChatDeleted: () -> Unit,
     onOpenMedia: () -> Unit,
+    modifier: Modifier = Modifier,
     onToggleVerification: ((Boolean) -> Unit)? = null,
     nickname: String? = null,
-    onSaveNickname: (suspend (String) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    onSaveNickname: (suspend (String) -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     var showMuteDialog by remember { mutableStateOf(false) }

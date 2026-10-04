@@ -14,6 +14,7 @@ local.properties
 .kotlin/
 *.keystore
 *.jks
+/.release-signing/
 release-artifacts/
 /.android-sdk/
 __pycache__/

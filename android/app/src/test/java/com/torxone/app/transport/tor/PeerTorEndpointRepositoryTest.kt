@@ -54,4 +54,95 @@ class PeerTorEndpointRepositoryTest {
         catch (_: java.io.IOException) {}
         assertNull(repo.resolve("rel"))
     }
+
+    @Test fun cacheMissReloadsOnlyAuthoritativeRelationshipRowAndNotifiesAfterCommit() = runBlocking {
+        val dao = MemoryEndpoints()
+        val signed = TorRoute("a".repeat(56) + ".onion")
+        dao.upsert(PeerTorEndpointRepository.entity("rel", signed))
+        val repo = PeerTorEndpointRepository(dao)
+        val changed = mutableListOf<String>()
+        repo.onVerifiedEndpointChanged = { id ->
+            assertEquals(dao.rows[id]?.onionAddress, repo.resolve(id)?.onionHost)
+            changed += id
+        }
+        assertNull(repo.resolve("rel"))
+        assertEquals(signed, repo.resolvePersisted("rel"))
+        assertEquals(listOf("rel"), changed)
+        assertNull(repo.resolvePersisted("other"))
+        repo.bindVerified("rel", signed)
+        assertEquals(listOf("rel", "rel"), changed)
+        val fresh = TorRoute("c".repeat(56) + ".onion")
+        repo.bindVerified("rel", fresh)
+        assertEquals(fresh, repo.resolvePersisted("rel"))
+        dao.delete("rel")
+        repo.refresh("rel")
+        assertNull(repo.resolve("rel"))
+    }
+
+    @Test fun reviewedRouteChangeCommitsOnlyTheReviewedRelationship() = runBlocking {
+        val dao = MemoryEndpoints()
+        val repo = PeerTorEndpointRepository(dao)
+        val old = TorRoute("a".repeat(56) + ".onion")
+        val fresh = TorRoute("b".repeat(56) + ".onion")
+        repo.bindVerified("rel", old)
+        repo.bindVerified("other", old)
+        assertTrue(repo.bindVerifiedIfUnchanged("rel", fresh, old))
+        assertEquals(fresh, repo.resolve("rel"))
+        assertEquals(fresh.onionHost, dao.rows["rel"]?.onionAddress)
+        assertEquals(old, repo.resolve("other"))
+        assertEquals(old.onionHost, dao.rows["other"]?.onionAddress)
+    }
+
+    @Test fun staleReviewedRouteCannotReplaceAnInterveningVerifiedUpdate() = runBlocking {
+        val dao = MemoryEndpoints()
+        val repo = PeerTorEndpointRepository(dao)
+        val old = TorRoute("a".repeat(56) + ".onion")
+        val reviewed = TorRoute("b".repeat(56) + ".onion")
+        val intervening = TorRoute("c".repeat(56) + ".onion")
+        repo.bindVerified("rel", old)
+        repo.bindVerified("rel", intervening)
+        assertFalse(repo.bindVerifiedIfUnchanged("rel", reviewed, old))
+        assertEquals(intervening, repo.resolve("rel"))
+        assertEquals(intervening.onionHost, dao.rows["rel"]?.onionAddress)
+    }
+
+    @Test fun reviewedRouteWriteFailurePreservesPreviouslyPublishedEndpoint() = runBlocking {
+        val backing = MemoryEndpoints()
+        var failWrite = false
+        val dao = object : PeerTorEndpointDao by backing {
+            override suspend fun upsert(endpoint: PeerTorEndpointEntity) {
+                if (failWrite) throw java.io.IOException("write rejected")
+                backing.upsert(endpoint)
+            }
+        }
+        val repo = PeerTorEndpointRepository(dao)
+        val old = TorRoute("a".repeat(56) + ".onion")
+        repo.bindVerified("rel", old)
+        failWrite = true
+        try {
+            repo.bindVerifiedIfUnchanged("rel", TorRoute("b".repeat(56) + ".onion"), old)
+            fail("Expected durable write failure")
+        } catch (_: java.io.IOException) { }
+        assertEquals(old, repo.resolve("rel"))
+        assertEquals(old.onionHost, backing.rows["rel"]?.onionAddress)
+    }
+
+    @Test fun bootstrapRetryOnlyFillsMissingRouteAndCannotRollBackVerifiedRefresh() = runBlocking {
+        val dao = MemoryEndpoints()
+        val old = TorRoute("a".repeat(56) + ".onion")
+        val fresh = TorRoute("b".repeat(56) + ".onion")
+        val repo = PeerTorEndpointRepository(dao)
+        repo.bindBootstrapIfMissing("rel", old)
+        assertEquals(old, repo.resolve("rel"))
+        repo.bindVerified("rel", fresh)
+        val restarted = PeerTorEndpointRepository(dao)
+        val changes = mutableListOf<String>()
+        restarted.onVerifiedEndpointChanged = { changes += it }
+        restarted.bindBootstrapIfMissing("rel", old)
+        assertEquals(fresh, restarted.resolve("rel"))
+        assertEquals(fresh.onionHost, dao.rows["rel"]?.onionAddress)
+        assertEquals(listOf("rel"), changes)
+        restarted.bindBootstrapIfMissing("rel", old)
+        assertEquals(listOf("rel"), changes)
+    }
 }

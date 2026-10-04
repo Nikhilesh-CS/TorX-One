@@ -25,8 +25,9 @@ jobs:
       - name: Build, unit tests and Android lint
         working-directory: android
         run: |
-          bash ./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:securityInventory
+          bash ./gradlew --no-daemon :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:lintDebug :app:lintRelease :app:securityInventory
           python3 tools/inventory_apk_native.py --apk app/build/outputs/apk/debug/app-debug.apk --output app/build/reports/security/native-libraries.json
+          python3 tools/verify_tor_jni_contract.py --apk app/build/outputs/apk/release/app-release-unsigned.apk --report app/build/reports/security/tor-jni-contract.json
       - name: Verify database migration and deterministic contact selection
         run: |
           python3 android/tools/verify_peer_endpoint_migration.py
@@ -43,6 +44,10 @@ jobs:
           python3 android/tools/test_release_approval.py
           python3 android/tools/test_native_inventory.py
           python3 android/tools/test_backup_policy.py
+          python3 android/tools/test_delivery_recovery.py
+          python3 android/tools/check_logging_privacy.py
+          python3 android/tools/test_logging_privacy.py
+          python3 android/tools/test_tor_jni_contract.py
           python3 android/tools/verify_contact_selection.py
       - name: Preserve complete unit suite results
         if: always()

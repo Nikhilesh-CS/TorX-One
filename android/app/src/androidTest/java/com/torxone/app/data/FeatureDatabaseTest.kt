@@ -2,6 +2,7 @@ package com.torxone.app.data
 
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -15,6 +16,90 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class FeatureDatabaseTest {
+    @Test fun initialPairingSessionInviteEndpointAndBootstrapCommitTogetherAndSurviveReopen() = runBlocking {
+        val name = "atomic-pairing-recovery-test.db"
+        context.deleteDatabase(name)
+        val local = com.torxone.app.identity.IdentityCrypto.generateX25519KeyPair()
+        val remote = com.torxone.app.identity.IdentityCrypto.generateX25519KeyPair()
+        var sessionId: String? = null
+        fun store(db: TorXDatabase) = com.torxone.app.crypto.RoomSessionStore(db.sessionDao(), db.skippedKeyDao(),
+            com.torxone.app.crypto.NoOpKeyProtector(), { block -> db.withTransaction { block() } })
+        try {
+            withDatabase(name) { db ->
+                val sessions = store(db)
+                val crypto = com.torxone.app.crypto.DoubleRatchetSessionCrypto(sessions)
+                suspend fun pair(failAfterOutbox: Boolean) {
+                    crypto.initializeAndCommit("pair", ByteArray(32) { 7 }, true,
+                        remote.publicKey, local.privateKey, local.publicKey) { initial -> db.withTransaction {
+                        db.pairRelationshipDao().upsert(PairRelationshipEntity("pair", "local", "contact", ByteArray(32)))
+                        db.conversationDao().upsert(ConversationEntity("pair", title = "Peer"))
+                        db.contactDao().upsert(ContactEntity(contactId = "contact", relationshipId = "pair", displayName = "Peer",
+                            signingPublicKey = ByteArray(32), conversationId = "pair", remoteIdentityId = "peer"))
+                        db.connectionDao().upsert(ConnectionDbEntity("connection", "pair", 1, "send", "recv", ByteArray(32), ByteArray(32),
+                            state = "LOCAL_ESTABLISHED"))
+                        db.peerTorEndpointDao().upsert(PeerTorEndpointEntity("pair", "a".repeat(56) + ".onion", 17654))
+                        db.bootstrapStateDao().upsert(BootstrapStateEntity("pair", "invite", BootstrapStatus.BOOTSTRAP_QUEUED, true))
+                        db.consumedInviteDao().insert(ConsumedInviteEntity("invite", 1))
+                        sessions.saveSession(initial)
+                        db.outboxDao().insert(OutboxEntity("bootstrap", "invite", "pair", "connection", "invite-invite",
+                            byteArrayOf(1), ByteArray(32), "QUEUED", relationshipId = "pair"))
+                        if (failAfterOutbox) throw java.io.IOException("Injected commit failure")
+                        sessionId = initial.sessionId
+                    } }
+                }
+                try {
+                    try { pair(true); fail("Expected transaction rollback") } catch (_: java.io.IOException) {}
+                    assertNull(sessions.loadSession("pair"))
+                    assertNull(db.pairRelationshipDao().getById("pair"))
+                    assertNull(db.consumedInviteDao().getById("invite"))
+                    assertNull(db.bootstrapStateDao().getByRelationshipId("pair"))
+                    assertNull(db.peerTorEndpointDao().getByRelationshipId("pair"))
+                    assertNull(db.outboxDao().getByDeliveryId("bootstrap"))
+                    pair(false)
+                } finally { crypto.closeSession("pair") }
+            }
+            withDatabase(name) { db ->
+                assertEquals(sessionId, store(db).loadSession("pair")?.sessionId)
+                assertNotNull(db.consumedInviteDao().getById("invite"))
+                assertEquals(BootstrapStatus.BOOTSTRAP_QUEUED, db.bootstrapStateDao().getByRelationshipId("pair")?.status)
+                assertNotNull(db.peerTorEndpointDao().getByRelationshipId("pair"))
+                assertArrayEquals(byteArrayOf(1), db.outboxDao().getByDeliveryId("bootstrap")?.ciphertext)
+                assertEquals("LOCAL_ESTABLISHED", db.connectionDao().getByRelationshipId("pair")?.state)
+            }
+        } finally { context.deleteDatabase(name) }
+    }
+
+    @Test fun waitingSequenceAndVerifiedEndpointSurviveReopenWithoutSkippingHead() = runBlocking {
+        val name = "waiting-peer-recovery-test.db"
+        context.deleteDatabase(name)
+        try {
+            withDatabase(name) { db ->
+                db.conversationDao().upsert(ConversationEntity("chat", title = "Peer"))
+                db.messageDao().insertIfAbsent(MessageEntity("message", "chat", "local", "TEXT", "fixture",
+                    MessageDirection.OUTGOING, "WAITING_FOR_PEER"))
+                db.outboxDao().insert(OutboxEntity("head", "message", "chat", "connection", "queue",
+                    byteArrayOf(1, 2), ByteArray(32), "WAITING_FOR_PEER", attemptCount = 8,
+                    applicationSequence = 1, relationshipId = "rel"))
+                db.outboxDao().insert(OutboxEntity("next", "next-message", "chat", "connection", "rotated-queue",
+                    byteArrayOf(3), ByteArray(32), "QUEUED", applicationSequence = 2, relationshipId = "rel"))
+                db.pairRelationshipDao().upsert(PairRelationshipEntity("rel", "local", "contact", ByteArray(32)))
+                db.peerTorEndpointDao().upsert(PeerTorEndpointEntity("rel", "a".repeat(56) + ".onion", 17654))
+            }
+            withDatabase(name) { db ->
+                val pending = db.outboxDao().getPending()
+                assertEquals(listOf("head", "next"), pending.map { it.deliveryId })
+                assertEquals(8, db.outboxDao().getByDeliveryId("head")?.attemptCount)
+                assertArrayEquals(byteArrayOf(1, 2), db.outboxDao().getByDeliveryId("head")?.ciphertext)
+                assertEquals(1, db.featureDao().pendingMessageCount("chat"))
+                val routes = com.torxone.app.transport.tor.PeerTorEndpointRepository(db.peerTorEndpointDao())
+                assertEquals("a".repeat(56) + ".onion", routes.resolvePersisted("rel")?.onionHost)
+                // Exact receipt removal is still possible while the item is quiet/waiting.
+                db.outboxDao().removeByDeliveryId("head")
+                assertEquals(listOf("next"), db.outboxDao().getPending().map { it.deliveryId })
+            }
+        } finally { context.deleteDatabase(name) }
+    }
+
     @Test fun conversationMetadataUpdatesPreserveHistoryAndLocalStateAcrossReopen() = runBlocking {
         val name = "conversation-update-preservation-test.db"
         context.deleteDatabase(name)

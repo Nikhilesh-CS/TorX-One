@@ -52,6 +52,20 @@ interface SessionCrypto {
         localRatchetPrivateKey: ByteArray,
         localRatchetPublicKey: ByteArray
     ): SessionState
+
+    /** Fresh pairing only. The callback must persist state with all pairing rows
+     * in one transaction; no session is saved before that transaction commits.
+     * Existing sessions are rejected, never reset or overwritten.
+     */
+    suspend fun initializeAndCommit(
+        relationshipId: String,
+        sessionInitializationSecret: ByteArray,
+        isInitiator: Boolean,
+        remoteRatchetPublicKey: ByteArray,
+        localRatchetPrivateKey: ByteArray,
+        localRatchetPublicKey: ByteArray,
+        commitBlock: suspend (SessionState) -> Unit
+    ): SessionState
 }
 
 /**
@@ -95,6 +109,7 @@ sealed interface SessionCommand {
         val remoteRatchetPublicKey: ByteArray,
         val localRatchetPrivateKey: ByteArray,
         val localRatchetPublicKey: ByteArray,
+        val commitBlock: (suspend (SessionState) -> Unit)? = null,
         val response: CompletableDeferred<SessionState>
     ) : SessionCommand
 
@@ -178,6 +193,9 @@ class SessionActor(
                 cmd.response.complete(decrypted)
             }
             is SessionCommand.Initialize -> {
+                if (cmd.commitBlock != null) check(sessionStore.loadSession(relationshipId) == null) {
+                    "Cannot initialize pairing over an existing secure session"
+                }
                 val state = SessionRatchet.initializeSession(
                     relationshipId = relationshipId,
                     sessionInitializationSecret = cmd.sessionInitializationSecret,
@@ -186,7 +204,8 @@ class SessionActor(
                     localRatchetPrivateKey = cmd.localRatchetPrivateKey,
                     localRatchetPublicKey = cmd.localRatchetPublicKey
                 )
-                sessionStore.saveSession(state)
+                if (cmd.commitBlock != null) cmd.commitBlock.invoke(state)
+                else sessionStore.saveSession(state)
                 cmd.response.complete(state)
             }
             is SessionCommand.SaveState -> {
@@ -257,6 +276,23 @@ class DoubleRatchetSessionCrypto(
             )
         )
         return deferred.await()
+    }
+
+    override suspend fun initializeAndCommit(
+        relationshipId: String,
+        sessionInitializationSecret: ByteArray,
+        isInitiator: Boolean,
+        remoteRatchetPublicKey: ByteArray,
+        localRatchetPrivateKey: ByteArray,
+        localRatchetPublicKey: ByteArray,
+        commitBlock: suspend (SessionState) -> Unit
+    ): SessionState {
+        val response = CompletableDeferred<SessionState>()
+        getActor(relationshipId).send(SessionCommand.Initialize(
+            sessionInitializationSecret, isInitiator, remoteRatchetPublicKey,
+            localRatchetPrivateKey, localRatchetPublicKey, commitBlock, response
+        ))
+        return response.await()
     }
 
     override suspend fun encrypt(

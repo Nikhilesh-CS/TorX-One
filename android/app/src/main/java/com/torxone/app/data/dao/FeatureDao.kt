@@ -9,13 +9,16 @@ interface FeatureDao {
     @Query("""SELECT COUNT(DISTINCT o.logical_message_id) FROM outbox o JOIN messages m
         ON m.logical_message_id = o.logical_message_id WHERE o.conversation_id = :id
         AND m.direction = 'OUTGOING' AND m.deleted_at IS NULL
-        AND o.status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED')""")
+        AND (o.status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED','WAITING_FOR_PEER')
+          OR (o.application_sequence IS NOT NULL AND o.status IN ('FAILED','EXPIRED')))""")
     suspend fun pendingMessageCount(id: String): Int
     @Query("""SELECT COUNT(*) FROM outbox WHERE conversation_id = :id
-        AND status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED')""")
+        AND (status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED','WAITING_FOR_PEER')
+          OR (application_sequence IS NOT NULL AND status IN ('FAILED','EXPIRED')))""")
     suspend fun pendingDeliveryCount(id: String): Int
     @Query("""SELECT COUNT(*) FROM outbox o WHERE o.conversation_id = :id
-        AND o.status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED')
+        AND (o.status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED','WAITING_FOR_PEER')
+          OR (o.application_sequence IS NOT NULL AND o.status IN ('FAILED','EXPIRED')))
         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.logical_message_id = o.logical_message_id)""")
     suspend fun pendingControlCount(id: String): Int
     @Query("SELECT m.* FROM messages m JOIN pending_link_index p ON p.messageId = m.logical_message_id LIMIT 100")

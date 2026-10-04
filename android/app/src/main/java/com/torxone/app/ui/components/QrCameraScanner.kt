@@ -117,7 +117,7 @@ fun QrCameraScanner(
                                 imageAnalysis
                             )
                         } catch (e: Exception) {
-                            Log.e("QrCameraScanner", "Camera binding failed: ${e.message}")
+                            Log.e("QrCameraScanner", "Camera binding failed")
                         }
                     }, executor)
 
@@ -200,7 +200,7 @@ private class QrCodeAnalyzer(
         } catch (_: NotFoundException) {
             // Normal when frame has no QR code
         } catch (e: Exception) {
-            Log.d("QrCodeAnalyzer", "Frame analysis skipped: ${e.message}")
+            Log.d("QrCodeAnalyzer", "Frame analysis skipped")
         } finally {
             reader.reset()
             imageProxy.close()

@@ -14,6 +14,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CancellationException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetSocketAddress
@@ -37,7 +42,7 @@ class TcpHaLowGatewayLink : HaLowGatewayLink {
             candidate.networkHandle?.let(Network::fromNetworkHandle)
         } else null
         val connected = network?.socketFactory?.createSocket() ?: Socket()
-        connected.connect(InetSocketAddress(candidate.host, candidate.port), CONNECT_TIMEOUT_MS.toInt())
+        socketIo(connected) { connected.connect(InetSocketAddress(candidate.host, candidate.port), CONNECT_TIMEOUT_MS.toInt()) }
         connected.tcpNoDelay = true
         socket = connected
         output = DataOutputStream(connected.getOutputStream())
@@ -70,7 +75,22 @@ class TcpHaLowGatewayLink : HaLowGatewayLink {
 
     override suspend fun send(frame: ByteArray): Boolean = writeMutex.withLock {
         val stream = output ?: return false
-        runCatching { stream.write(frame); stream.flush() }.isSuccess
+        val owned = socket ?: return false
+        try { socketIo(owned) { stream.write(frame); stream.flush() }; true }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
+    }
+
+    private suspend fun socketIo(owned: Socket, operation: () -> Unit) = withTimeout(CONNECT_TIMEOUT_MS) {
+        coroutineScope {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                continuation.invokeOnCancellation { runCatching { owned.close() } }
+                launch(Dispatchers.IO) {
+                    try { operation(); continuation.resume(Unit) }
+                    catch (error: Exception) { continuation.resumeWithException(error) }
+                }
+            }
+        }
     }
 
     override suspend fun disconnect() {

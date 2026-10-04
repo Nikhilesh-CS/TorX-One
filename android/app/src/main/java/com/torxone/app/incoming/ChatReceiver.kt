@@ -47,10 +47,7 @@ class ChatReceiver(
             if (contactDao != null) {
                 val contact = contactDao.getByRelationshipId(connection.relationshipId)
                 if (contact == null || contact.conversationId.isBlank()) {
-                    Log.e(
-                        TAG,
-                        "[RX REJECT] Inconsistent direct route: No local contact or conversation mapping found for relationshipId=${connection.relationshipId}. Failing safely without creating remote-supplied conversation."
-                    )
+                    Log.e(TAG, "[RX REJECT] Authenticated relationship lacks a local conversation mapping")
                     return false
                 }
                 conversationId = contact.conversationId
@@ -61,10 +58,10 @@ class ChatReceiver(
             }
         }
 
-        Log.i(TAG, "[RX] msg=${messageId.take(8)} routed to local conv=${conversationId.take(8)}")
+        Log.i(TAG, "[RX] Message routed to local conversation")
 
         if (messageDao.exists(messageId)) {
-            Log.d(TAG, "[RX] msg=${messageId.take(8)} already exists in DB")
+            Log.d(TAG, "[RX] already exists in DB")
             return true
         }
 
@@ -129,7 +126,7 @@ class ChatReceiver(
             timestamp = envelope.timestamp
         )
 
-        Log.i(TAG, "[DB] msg=${messageId.take(8)} persisted successfully")
+        Log.i(TAG, "[DB] persisted successfully")
         return true
     }
 }

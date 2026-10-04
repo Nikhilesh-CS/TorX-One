@@ -274,7 +274,7 @@ class GroupService(
                     priority = DeliveryPriority.NORMAL
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed pairwise fan-out for msg=$messageId to recipient=${delivery.recipientIdentityId}: ${e.message}")
+                Log.e(TAG, "Pairwise message fan-out failed")
             }
         }
 
@@ -345,7 +345,7 @@ class GroupService(
                     expectsAck = true
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to fan out reaction to ${member.memberIdentityId}: ${e.message}")
+                Log.e(TAG, "Failed to fan out reaction")
             }
         }
 
@@ -369,7 +369,7 @@ class GroupService(
         val targetMessage = messageDao.getById(targetMessageId) ?: return false
         if (targetMessage.conversationId != groupId) return false
         if (targetMessage.senderId != localIdentityId) {
-            Log.w(TAG, "Rejecting edit: local user is not author of msg=$targetMessageId")
+            Log.w(TAG, "Rejecting edit: local user is not author")
             return false
         }
         if (targetMessage.deletedAt != null) return false
@@ -411,7 +411,7 @@ class GroupService(
                     expectsAck = true
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to fan out edit to ${member.memberIdentityId}: ${e.message}")
+                Log.e(TAG, "Failed to fan out edit")
             }
         }
 
@@ -433,7 +433,7 @@ class GroupService(
         val targetMessage = messageDao.getById(targetMessageId) ?: return false
         if (targetMessage.conversationId != groupId) return false
         if (targetMessage.senderId != localIdentityId) {
-            Log.w(TAG, "Rejecting delete: local user is not author of msg=$targetMessageId")
+            Log.w(TAG, "Rejecting delete: local user is not author")
             return false
         }
 
@@ -463,7 +463,7 @@ class GroupService(
                     expectsAck = true
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to fan out delete to ${member.memberIdentityId}: ${e.message}")
+                Log.e(TAG, "Failed to fan out delete")
             }
         }
 
@@ -592,7 +592,7 @@ class GroupService(
             ?: return false
         val selfRole = GroupMemberRole.fromString(selfMember.role)
         if (selfRole != GroupMemberRole.OWNER && selfRole != GroupMemberRole.ADMIN) {
-            Log.w(TAG, "Unauthorized addMember: $localIdentityId is $selfRole")
+            Log.w(TAG, "Unauthorized member addition rejected")
             return false
         }
 
@@ -693,7 +693,7 @@ class GroupService(
         // Authorization rules:
         // 1. Nobody removes OWNER
         if (targetRole == GroupMemberRole.OWNER) {
-            Log.w(TAG, "Cannot remove OWNER from group $groupId")
+            Log.w(TAG, "Cannot remove OWNER from group")
             return false
         }
         // 2. Local user must be OWNER or ADMIN
@@ -789,7 +789,7 @@ class GroupService(
 
         val selfMember = groupMemberDao.getMember(groupId, localIdentityId) ?: return false
         if (GroupMemberRole.fromString(selfMember.role) != GroupMemberRole.OWNER) {
-            Log.w(TAG, "Only OWNER can change roles in group $groupId")
+            Log.w(TAG, "Only OWNER can change roles in group")
             return false
         }
         val targetMember = groupMemberDao.getMember(groupId, targetIdentityId) ?: return false
@@ -958,7 +958,7 @@ class GroupService(
                     expectsAck = true
                 )
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to send read receipt to $senderId: ${e.message}")
+                Log.w(TAG, "Failed to send read receipt")
             }
         }
     }
@@ -974,7 +974,7 @@ class GroupService(
         recoverPendingControlOperations(localIdentityId)
         val pendingDeliveries = groupMessageDeliveryDao.getPendingDeliveries()
         if (pendingDeliveries.isNotEmpty()) {
-            Log.i(TAG, "[RECOVERY] Resuming ${pendingDeliveries.size} pending group message deliveries")
+            Log.i(TAG, "[RECOVERY] Resuming pending group message deliveries")
         }
 
         pendingDeliveries.forEach { delivery ->
@@ -997,7 +997,7 @@ class GroupService(
                     priority = DeliveryPriority.NORMAL
                 )
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to recover pending delivery ${delivery.deliveryId}: ${e.message}")
+                Log.e(TAG, "Failed to recover pending delivery")
             }
         }
     }
@@ -1096,7 +1096,7 @@ class GroupService(
                 groupControlDao.markDeliveryFailed(
                     operationId, delivery.recipientIdentityId, e.message ?: e.javaClass.simpleName, System.currentTimeMillis()
                 )
-                Log.e(TAG, "Control fan-out remains pending for ${delivery.recipientIdentityId}: ${e.message}")
+                Log.e(TAG, "Control fan-out remains pending")
             }
         }
         if (groupControlDao.countPendingDeliveries(operationId) == 0) {

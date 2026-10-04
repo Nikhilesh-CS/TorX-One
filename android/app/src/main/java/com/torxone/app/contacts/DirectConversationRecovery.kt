@@ -47,6 +47,6 @@ suspend fun consolidateDirectConversations(database: TorXDatabase) = database.wi
             it.getLong(0)
         }
         check(actualMessages == expectedMessages) { "Direct chat consolidation must preserve message history" }
-        android.util.Log.i("DirectChatRecovery", "Consolidated ${oldIds.size} chats; preserved $actualMessages messages and ${contacts.size} secure relationships")
+        android.util.Log.i("DirectChatRecovery", "Consolidated chats; preserved messages and secure relationships")
     }
 }

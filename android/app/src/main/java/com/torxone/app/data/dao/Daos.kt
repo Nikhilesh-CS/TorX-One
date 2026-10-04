@@ -155,10 +155,11 @@ interface ContactDao {
 
 @Dao
 interface OutboxDao {
-    suspend fun getByDeliveryId(deliveryId: String): OutboxEntity? =
-        getPending().firstOrNull { it.deliveryId == deliveryId }
+    @Query("SELECT * FROM outbox WHERE deliveryId = :deliveryId AND (status IN ('QUEUED','RETRY_WAIT','TRANSMITTING','TRANSPORT_ACCEPTED','WAITING_FOR_PEER') OR (application_sequence IS NOT NULL AND status IN ('FAILED','EXPIRED'))) LIMIT 1")
+    suspend fun getByDeliveryId(deliveryId: String): OutboxEntity?
 
-    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED') ORDER BY CASE WHEN application_sequence IS NOT NULL THEN 0 ELSE 1 END, application_sequence ASC, created_at ASC, priority DESC")
+    // Terminal sequenced rows remain lane blockers and exact late-ACK targets.
+    @Query("SELECT * FROM outbox WHERE status IN ('QUEUED', 'RETRY_WAIT', 'TRANSMITTING', 'TRANSPORT_ACCEPTED','WAITING_FOR_PEER') OR (application_sequence IS NOT NULL AND status IN ('FAILED','EXPIRED')) ORDER BY CASE WHEN application_sequence IS NOT NULL THEN 0 ELSE 1 END, application_sequence ASC, created_at ASC, priority DESC")
     suspend fun getPending(): List<OutboxEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -392,7 +393,7 @@ interface MediaTransferDao {
     @Query("SELECT * FROM media_transfers WHERE status = 'ACTIVE' OR status = 'QUEUED' OR status = 'PAUSED'")
     suspend fun getPendingTransfers(): List<MediaTransferEntity>
 
-    @Query("SELECT media_id FROM media_transfers WHERE status = 'ACTIVE' OR status = 'QUEUED' OR status = 'PAUSED'")
+    @Query("SELECT media_id FROM media_transfers WHERE status IN ('ACTIVE', 'QUEUED', 'PAUSED', 'FAILED', 'IDLE')")
     suspend fun getAllActiveMediaIds(): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -408,7 +409,7 @@ interface MediaTransferDao {
         updatedAt: Long = System.currentTimeMillis()
     )
 
-    @Query("UPDATE media_transfers SET completed_chunks = completed_chunks + 1, chunk_bitmask = CASE WHEN chunk_bitmask = '' THEN CAST(:chunkIndex AS TEXT) ELSE chunk_bitmask || ',' || CAST(:chunkIndex AS TEXT) END, bytes_transferred = MIN(total_bytes, bytes_transferred + :chunkBytes), status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId AND instr(',' || chunk_bitmask || ',', ',' || CAST(:chunkIndex AS TEXT) || ',') = 0")
+    @Query("UPDATE media_transfers SET completed_chunks = completed_chunks + 1, chunk_bitmask = CASE WHEN chunk_bitmask = '' THEN CAST(:chunkIndex AS TEXT) ELSE chunk_bitmask || ',' || CAST(:chunkIndex AS TEXT) END, bytes_transferred = MIN(total_bytes, bytes_transferred + :chunkBytes), status = :status, updated_at = :updatedAt WHERE transfer_id = :transferId AND status IN ('ACTIVE', 'QUEUED') AND instr(',' || chunk_bitmask || ',', ',' || CAST(:chunkIndex AS TEXT) || ',') = 0")
     suspend fun recordChunkIfMissing(
         transferId: String,
         chunkIndex: Int,

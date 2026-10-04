@@ -36,6 +36,9 @@ enum class DeliveryStatus {
     /** Waiting before next retry attempt */
     RETRY_WAIT,
 
+    /** Retry budget exhausted. Keep ciphertext/sequence; resume after explicit path recovery. */
+    WAITING_FOR_PEER,
+
     /** Permanently failed after max retries */
     FAILED,
 

@@ -7,6 +7,7 @@ import com.torxone.app.data.dao.MessageDao
 import com.torxone.app.data.dao.OutboxDao
 import com.torxone.app.protocol.DeliveryAck
 import com.torxone.app.protocol.SecureEnvelope
+import com.torxone.app.transport.TransportDestination
 
 class DeliveryReceiptHandler(
     private val messageDao: MessageDao,
@@ -25,98 +26,96 @@ class DeliveryReceiptHandler(
         private const val TAG = "DeliveryReceiptHandler"
     }
 
-    suspend fun handleDeliveryAck(envelope: SecureEnvelope, connection: com.torxone.app.connection.Connection? = null) {
+    data class CommittedAck(
+        val originalEnvelopeId: String,
+        val logicalMessageId: String?,
+        val destination: TransportDestination,
+        val conversationId: String,
+        val applicationSequence: Long?,
+        val confirmedInviteId: String?,
+        val visibleStatus: DeliveryStatus
+    )
+
+    /** Durable changes only. The caller must invoke afterCommit after its outer transaction succeeds. */
+    suspend fun handleDeliveryAck(envelope: SecureEnvelope, connection: com.torxone.app.connection.Connection? = null): CommittedAck? {
         val ack = DeliveryAck.fromByteArray(envelope.payload)
         val envId = ack.originalEnvelopeId
         val authenticatedConnection = connection ?: throw SecurityException("ACK lacks authenticated connection")
         require(!envId.isNullOrBlank()) { "ACK requires exact delivery ID" }
-        val pending = outboxDao.getByDeliveryId(envId) ?: return
+        val pending = outboxDao.getByDeliveryId(envId) ?: return null
         require(pending.logicalMessageId == ack.originalMessageId && pending.connectionId == authenticatedConnection.connectionId) {
             "ACK does not belong to authenticated relationship"
         }
-        val envPrefix = envId?.take(8) ?: "none"
-        Log.i(TAG, "[ACK] Received ACK for message=${ack.originalMessageId.take(8)} env=$envPrefix")
+        Log.i(TAG, "[ACK]")
 
         // Check if this ACK corresponds to an initiator bootstrap confirmation (P0-7)
+        var confirmedInviteId: String? = null
         if (bootstrapStateDao != null) {
             val bootstrapState = bootstrapStateDao.getByInviteId(ack.originalMessageId)
 
             if (bootstrapState != null && bootstrapState.relationshipId == authenticatedConnection.relationshipId && bootstrapState.isInitiator && bootstrapState.status != com.torxone.app.data.entity.BootstrapStatus.ACTIVE) {
-                Log.i(TAG, "[BOOTSTRAP CONFIRMED] Initiator received confirmation for invite=${bootstrapState.inviteId} rel=${bootstrapState.relationshipId}")
+                Log.i(TAG, "[BOOTSTRAP CONFIRMED]")
                 val runner = transactionRunner ?: { block -> block() }
                 runner {
                     connectionDao?.updateStateByRelationship(bootstrapState.relationshipId, "ACTIVE")
                     pairRelationshipDao?.updateState(bootstrapState.relationshipId, "ACTIVE")
                     bootstrapStateDao.updateStatus(bootstrapState.relationshipId, com.torxone.app.data.entity.BootstrapStatus.ACTIVE)
                 }
-                onBootstrapConfirmed(bootstrapState.inviteId)
+                confirmedInviteId = bootstrapState.inviteId
             }
         }
 
         val isGroup = groupService?.isGroupMessage(ack.originalMessageId) ?: false
+        val currentMessage = if (isGroup) null else messageDao.getById(ack.originalMessageId)
+        val visibleStatus = if (currentMessage?.readAt != null || currentMessage?.status == DeliveryStatus.READ.name)
+            DeliveryStatus.READ else DeliveryStatus.DELIVERED
         if (!isGroup) {
             // 1. Mark 1:1 message as DELIVERED in Room
-            messageDao.markDelivered(ack.originalMessageId, DeliveryStatus.DELIVERED.name, ack.receivedAt)
-
-            // 2. Remove exact outbox item
-            if (!envId.isNullOrBlank()) {
-                agent.markDeliveryAcknowledged(envId, ack.originalMessageId)
-            }
-            if (envId.isNullOrBlank()) {
-                outboxDao.removeByMessageId(ack.originalMessageId)
-                agent.markDelivered(ack.originalMessageId)
-            }
+            messageDao.markDelivered(ack.originalMessageId, visibleStatus.name, ack.receivedAt)
         } else {
             // Phase 13: Group message exact delivery ACK semantics
-            // Remove ONLY this exact recipient's delivery from outbox
-            if (!envId.isNullOrBlank()) {
-                agent.markDeliveryAcknowledged(envId, null)
-            }
-
             // Notify GroupService to record per-recipient delivery status.
             // Aggregate MessageEntity is marked DELIVERED only when all active members have acknowledged.
             groupService?.handleDeliveryAck(ack.originalMessageId, envelope.senderIdentity, ack.receivedAt)
         }
+        // Delete only this exact recipient's delivery, within the caller's transaction.
+        outboxDao.removeByDeliveryId(envId)
+        return CommittedAck(envId, if (isGroup) null else ack.originalMessageId,
+            TransportDestination(pending.queueAddress, relationshipId = authenticatedConnection.relationshipId),
+            pending.conversationId, pending.applicationSequence, confirmedInviteId, visibleStatus)
     }
 
-    suspend fun handleReadReceipt(envelope: SecureEnvelope, connection: com.torxone.app.connection.Connection? = null) {
-        if (envelope.payload.isEmpty()) {
-            Log.w(TAG, "[READ] Received empty payload for ReadReceipt envelopeId=${envelope.logicalMessageId}; ignoring invalid receipt")
-            return
-        }
-
-        try {
-            val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
-            Log.i(TAG, "[READ] Received batch READ up to message=${receipt.upToMessageId.take(8)} for conv=${receipt.conversationId.take(8)}")
-            val authenticatedConnection = connection ?: throw SecurityException("Read receipt lacks authenticated connection")
-            val target = messageDao.getById(receipt.upToMessageId) ?: return
-            require(target.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING)
-            require(target.conversationId == receipt.conversationId && envelope.conversationId == receipt.conversationId)
-            val isGroup = groupService?.isGroupMessage(receipt.upToMessageId) ?: false
-            if (!isGroup) {
-                val binding = contactDao?.getByRelationshipId(authenticatedConnection.relationshipId)
-                    ?.let { it.conversationId to it.remoteIdentityId }
-                    ?: authenticatedContactProvider(authenticatedConnection.relationshipId)
-                    ?: throw SecurityException("Read receipt relationship unavailable")
-                require(binding.first == target.conversationId && binding.second == envelope.senderIdentity)
-            }
-            if (!isGroup) {
-                val targetMsg = messageDao.getById(receipt.upToMessageId)
-                if (targetMsg != null) {
-                    messageDao.markOutgoingReadUpTo(
-                        conversationId = targetMsg.conversationId,
-                        upToCreatedAt = targetMsg.createdAt,
-                        status = DeliveryStatus.READ.name,
-                        readAt = receipt.readAt
-                    )
-                } else {
-                    messageDao.markRead(receipt.upToMessageId, DeliveryStatus.READ.name, receipt.readAt)
-                }
-            }
-            agent.markRead(receipt.upToMessageId)
-            groupService?.handleReadReceipt(receipt.upToMessageId, envelope.senderIdentity, receipt.readAt)
-        } catch (e: Exception) {
-            Log.w(TAG, "[READ] Failed to parse ReadReceipt payload for envelopeId=${envelope.logicalMessageId}: ${e.message}", e)
-        }
+    suspend fun afterCommit(receipt: CommittedAck) {
+        agent.onAcknowledgmentCommitted(receipt.originalEnvelopeId, receipt.logicalMessageId,
+            receipt.destination, receipt.conversationId, receipt.applicationSequence, receipt.visibleStatus)
+        receipt.confirmedInviteId?.let(onBootstrapConfirmed)
     }
+
+    suspend fun handleReadReceipt(envelope: SecureEnvelope, connection: com.torxone.app.connection.Connection? = null): String? {
+        require(envelope.payload.isNotEmpty()) { "Read receipt payload is empty" }
+        val receipt = com.torxone.app.protocol.ReadReceipt.fromByteArray(envelope.payload)
+        Log.i(TAG, "[READ]")
+        val authenticatedConnection = connection ?: throw SecurityException("Read receipt lacks authenticated connection")
+        val target = messageDao.getById(receipt.upToMessageId) ?: return null
+        require(target.direction == com.torxone.app.data.entity.MessageDirection.OUTGOING)
+        require(target.conversationId == receipt.conversationId && envelope.conversationId == receipt.conversationId)
+        val isGroup = groupService?.isGroupMessage(receipt.upToMessageId) ?: false
+        if (!isGroup) {
+            val binding = contactDao?.getByRelationshipId(authenticatedConnection.relationshipId)
+                ?.let { it.conversationId to it.remoteIdentityId }
+                ?: authenticatedContactProvider(authenticatedConnection.relationshipId)
+                ?: throw SecurityException("Read receipt relationship unavailable")
+            require(binding.first == target.conversationId && binding.second == envelope.senderIdentity)
+            messageDao.markOutgoingReadUpTo(
+                conversationId = target.conversationId,
+                upToCreatedAt = target.createdAt,
+                status = DeliveryStatus.READ.name,
+                readAt = receipt.readAt
+            )
+        }
+        groupService?.handleReadReceipt(receipt.upToMessageId, envelope.senderIdentity, receipt.readAt)
+        return receipt.upToMessageId
+    }
+
+    suspend fun afterReadCommit(logicalMessageId: String) { agent.markRead(logicalMessageId) }
 }

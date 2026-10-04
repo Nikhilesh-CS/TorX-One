@@ -376,7 +376,7 @@ abstract class TorXDatabase : RoomDatabase() {
                     if (journalFile.exists() && !journalFile.delete()) throw java.io.IOException("Failed to remove legacy journal sidecar")
                     android.util.Log.i("TorXDatabase", "Plaintext SQLite database successfully migrated to encrypted SQLCipher.")
                 } catch (e: Exception) {
-                    android.util.Log.e("TorXDatabase", "Failed to migrate plaintext database to SQLCipher: ${e.message}", e)
+                    android.util.Log.e("TorXDatabase", "Failed to migrate plaintext database to SQLCipher")
                     throw SecurityException("Database encryption migration failed closed to prevent data compromise or corruption", e)
                 }
             }

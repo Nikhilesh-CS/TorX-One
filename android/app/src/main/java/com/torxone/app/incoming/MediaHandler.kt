@@ -26,7 +26,7 @@ class MediaHandler(
         connection: Connection,
         envelope: SecureEnvelope
     ): Boolean {
-        Log.i(TAG, "[RX] Handling media descriptor msg=${envelope.logicalMessageId.take(8)}")
+        Log.i(TAG, "[RX] Handling media descriptor")
         val success = mediaService.handleIncomingDescriptor(connection, envelope)
 
         if (success && !com.torxone.app.privacy.DisappearingPolicy.expired(envelope.expiresAt, System.currentTimeMillis())) {
@@ -99,7 +99,7 @@ class MediaHandler(
         val complete = try {
             MediaProtocolCodec.decodeComplete(envelope.payload)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode MediaComplete: ${e.message}")
+            Log.e(TAG, "Failed to decode MediaComplete")
             return false
         }
         return mediaService.handleIncomingCompletion(connection, envelope, complete)
@@ -115,7 +115,7 @@ class MediaHandler(
         val resumeReq = try {
             MediaProtocolCodec.decodeResumeRequest(envelope.payload)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decode MediaResumeRequest: ${e.message}")
+            Log.e(TAG, "Failed to decode MediaResumeRequest")
             return false
         }
         return mediaService.handleIncomingResume(connection, envelope, resumeReq)

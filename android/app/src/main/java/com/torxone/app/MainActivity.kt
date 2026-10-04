@@ -94,6 +94,22 @@ fun TorXOneApp() {
     val resolved = onboardingComplete ?: return
 
     val appInitState by app.initState.collectAsState()
+    // Android can deny foreground promotion during a background service restart.
+    // Retry only after initialization has completed and this activity is visible.
+    val coreLifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(coreLifecycleOwner, appInitState) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START && appInitState is TorXOneApplication.AppInitState.Ready) {
+                runCatching { com.torxone.app.service.TorXCoreService.start(context) }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.w("MainActivity", "Core foreground service start deferred")
+                    }
+            }
+        }
+        coreLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { coreLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     if (resolved && appInitState is TorXOneApplication.AppInitState.Failed) {
         val error = (appInitState as TorXOneApplication.AppInitState.Failed).error
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -148,6 +164,7 @@ fun TorXOneApp() {
             database = app.database,
             identityRepository = app.identityRepository,
             sessionCrypto = app.sessionCrypto,
+            sessionStore = app.sessionStore,
             connectionManager = app.connectionManager,
             agent = app.agent,
             nearbyTransport = app.nearbyTransport,
@@ -230,7 +247,8 @@ fun TorXOneApp() {
                             app.securityPolicyService.cleanupDue()
                             app.scheduledMessageService.recover()
                         }.onFailure {
-                            android.util.Log.w("MainActivity", "Local feature recovery will retry", it)
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            android.util.Log.w("MainActivity", "Local feature recovery will retry")
                         }
                     }
                     if (settingsState.appLockEnabled && backgroundTimestamp > 0L) {
@@ -260,7 +278,8 @@ fun TorXOneApp() {
                     lockErrorMessage = null
                     app.applicationScope.launch {
                         runCatching { app.scheduledMessageService.recover() }.onFailure {
-                            android.util.Log.w("MainActivity", "Scheduled-message recovery will retry", it)
+                            if (it is kotlinx.coroutines.CancellationException) throw it
+                            android.util.Log.w("MainActivity", "Scheduled-message recovery will retry")
                         }
                     }
                 },
@@ -283,7 +302,10 @@ fun TorXOneApp() {
             app.nearbyTransport.start()
             coroutineScope.launch {
                 runCatching { app.torXRadioManager.start() }
-                    .onFailure { android.util.Log.w("MainActivity", "TorX Radio discovery unavailable", it) }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.w("MainActivity", "TorX Radio discovery unavailable")
+                    }
             }
         }
     }
@@ -298,7 +320,10 @@ fun TorXOneApp() {
             if (PermissionHelper.arePermissionsGranted(context, nearbyPermissions)) {
                 app.nearbyTransport.start()
                 runCatching { app.torXRadioManager.start() }
-                    .onFailure { android.util.Log.w("MainActivity", "TorX Radio discovery unavailable", it) }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        android.util.Log.w("MainActivity", "TorX Radio discovery unavailable")
+                    }
             } else {
                 nearbyPermissionsLauncher.launch(nearbyPermissions)
             }
@@ -520,6 +545,7 @@ fun TorXOneApp() {
             }.collectAsState(initial = null)
             if (showConnection) com.torxone.app.ui.components.ConnectionDashboardDialog(connectionSnapshot,
                 onDismiss = { showConnection = false }, onRetry = { app.agent.triggerImmediateRetry(screen.conversationId) },
+                onRetryTor = { app.torBootstrapManager.retry() },
                 onToggleSendingPaused = { coroutineScope.launch {
                     app.settingsRepository.setConversationSendingPaused(screen.conversationId, !connectionSnapshot.sendingPaused)
                     if (connectionSnapshot.sendingPaused) app.agent.triggerImmediateRetry(screen.conversationId)

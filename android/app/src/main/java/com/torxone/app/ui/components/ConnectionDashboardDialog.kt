@@ -16,7 +16,8 @@ fun ConnectionDashboardDialog(
     onDismiss: () -> Unit,
     onVerifyIdentity: (() -> Unit)? = null,
     onRetry: (() -> Unit)? = null,
-    onToggleSendingPaused: (() -> Unit)? = null
+    onToggleSendingPaused: (() -> Unit)? = null,
+    onRetryTor: (() -> Unit)? = null
 ) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Connection") },
         text = {
@@ -31,6 +32,9 @@ fun ConnectionDashboardDialog(
                     Column {
                         Text(path.name, style = MaterialTheme.typography.labelLarge)
                         Text(path.status, style = MaterialTheme.typography.bodySmall)
+                        if (path.name == "Tor" && snapshot.torRetryAvailable && onRetryTor != null) {
+                            TextButton(onClick = onRetryTor) { Text("Restart Tor") }
+                        }
                     }
                 }
                 HorizontalDivider()

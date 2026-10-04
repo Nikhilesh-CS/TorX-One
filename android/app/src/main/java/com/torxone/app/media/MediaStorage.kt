@@ -149,7 +149,7 @@ class MediaStorage(
                 file.deleteOnExit()
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to cleanup temp transfer for mediaId=$mediaId: ${e.message}", e)
+            Log.w(TAG, "Failed to clean up temp transfer")
         }
     }
 
@@ -176,7 +176,7 @@ class MediaStorage(
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to cleanup orphan temp transfers: ${e.message}", e)
+            Log.w(TAG, "Failed to clean up orphan temp transfers")
         }
     }
 }

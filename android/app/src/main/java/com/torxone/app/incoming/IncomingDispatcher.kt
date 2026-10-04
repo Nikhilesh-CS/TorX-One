@@ -30,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap
  * 5. Dedupe transport envelope (re-ACKs duplicates)
  * 6. Crypto decrypt via Double Ratchet
  * 7. Parse SecureEnvelope
- * 8. Validate secure envelope bindings and timestamp skew
+ * 8. Validate secure envelope bindings and future timestamp skew
  * 9. Dispatch to feature handler
  * 10. Persist message state
  * 11. Commit receive state to deduplication table
@@ -83,23 +83,39 @@ class IncomingDispatcher(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 4096
     }
 
-    private val bootstrapLocks = Array(32) { kotlinx.coroutines.sync.Mutex() }
+    private class BootstrapLane {
+        val mutex = kotlinx.coroutines.sync.Mutex()
+        var users = 0
+    }
+    private val bootstrapGuard = Any()
+    private val bootstrapLanes = mutableMapOf<String, BootstrapLane>()
 
-    suspend fun dispatch(rawBytes: ByteArray, transportType: TransportType): Boolean {
+    suspend fun dispatch(rawBytes: ByteArray, transportType: TransportType,
+                         onAuthenticatedRelationship: ((String) -> Boolean)? = null): Boolean {
         if (rawBytes.size > ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) return false
         val queue = runCatching { ProtocolCodec.decodeTransportEnvelope(rawBytes).queueAddress }.getOrNull()
         if (queue?.startsWith("invite-") == true) {
-            return bootstrapLocks[(queue.hashCode() and Int.MAX_VALUE) % bootstrapLocks.size].withLock {
-                dispatchInternal(rawBytes, transportType)
+            val lane = synchronized(bootstrapGuard) {
+                bootstrapLanes.getOrPut(queue) { BootstrapLane() }.also { it.users++ }
+            }
+            try {
+                return lane.mutex.withLock { dispatchInternal(rawBytes, transportType, onAuthenticatedRelationship) }
+            } finally {
+                synchronized(bootstrapGuard) {
+                    if (--lane.users == 0) bootstrapLanes.remove(queue, lane)
+                }
             }
         }
-        return dispatchInternal(rawBytes, transportType)
+        return dispatchInternal(rawBytes, transportType, onAuthenticatedRelationship)
     }
 
-    private suspend fun dispatchInternal(rawBytes: ByteArray, transportType: TransportType): Boolean {
+    internal fun retainedBootstrapLaneCount(): Int = synchronized(bootstrapGuard) { bootstrapLanes.size }
+
+    private suspend fun dispatchInternal(rawBytes: ByteArray, transportType: TransportType,
+                                         onAuthenticatedRelationship: ((String) -> Boolean)?): Boolean {
         // Stage 1: Validate transport frame length
         if (rawBytes.size > ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) {
-            Log.e(TAG, "[STAGE 1 FAIL] Frame size ${rawBytes.size} exceeds maximum ${ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES}")
+            Log.e(TAG, "[STAGE 1 FAIL] Frame exceeds transport size limit")
             return false
         }
 
@@ -107,12 +123,12 @@ class IncomingDispatcher(
         val opaqueEnvelope = try {
             ProtocolCodec.decodeTransportEnvelope(rawBytes)
         } catch (e: Exception) {
-            Log.e(TAG, "[STAGE 2 FAIL] Malformed transport envelope: ${e.message}")
+            Log.e(TAG, "[STAGE 2 FAIL] Malformed transport envelope")
             return false
         }
 
-        val envShort = opaqueEnvelope.envelopeId.take(8)
-        Log.d(TAG, "[RX] env=$envShort arrived via $transportType on queue ${opaqueEnvelope.queueAddress.take(8)}")
+        com.torxone.app.transport.DeliveryDiagnostics.event("receiver_frame", delivery = opaqueEnvelope.envelopeId, transport = transportType)
+        Log.d(TAG, "[RX] Transport envelope received")
 
         // Stage 3: Resolve queue / connection (or bilateral bootstrap handshake)
         var connection = connectionManager.getConnectionByRecvQueue(opaqueEnvelope.queueAddress)
@@ -120,15 +136,15 @@ class IncomingDispatcher(
             if (opaqueEnvelope.queueAddress.startsWith("invite-") && pendingInviteDao != null && identityRepository != null) {
                 val inviteId = opaqueEnvelope.queueAddress.removePrefix("invite-")
                 if (consumedInviteDao?.getById(inviteId) != null) {
-                    return confirmBootstrapRetry(inviteId, opaqueEnvelope)
+                    return confirmBootstrapRetry(inviteId, opaqueEnvelope, onAuthenticatedRelationship)
                 }
                 val pendingInvite = pendingInviteDao.getById(inviteId)
                 if (pendingInvite == null) {
-                    Log.e(TAG, "[BOOTSTRAP REJECT] No matching pending invite found for $inviteId")
+                    Log.e(TAG, "[BOOTSTRAP REJECT] No matching pending invite")
                     return false
                 }
                 if (System.currentTimeMillis() > pendingInvite.expiresAt) {
-                    Log.e(TAG, "[BOOTSTRAP REJECT] Pending invite $inviteId has expired")
+                    Log.e(TAG, "[BOOTSTRAP REJECT] Pending invite has expired")
                     pendingInviteDao.delete(pendingInvite.inviteId)
                     return false
                 }
@@ -137,11 +153,11 @@ class IncomingDispatcher(
                     val bootstrapPayload = try {
                         com.torxone.app.relationship.ContactBootstrapPayload.fromByteArray(opaqueEnvelope.opaqueCiphertext)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse bootstrap payload: ${e.message}")
+                        Log.e(TAG, "Failed to parse bootstrap payload")
                         return false
                     }
                     if (bootstrapPayload.inviteId != inviteId) {
-                        Log.e(TAG, "[BOOTSTRAP REJECT] Invite ID mismatch: queue=$inviteId, payload=${bootstrapPayload.inviteId}")
+                        Log.e(TAG, "[BOOTSTRAP REJECT] Invite ID mismatch")
                         return false
                     }
                     val signedData = com.torxone.app.relationship.ContactBootstrapPayload.serializeForSigning(
@@ -182,6 +198,10 @@ class IncomingDispatcher(
                         sendAuth = responderResult.bobSendAuth,
                         recvAuth = responderResult.aliceSendAuth
                     )
+
+                    // Quotas use verified signed/3DH identity, never the Tor header.
+                    // Admission must happen before any pairing/session side effects.
+                    if (onAuthenticatedRelationship?.invoke(conn.relationshipId) == false) return false
 
                     val contactId = responderResult.relationship.contactId
 
@@ -287,17 +307,19 @@ class IncomingDispatcher(
 
                     sendAck(conn, bootstrapPayload.inviteId, opaqueEnvelope.envelopeId, bootstrapPayload.initiatorIdentityId)
 
-                    Log.i(TAG, "[BOOTSTRAP SUCCESS] Established bilateral relationship with ${bootstrapPayload.initiatorDisplayName}")
+                    Log.i(TAG, "[BOOTSTRAP SUCCESS] Established authenticated relationship")
                     return true
                 }
             }
 
-            Log.w(TAG, "[STAGE 3 FAIL] No connection found for queue ${opaqueEnvelope.queueAddress}")
+            Log.w(TAG, "[STAGE 3 FAIL] No connection for authenticated queue")
+            com.torxone.app.transport.DeliveryDiagnostics.event("connection_not_found", delivery = opaqueEnvelope.envelopeId, transport = transportType)
             return false
         }
 
         // Stage 4: Authenticate outer capability via constant-time HMAC-SHA256
         if (connection.recvAuth.size != 32 || opaqueEnvelope.queueAuthenticator.size != 32) {
+            com.torxone.app.transport.DeliveryDiagnostics.event("queue_auth_failure", connection.relationshipId, delivery = opaqueEnvelope.envelopeId, state = "INVALID_LENGTH")
             Log.e(TAG, "[STAGE 4 FAIL CLOSED] Established connection or envelope has invalid queue-authenticator length")
             return false
         }
@@ -308,9 +330,14 @@ class IncomingDispatcher(
             ciphertext = opaqueEnvelope.opaqueCiphertext
         )
         if (!MessageDigest.isEqual(expectedAuth, opaqueEnvelope.queueAuthenticator)) {
+            com.torxone.app.transport.DeliveryDiagnostics.event("queue_auth_failure", connection.relationshipId, delivery = opaqueEnvelope.envelopeId, state = "INVALID_HMAC")
             Log.e(TAG, "[STAGE 4 FAIL] Outer queue HMAC authenticator verification failed")
             return false
         }
+
+        if (onAuthenticatedRelationship?.invoke(connection.relationshipId) == false) return false
+
+        com.torxone.app.transport.DeliveryDiagnostics.event("queue_auth_success", connection.relationshipId, delivery = opaqueEnvelope.envelopeId)
 
         if (com.torxone.app.crypto.EphemeralCipher.isFrame(opaqueEnvelope.opaqueCiphertext)) {
             return try {
@@ -339,7 +366,8 @@ class IncomingDispatcher(
                 }
                 true
             } catch (e: Exception) {
-                Log.w(TAG, "Invalid ephemeral frame", e)
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                Log.w(TAG, "Invalid ephemeral frame")
                 false
             }
         }
@@ -347,7 +375,7 @@ class IncomingDispatcher(
         // Stage 5: Dedupe transport envelope
         val existingProcessed = processedEnvelopeDao.getByEnvelopeId(opaqueEnvelope.envelopeId)
         if (existingProcessed != null) {
-            Log.w(TAG, "[STAGE 5] Duplicate envelope $envShort already processed — re-sending ACK")
+            Log.w(TAG, "[STAGE 5] Duplicate authenticated envelope; re-sending ACK")
             // Re-send ACK with original logical message ID
             sendAck(connection, existingProcessed.logicalMessageId, opaqueEnvelope.envelopeId)
             return true
@@ -362,7 +390,7 @@ class IncomingDispatcher(
         val encryptedMsg = try {
             EncryptedSessionMessage.deserialize(opaqueEnvelope.opaqueCiphertext)
         } catch (e: Exception) {
-            Log.e(TAG, "[STAGE 6 FAIL] Deserializing session message failed: ${e.message}")
+            Log.e(TAG, "[STAGE 6 FAIL] Deserializing session message failed")
             return false
         }
         val aad = "torx-aad-v1:${connection.generation}:${opaqueEnvelope.queueAddress}".toByteArray(Charsets.UTF_8)
@@ -371,6 +399,8 @@ class IncomingDispatcher(
         if (!processingEnvelopeIds.add(processingKey)) return false
 
         var decryptedEnvelope: SecureEnvelope? = null
+        var acceptedReceipt: DeliveryReceiptHandler.CommittedAck? = null
+        var acceptedReadReceiptId: String? = null
         var requiresSequence = false
         var reservedSequence: Long? = null
 
@@ -382,14 +412,18 @@ class IncomingDispatcher(
                 associatedData = aad
             ) { decryptedBytes, updatedState ->
                 // Stage 7: Parse SecureEnvelope
+                com.torxone.app.transport.DeliveryDiagnostics.event("decrypt_success", connection.relationshipId, delivery = opaqueEnvelope.envelopeId)
                 val secureEnvelope = ProtocolCodec.decodeSecureEnvelope(decryptedBytes)
 
                 // Stage 8: Validate secure envelope
                 val now = System.currentTimeMillis()
                 val timestamp = secureEnvelope.timestamp
-                val expiredContent = com.torxone.app.privacy.DisappearingPolicy.expired(secureEnvelope.expiresAt, now)
-                val expiredMediaControl = knownExpiredMediaControl(connection, secureEnvelope)
-                if (timestamp <= 0L || (!expiredContent && !expiredMediaControl && timestamp < now && now - timestamp > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS) ||
+                // Durable ciphertext must remain receivable after an offline outage.
+                // The ratchet, exact dedup record and directional sequence enforce replay
+                // protection; wall-clock age cannot distinguish delay from replay.
+                // Content expiry is still enforced by its feature handler, and ephemeral
+                // frames and call offers retain their independent short freshness windows.
+                if (timestamp <= 0L ||
                     (timestamp > now && timestamp - now > ProtocolLimits.MAX_TIMESTAMP_SKEW_MS)
                 ) {
                     val skew = if (timestamp <= 0L) Long.MAX_VALUE else if (timestamp < now) now - timestamp else timestamp - now
@@ -468,10 +502,10 @@ class IncomingDispatcher(
                             if (!ok) throw IllegalStateException("Text message receiver returned failure")
                         }
                         MessageType.DELIVERY_ACK -> {
-                            deliveryReceiptHandler.handleDeliveryAck(secureEnvelope, connection)
+                            acceptedReceipt = deliveryReceiptHandler.handleDeliveryAck(secureEnvelope, connection)
                         }
                         MessageType.READ_RECEIPT -> {
-                            deliveryReceiptHandler.handleReadReceipt(secureEnvelope, connection)
+                            acceptedReadReceiptId = deliveryReceiptHandler.handleReadReceipt(secureEnvelope, connection)
                         }
                         MessageType.PRESENCE_UPDATE -> {
                             presenceHandler?.handlePresenceUpdate(connection, secureEnvelope)
@@ -575,7 +609,9 @@ class IncomingDispatcher(
             }
         } catch (e: Exception) {
             reservedSequence?.let { connectionManager.releaseRecvSequenceReservation(connection.relationshipId, it) }
-            Log.e(TAG, "[STAGE 6-11 FAIL] Decryption or atomic commit failed: ${e.message}")
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            com.torxone.app.transport.DeliveryDiagnostics.event("decrypt_failure", connection.relationshipId, delivery = opaqueEnvelope.envelopeId, state = "DECRYPT_OR_COMMIT_REJECTED")
+            Log.e(TAG, "[STAGE 6-11 FAIL] Decryption or atomic commit failed")
             return false
         } finally {
             processingEnvelopeIds.remove(processingKey)
@@ -585,6 +621,15 @@ class IncomingDispatcher(
         // ACK itself is excluded to prevent acknowledgement loops; best-effort ephemeral
         // frames are handled before this durable path.
         val env = decryptedEnvelope
+        com.torxone.app.transport.DeliveryDiagnostics.event("db_commit", connection.relationshipId,
+            env?.conversationId, opaqueEnvelope.envelopeId, env?.directionSequence)
+        agent.onAuthenticatedPeerActivity(connection.relationshipId)
+        acceptedReceipt?.let { committedAck ->
+            deliveryReceiptHandler.afterCommit(committedAck)
+            com.torxone.app.transport.DeliveryDiagnostics.event("message_delivered", connection.relationshipId,
+                delivery = committedAck.originalEnvelopeId, state = "ACK_COMMITTED")
+        }
+        acceptedReadReceiptId?.let { deliveryReceiptHandler.afterReadCommit(it) }
         if (env != null && env.messageType.name.startsWith("CALL_")) {
             callHandler?.handleCallSignal(connection, env)
         }
@@ -595,26 +640,9 @@ class IncomingDispatcher(
         return true
     }
 
-    /** Retransmission after a lost ACK must confirm, never initialize or reset the ratchet. */
-    private suspend fun knownExpiredMediaControl(connection: Connection, envelope: SecureEnvelope): Boolean {
-        val security = securityPolicyService ?: return false
-        val codec = com.torxone.app.media.MediaProtocolCodec
-        val mediaId = try { when (envelope.messageType) {
-            MessageType.FILE_PROGRESS -> codec.decodeChunk(envelope.payload).mediaId
-            MessageType.FILE_ACCEPT -> codec.decodeAccept(envelope.payload).mediaId
-            MessageType.FILE_COMPLETE -> codec.decodeComplete(envelope.payload).mediaId
-            MessageType.FILE_RESUME -> codec.decodeResumeRequest(envelope.payload).mediaId
-            MessageType.FILE_CANCEL -> codec.decodeCancel(envelope.payload).mediaId
-            else -> return false
-        } } catch (_: Exception) { return false }
-        val tombstone = security.dao.expiredMedia(mediaId, connection.relationshipId) ?: return false
-        val localConversation = envelope.groupMetadata?.groupId
-            ?: envelope.conversationId.takeIf { it == tombstone.conversationId }
-            ?: contactDao?.getByRelationshipId(connection.relationshipId)?.conversationId
-        return localConversation == tombstone.conversationId
-    }
-
-    private suspend fun confirmBootstrapRetry(inviteId: String, opaque: OpaqueTransportEnvelope): Boolean {
+    /** Retransmission after a lost ACK confirms the existing relationship only. */
+    private suspend fun confirmBootstrapRetry(inviteId: String, opaque: OpaqueTransportEnvelope,
+                                              onAuthenticatedRelationship: ((String) -> Boolean)?): Boolean {
         val state = bootstrapStateDao?.getByInviteId(inviteId) ?: return false
         if (state.isInitiator || state.status != com.torxone.app.data.entity.BootstrapStatus.ACTIVE) return false
         val contact = contactDao?.getByRelationshipId(state.relationshipId) ?: return false
@@ -629,10 +657,15 @@ class IncomingDispatcher(
             payload.initiatorSigningPublicKey, payload.initiatorEncryptionPublicKey,
             payload.initiatorEphemeralPublicKey, payload.initiatorTorOnionAddress)
         if (!IdentityCrypto.verifyEd25519(contact.signingPublicKey, signed, payload.signature)) return false
+        if (onAuthenticatedRelationship?.invoke(conn.relationshipId) == false) return false
+        // A signed bootstrap is replayable and has no endpoint revision. It may
+        // supply a missing endpoint on an older installation, but can never roll
+        // back an existing verified QR endpoint or reset session state.
         payload.initiatorTorOnionAddress?.let { onion ->
             val route = com.torxone.app.transport.tor.TorRoute(onion)
-            peerTorEndpoints?.bindVerified(conn.relationshipId, route)
-            if (peerTorEndpoints == null) torRouteManager?.bind(conn.sendQueueId, route)
+            peerTorEndpoints?.bindBootstrapIfMissing(conn.relationshipId, route)
+            if (peerTorEndpoints == null && torRouteManager?.resolve(conn.sendQueueId) == null)
+                torRouteManager?.bind(conn.sendQueueId, route)
         }
         sendAck(conn, inviteId, opaque.envelopeId, contact.remoteIdentityId)
         return true
@@ -679,13 +712,18 @@ class IncomingDispatcher(
                 queueAuthenticator = connection.sendAuth,
                 status = DeliveryStatus.QUEUED,
                 priority = DeliveryPriority.HIGH,
-                expectsAck = false
+                expectsAck = false,
+                relationshipId = connection.relationshipId
             )
 
-            Log.d(TAG, "[ACK] Enqueueing ACK for msg=${originalMessageId.take(8)}")
+            Log.d(TAG, "[ACK] Enqueueing authenticated delivery ACK")
             agent.enqueue(deliveryItem)
+            com.torxone.app.transport.DeliveryDiagnostics.event("ack_enqueued", connection.relationshipId, delivery = originalEnvelopeId)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send ACK: ${e.message}")
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            com.torxone.app.transport.DeliveryDiagnostics.event("ack_enqueue_failed", connection.relationshipId,
+                delivery = originalEnvelopeId, state = "IO_FAILURE")
+            Log.e(TAG, "Failed to enqueue delivery ACK")
         }
     }
 
@@ -721,7 +759,7 @@ class IncomingDispatcher(
                     avatarHash = if (update.hasAvatarUpdate) avatarHash else alias.avatarHash))
             }
         }
-        Log.i(TAG, "[PROFILE_UPDATE] Updated contact ${contact.contactId.take(8)} displayName to '$newDisplayName'")
+        Log.i(TAG, "[PROFILE_UPDATE] Updated authenticated profile")
     }
 
     private fun requireHandlerSuccess(result: Boolean?, handler: String) {

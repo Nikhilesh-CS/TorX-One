@@ -87,7 +87,7 @@ class RealVoiceNoteRecorder(
 
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG, AUDIO_FORMAT)
         if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-            Log.e(TAG, "Invalid buffer size for AudioRecord: $minBufferSize")
+            Log.e(TAG, "Invalid buffer size for AudioRecord")
             return false
         }
 
@@ -162,16 +162,16 @@ class RealVoiceNoteRecorder(
                             }
                         }
                     } else if (readShorts < 0) {
-                        Log.e(TAG, "Error reading from AudioRecord: $readShorts")
+                        Log.e(TAG, "Error reading from AudioRecord")
                         break
                     }
                 }
             }
 
-            Log.i(TAG, "Voice note recording started successfully at ${sampleRate}Hz")
+            Log.i(TAG, "Voice note recording started")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start AudioRecord: ${e.message}", e)
+            Log.e(TAG, "Failed to start AudioRecord")
             cleanup()
             return false
         }
@@ -190,7 +190,7 @@ class RealVoiceNoteRecorder(
         try {
             audioRecord?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping AudioRecord: ${e.message}")
+            Log.w(TAG, "Error stopping AudioRecord")
         }
 
         synchronized(this) {
@@ -205,14 +205,14 @@ class RealVoiceNoteRecorder(
         val rawPcm = try {
             if (pcmFile != null && pcmFile.exists()) pcmFile.readBytes() else ByteArray(0)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read PCM temp file: ${e.message}")
+            Log.e(TAG, "Failed to read PCM temp file")
             ByteArray(0)
         }
 
         cleanup()
 
         if (rawPcm.isEmpty() || duration < 500) {
-            Log.w(TAG, "Recording too short or empty ($duration ms, ${rawPcm.size} bytes)")
+            Log.w(TAG, "Recording too short or empty")
             return null
         }
 
@@ -222,7 +222,7 @@ class RealVoiceNoteRecorder(
         // Resample waveform amplitudes to standard 32 bars
         val waveform = resampleWaveform(waveformAmplitudes, VoiceNoteHelper.DEFAULT_WAVEFORM_BAR_COUNT)
 
-        Log.i(TAG, "Voice note recording complete: ${wavData.size} bytes, ${duration}ms")
+        Log.i(TAG, "Voice note recording complete")
         return VoiceRecordingResult(
             audioData = wavData,
             durationMs = duration,
@@ -237,7 +237,7 @@ class RealVoiceNoteRecorder(
         try {
             audioRecord?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping AudioRecord on cancel: ${e.message}")
+            Log.w(TAG, "Error stopping AudioRecord on cancel")
         }
         cleanup()
         Log.i(TAG, "Voice note recording cancelled")
@@ -259,7 +259,7 @@ class RealVoiceNoteRecorder(
         try {
             audioRecord?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "Error releasing AudioRecord: ${e.message}")
+            Log.w(TAG, "Error releasing AudioRecord")
         }
         audioRecord = null
     }

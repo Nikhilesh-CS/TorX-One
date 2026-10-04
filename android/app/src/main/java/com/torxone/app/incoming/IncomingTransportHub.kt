@@ -16,7 +16,24 @@ open class IncomingTransportHub(
 ) {
     private val mediaFragments = com.torxone.app.media.DedicatedMediaReassembler()
 
+    var admittedMediaFrameHandler: (suspend (ByteArray, TransportType, (String) -> Boolean) -> Boolean)? = null
+
+    /** Tor stream ownership is assigned only by authenticated payload processing. */
+    open suspend fun onRawTorFrameReceived(rawBytes: ByteArray, onAuthenticatedRelationship: (String) -> Boolean): Boolean {
+        com.torxone.app.transport.DeliveryDiagnostics.event("receiver_frame", transport = TransportType.TOR)
+        if (rawBytes.size > com.torxone.app.protocol.ProtocolLimits.MAX_TRANSPORT_ENVELOPE_BYTES) return false
+        // Tor supports the full dedicated frame. Fragments/mesh lack this stream's
+        // authenticated relationship callback; their alternate-link paths stay separate.
+        if (com.torxone.app.media.DedicatedMediaFragments.isFragment(rawBytes) ||
+            MeshPacketCodec.isMeshPacket(rawBytes) || MeshRouteAnnouncementCodec.isAnnouncement(rawBytes) ||
+            MeshCustodyAckCodec.isAck(rawBytes)) return false
+        if (DedicatedMediaFrameCodec.isDedicatedMediaFrame(rawBytes))
+            return admittedMediaFrameHandler?.invoke(rawBytes, TransportType.TOR, onAuthenticatedRelationship) ?: false
+        return dispatcher?.dispatch(rawBytes, TransportType.TOR, onAuthenticatedRelationship) ?: false
+    }
+
     open suspend fun onRawFrameReceived(rawBytes: ByteArray, transportType: TransportType): Boolean {
+        com.torxone.app.transport.DeliveryDiagnostics.event("receiver_frame", transport = transportType)
         if (com.torxone.app.media.DedicatedMediaFragments.isFragment(rawBytes)) {
             return when (val result = mediaFragments.accept(rawBytes)) {
                 com.torxone.app.media.DedicatedMediaReassembler.Result.Pending -> true

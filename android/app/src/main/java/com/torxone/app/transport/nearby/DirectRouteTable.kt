@@ -114,7 +114,7 @@ class DirectRouteTable {
             try {
                 listener(relationshipId, state, lastSeen)
             } catch (e: Exception) {
-                Log.e(TAG, "Error in route listener for relationship $relationshipId: ${e.message}", e)
+                Log.e(TAG, "Error in route listener for relationship")
             }
         }
     }
