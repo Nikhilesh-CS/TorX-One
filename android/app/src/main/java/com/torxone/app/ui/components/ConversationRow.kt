@@ -45,7 +45,7 @@ fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(TorXSpacing.sm)
     ) {
-        ProfileAvatar(conversation.title, conversation.avatarHash, Modifier.size(50.dp))
+        ProfileAvatar(conversation.title, conversation.avatarHash, Modifier.size(50.dp), previewOnClick = true)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (conversation.type == ConversationType.GROUP) Icon(Icons.Default.Groups, "Group", Modifier.size(16.dp),

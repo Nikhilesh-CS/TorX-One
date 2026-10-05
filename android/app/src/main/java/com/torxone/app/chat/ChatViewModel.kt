@@ -16,10 +16,14 @@ import com.torxone.app.protocol.ReactionOperation
 import android.util.Log
 import com.torxone.app.media.VoiceNoteRecorder
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * State of active voice note recording in composer.
@@ -54,7 +58,8 @@ data class ChatUiState(
     val starredIds: Set<String> = emptySet(),
     val hasEarlierMessages: Boolean = false,
     val isLatestWindow: Boolean = true,
-    val newerMessageCount: Int = 0
+    val newerMessageCount: Int = 0,
+    val avatarHash: String? = null
 )
 
 /**
@@ -91,7 +96,7 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState(title = contactName))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    private var currentReactionEntities: List<ReactionEntity> = emptyList()
+    private val reactionMutex = Mutex()
 
     private var typingDebounceJob: Job? = null
     private var isTypingLocally = false
@@ -153,7 +158,6 @@ class ChatViewModel(
                 mediaFlow
             ) { messageData, reactionEntities, hiddenIds, mediaEntities ->
                 val (msgEntities, referencedEntities) = messageData
-                currentReactionEntities = reactionEntities
                 val hiddenSet = hiddenIds.toSet()
                 val visibleEntities = msgEntities.filter { !hiddenSet.contains(it.logicalMessageId) }
                 mapToUiModels(visibleEntities, reactionEntities, mediaEntities, referencedEntities)
@@ -359,22 +363,30 @@ class ChatViewModel(
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
-        val hasReacted = currentReactionEntities.any {
-            it.messageId == messageId && it.senderId == localIdentityId && it.emoji == emoji
-        }
-        val operation = if (hasReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
-
         viewModelScope.launch {
             try {
-                chatService.sendReaction(
-                    conversationId = conversationId,
-                    relationshipId = relationshipId,
-                    localIdentityId = localIdentityId,
-                    recipientId = recipientId,
-                    targetMessageId = messageId,
-                    emoji = emoji,
-                    operation = operation
-                )
+                reactionMutex.withLock {
+                    fun List<ReactionEntity>.containsOwnReaction() = any {
+                        it.messageId == messageId && it.senderId == localIdentityId && it.emoji == emoji
+                    }
+                    val hasReacted = chatService.observeReactions(conversationId).first().containsOwnReaction()
+                    val operation = if (hasReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
+                    chatService.sendReaction(
+                        conversationId = conversationId,
+                        relationshipId = relationshipId,
+                        localIdentityId = localIdentityId,
+                        recipientId = recipientId,
+                        targetMessageId = messageId,
+                        emoji = emoji,
+                        operation = operation
+                    )
+                    // The service can return without committing when a connection is unavailable.
+                    check(chatService.observeReactions(conversationId).first().containsOwnReaction() != hasReacted) {
+                        "Couldn't update reaction. Check the connection and try again."
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to update reaction") }
             }
@@ -560,6 +572,10 @@ class ChatViewModel(
 
         viewModelScope.launch {
             try {
+                val preview = if (type == MediaType.IMAGE) withContext(Dispatchers.IO) {
+                    thumbnailBytes?.let { com.torxone.app.ui.components.LocalImagePreview.thumbnail(it) }
+                        ?: com.torxone.app.ui.components.LocalImagePreview.thumbnail(bytes)
+                } else thumbnailBytes
                 mediaService?.sendMedia(
                     conversationId = conversationId,
                     relationshipId = relationshipId,
@@ -570,10 +586,12 @@ class ChatViewModel(
                     mimeType = mimeType,
                     rawBytes = bytes,
                     durationMs = durationMs,
-                    thumbnailBytes = thumbnailBytes,
+                    thumbnailBytes = preview,
                     waveformData = waveformData,
                     replyToMessageId = replyToId
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message ?: "Failed to send media") }
             }

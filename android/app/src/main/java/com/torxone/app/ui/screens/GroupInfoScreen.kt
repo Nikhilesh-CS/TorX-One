@@ -163,7 +163,7 @@ fun GroupInfoScreen(
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
-                        com.torxone.app.ui.components.ProfileAvatar(group?.title ?: "Group", group?.avatarHash, Modifier.fillMaxSize())
+                        com.torxone.app.ui.components.ProfileAvatar(group?.title ?: "Group", group?.avatarHash, Modifier.fillMaxSize(), previewOnClick = true)
                     }
 
                     if (canManage) {

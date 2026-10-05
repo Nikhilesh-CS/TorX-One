@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: read
+      contents: write
       id-token: write
       attestations: write
     steps:
@@ -42,7 +42,8 @@ jobs:
             python3 tools/validate_release_evidence.py
           fi
           version=$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts)
-          test "$GITHUB_REF_NAME" = "v$version"
+          code=$(sed -n 's/^[[:space:]]*versionCode = \([0-9]*\)/\1/p' app/build.gradle.kts)
+          [[ "$GITHUB_REF_NAME" = "v$version" || "$GITHUB_REF_NAME" = "v$version-build$code" ]]
           bash ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:securityInventory
       - name: Sign, verify and checksum
         shell: bash
@@ -76,12 +77,27 @@ jobs:
           cp android/app/build/reports/security/{sbom.cdx.json,dependencies.txt} release-artifacts/
           cp android/app/build/outputs/mapping/release/mapping.txt release-artifacts/
           printf '%s\n' "$GITHUB_SHA" > release-artifacts/source-commit.txt
-          (cd release-artifacts && sha256sum torx-one.apk sbom.cdx.json dependencies.txt native-libraries.json mapping.txt signing-certificate.txt candidate-verification.json source-commit.txt > SHA256SUMS)
+          python3 android/tools/generate_update_metadata.py \
+            --apk release-artifacts/torx-one.apk --output release-artifacts \
+            --tag "$GITHUB_REF_NAME" --aapt "$tools/aapt" --apksigner "$tools/apksigner" \
+            --trusted-certificate-sha256 "$TRUSTED_SIGNING_CERT_SHA256" \
+            --notes docs/GITHUB_RELEASE_NOTES.md
+          rm release-artifacts/torx-one.apk
+          (cd release-artifacts && sha256sum torxone-*.apk update.json sbom.cdx.json dependencies.txt native-libraries.json mapping.txt signing-certificate.txt candidate-verification.json source-commit.txt > SHA256SUMS)
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
-          subject-path: release-artifacts/torx-one.apk
+          subject-path: release-artifacts/torxone-*.apk
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: signed-release-${{ github.ref_name }}
           path: release-artifacts/
           if-no-files-found: error
+      - name: Prepare GitHub release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Publish manually only after the actual old-to-new device upgrade passes.
+          gh release create "$GITHUB_REF_NAME" release-artifacts/torxone-*.apk \
+            release-artifacts/update.json release-artifacts/SHA256SUMS \
+            --verify-tag --target "$GITHUB_SHA" --draft \
+            --title "TorX One $GITHUB_REF_NAME" --notes-file docs/GITHUB_RELEASE_NOTES.md

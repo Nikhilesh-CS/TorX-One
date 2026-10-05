@@ -39,6 +39,8 @@ jobs:
           python3 android/tools/test_release_evidence.py
           python3 android/tools/test_runtime_dependency_scan.py
           python3 android/tools/test_signed_candidate.py
+          python3 android/tools/test_update_metadata.py
+          python3 android/tools/test_emoji_catalogue.py
           python3 android/tools/test_media_expiry_queries.py
           python3 android/tools/validate_release_approval.py
           python3 android/tools/test_release_approval.py

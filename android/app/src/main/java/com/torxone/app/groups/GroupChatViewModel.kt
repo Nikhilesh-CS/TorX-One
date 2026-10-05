@@ -15,6 +15,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -56,6 +58,7 @@ class GroupChatViewModel(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private val typingTimestamps = ConcurrentHashMap<String, Long>()
+    private val reactionMutex = Mutex()
     private var recordingTimerJob: Job? = null
     private var draftJob: Job? = null
     private var draftChanged = false
@@ -104,7 +107,8 @@ class GroupChatViewModel(
             groupDao.observeById(groupId).filterNotNull().collect { group ->
                 _uiState.update { current ->
                     current.copy(
-                        title = group.title
+                        title = group.title,
+                        avatarHash = group.avatarHash
                     )
                 }
             }
@@ -331,12 +335,22 @@ class GroupChatViewModel(
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
-        val msg = _uiState.value.messages.find { it.logicalMessageId == messageId } ?: return
-        val userReacted = msg.reactions.any { it.emoji == emoji && it.userReacted }
-        val op = if (userReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
-
         viewModelScope.launch {
-            groupService.sendGroupReaction(groupId, messageId, emoji, op)
+            try {
+                reactionMutex.withLock {
+                    val userReacted = reactionDao.observeForConversation(conversationId).first().any {
+                        it.messageId == messageId && it.senderId == localIdentityId && it.emoji == emoji
+                    }
+                    val op = if (userReacted) ReactionOperation.REMOVE else ReactionOperation.ADD
+                    check(groupService.sendGroupReaction(groupId, messageId, emoji, op)) {
+                        "Couldn't update reaction. Check your group membership and try again."
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message ?: "Failed to update reaction") }
+            }
         }
     }
 
@@ -506,6 +520,9 @@ class GroupChatViewModel(
             rawBytes = bytes,
             durationMs = durationMs,
             waveformData = waveform,
+            thumbnailBytes = if (type == MediaType.IMAGE) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.torxone.app.ui.components.LocalImagePreview.thumbnail(bytes)
+            } else null,
             replyToMessageId = _uiState.value.replyingTo?.logicalMessageId
         )
         _uiState.update { it.copy(replyingTo = null) }

@@ -130,6 +130,7 @@ fun ChatScreen(
 
     ChatScreen(
         contactName = uiState.title,
+        contactAvatar = uiState.avatarHash,
         subtitleOverride = uiState.subtitle,
         isGroup = true,
         isParticipantActive = uiState.isParticipantActive,
@@ -449,6 +450,13 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var selectedMessageForMenu by remember { mutableStateOf<MessageUiModel?>(null) }
+    var reactionPickerMessageId by remember { mutableStateOf<String?>(null) }
+    val reactionHaptics = LocalHapticFeedback.current
+    val react: (String, String) -> Unit = { id, emoji ->
+        reactionHaptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        EmojiReactionHistory.record(context, emoji)
+        onToggleReaction(id, emoji)
+    }
     var messagePendingDelete by remember { mutableStateOf<MessageUiModel?>(null) }
     var viewerMedia by remember { mutableStateOf<MediaUiModel?>(null) }
     var showAttachmentMenu by remember { mutableStateOf(false) }
@@ -622,7 +630,7 @@ fun ChatScreen(
                             .clickable { onHeaderClick() }
                             .padding(vertical = 4.dp)
                     ) {
-                        com.torxone.app.ui.components.ProfileAvatar(contactName, contactAvatar, Modifier.size(40.dp))
+                        com.torxone.app.ui.components.ProfileAvatar(contactName, contactAvatar, Modifier.size(48.dp), previewOnClick = true)
 
                         Spacer(modifier = Modifier.width(12.dp))
 
@@ -877,7 +885,7 @@ fun ChatScreen(
                         }
                     },
                     onToggleReaction = { emoji ->
-                        onToggleReaction(message.logicalMessageId, emoji)
+                        react(message.logicalMessageId, emoji)
                     }
                 )
                 if (message.logicalMessageId in starredIds) Text("Starred", style = MaterialTheme.typography.labelSmall)
@@ -980,6 +988,11 @@ fun ChatScreen(
     // Full-screen Image / Media Viewer Dialog
     viewerMedia?.let { media -> com.torxone.app.ui.components.MediaViewer(media) { viewerMedia = null } }
 
+    reactionPickerMessageId?.let { id -> EmojiReactionPicker(
+        onDismiss = { reactionPickerMessageId = null },
+        onSelected = { emoji -> if (messages.any { it.logicalMessageId == id && !it.isDeleted }) react(id, emoji) }
+    ) }
+
     // Long Press Action Sheet
     selectedMessageForMenu?.let { target ->
         ModalBottomSheet(
@@ -998,7 +1011,7 @@ fun ChatScreen(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        val quickEmojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+                        val quickEmojis = QuickReactions
                         for (emoji in quickEmojis) {
                             val userReacted = target.reactions.any { it.emoji == emoji && it.userReacted }
                             Surface(
@@ -1006,9 +1019,13 @@ fun ChatScreen(
                                 color = if (userReacted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                                 modifier = Modifier
                                     .size(48.dp)
+                                    .semantics {
+                                        contentDescription = "React with ${reactionName(emoji)}"
+                                        stateDescription = if (userReacted) "Selected" else "Not selected"
+                                    }
                                     .clickable {
-                                        onToggleReaction(target.logicalMessageId, emoji)
                                         selectedMessageForMenu = null
+                                        react(target.logicalMessageId, emoji)
                                     }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -1016,6 +1033,10 @@ fun ChatScreen(
                                 }
                             }
                         }
+                        IconButton(onClick = {
+                            reactionPickerMessageId = target.logicalMessageId
+                            selectedMessageForMenu = null
+                        }, modifier = Modifier.size(48.dp)) { Icon(Icons.Default.Add, "More reactions") }
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 }
@@ -1360,9 +1381,8 @@ private fun MessageBubble(
 
             DropdownMenu(expanded = showReactions, onDismissRequest = { showReactions = false }) {
                 FlowRow(Modifier.widthIn(max = 320.dp).padding(horizontal = 4.dp)) {
-                    listOf("\uD83D\uDC4D", "\u2764\ufe0f", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22").forEach { emoji ->
-                        IconButton(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onToggleReaction(emoji); showReactions = false }, modifier = Modifier.size(48.dp).semantics {
+                    QuickReactions.forEach { emoji ->
+                        IconButton(onClick = { showReactions = false; onToggleReaction(emoji) }, modifier = Modifier.size(48.dp).semantics {
                                 contentDescription = "React with ${reactionName(emoji)}"
                             }) {
                             Text(emoji, fontSize = 22.sp)
@@ -1375,18 +1395,8 @@ private fun MessageBubble(
                 DropdownMenuItem(text = { Text("More actions") }, onClick = { showReactions = false; onLongClick() })
             }
             }
-            if (showMoreReactions) AlertDialog(
-                onDismissRequest = { showMoreReactions = false }, title = { Text("React to message") },
-                text = { FlowRow {
-                    listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥", "👏", "✅", "💯", "🤔").forEach { emoji ->
-                        IconButton(onClick = { onToggleReaction(emoji); showMoreReactions = false
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress) },
-                            modifier = Modifier.size(48.dp).semantics { contentDescription = "React with ${reactionName(emoji)}" }) {
-                            Text(emoji, fontSize = 22.sp)
-                        }
-                    }
-                } }, confirmButton = { TextButton(onClick = { showMoreReactions = false }) { Text("Cancel") } }
-            )
+            if (showMoreReactions && !message.isDeleted) EmojiReactionPicker(
+                onDismiss = { showMoreReactions = false }, onSelected = onToggleReaction)
             if (isOutgoing && message.status == DeliveryStatus.FAILED && !message.isDeleted) {
                 TextButton(onClick = onInspectFailure, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Couldn't send. View details.", color = MaterialTheme.colorScheme.error)
@@ -1439,10 +1449,10 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
         } else null }
     }
     val thumbnailReader = LocalChatThumbnailReader.current
-    val imageBitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, media.mediaId, media.thumbnailData, thumbnailReader) {
+    val imageBitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, media.mediaId, media.thumbnailData, media.localPath, thumbnailReader) {
         suspend fun decode(bytes: ByteArray?) {
             value = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                try { decodeChatThumbnail(bytes)?.asImageBitmap() }
+                try { LocalImagePreview.message(bytes, media.localPath)?.asImageBitmap() }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (_: Exception) { null }
             }
@@ -1451,51 +1461,57 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
         else thumbnailReader(media.mediaId).collect { decode(it) }
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(180.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = 0.2f)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && animatedDrawable != null) {
-            animatedDrawable?.let { AnimatedGifView(it) }
-        } else if (imageBitmap != null) {
-            Image(
-                bitmap = imageBitmap!!,
-                contentDescription = media.fileName,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Default.Image,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+    val aspect = imageBitmap?.let { it.width.toFloat() / it.height.coerceAtLeast(1) }
+        ?: animatedDrawable?.let { it.intrinsicWidth.toFloat() / it.intrinsicHeight.coerceAtLeast(1) }
+        ?: (4f / 3f)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height((maxWidth.value / aspect.coerceAtLeast(0.01f)).coerceIn(80f, 360f).dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black.copy(alpha = 0.2f)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && animatedDrawable != null) {
+                animatedDrawable?.let { AnimatedGifView(it) }
+            } else if (imageBitmap != null) {
+                Image(
+                    bitmap = imageBitmap!!,
+                    contentDescription = media.fileName,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit
                 )
-                Text(
-                    text = "${media.fileSize / 1024} KB",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        if (media.status == MediaStatus.UPLOADING || media.status == MediaStatus.DOWNLOADING) {
-            Surface(
-                shape = CircleShape,
-                color = Color.Black.copy(alpha = 0.5f),
-                modifier = Modifier.size(44.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(
-                        progress = { media.progress },
-                        color = Color.White,
-                        modifier = Modifier.size(32.dp),
-                        strokeWidth = 3.dp
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
                     )
+                    Text(
+                        text = "${media.fileSize / 1024} KB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            if (media.status == MediaStatus.UPLOADING || media.status == MediaStatus.DOWNLOADING) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.5f),
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            progress = { media.progress },
+                            color = Color.White,
+                            modifier = Modifier.size(32.dp),
+                            strokeWidth = 3.dp
+                        )
+                    }
                 }
             }
         }
@@ -1517,7 +1533,7 @@ private fun AnimatedGifView(drawable: AnimatedImageDrawable) {
     AndroidView(
         factory = { context ->
             ImageView(context).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
+                scaleType = ImageView.ScaleType.FIT_CENTER
                 setImageDrawable(drawable)
                 if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) drawable.start()
             }

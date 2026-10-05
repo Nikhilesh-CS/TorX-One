@@ -48,6 +48,8 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         intentFlow.value = intent
+        // Isolated update jobs never block startup or use messaging/identity services.
+        com.torxone.app.updates.UpdateRuntime.start(applicationContext)
         enableEdgeToEdge()
 
         setContent {
@@ -1187,7 +1189,8 @@ fun TorXOneApp() {
                     }
                 },
                 onAppearanceChange = { field, value -> settingsViewModel.setAppearance(field, value) },
-                onDataChange = { field, value -> settingsViewModel.setData(field, value) }
+                onDataChange = { field, value -> settingsViewModel.setData(field, value) },
+                onUpdatesClick = { com.torxone.app.updates.UpdateRuntime.open(context) }
             )
         }
 

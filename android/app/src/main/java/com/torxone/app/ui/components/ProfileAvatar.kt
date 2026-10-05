@@ -1,8 +1,7 @@
 package com.torxone.app.ui.components
 
-import android.graphics.BitmapFactory
-import android.net.Uri
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,38 +17,25 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import com.torxone.app.profile.ProfileAvatarStorage
-import com.torxone.app.groups.GroupAvatarStorage
 
 @Composable
-fun ProfileAvatar(name: String, avatar: String?, modifier: Modifier = Modifier) {
+fun ProfileAvatar(name: String, avatar: String?, modifier: Modifier = Modifier, previewOnClick: Boolean = false) {
     val context = LocalContext.current
+    var showPhoto by remember(avatar) { mutableStateOf(false) }
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, avatar) {
-        value = withContext(Dispatchers.IO) { runCatching {
-            val file = ProfileAvatarStorage.resolve(context, avatar) ?: GroupAvatarStorage.resolve(context, avatar)
-            if (file != null) {
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.absolutePath, options)
-                options.inSampleSize = 1
-                while (options.outWidth / options.inSampleSize > 256 || options.outHeight / options.inSampleSize > 256) options.inSampleSize *= 2
-                options.inJustDecodeBounds = false
-                BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
-            }
-            else if (avatar?.startsWith("file:") == true || avatar?.startsWith("content:") == true) {
-                val uri = Uri.parse(avatar)
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
-                    val options = BitmapFactory.Options().apply { inSampleSize = 1 }
-                    while (bounds.outWidth / options.inSampleSize > 256 || bounds.outHeight / options.inSampleSize > 256) options.inSampleSize *= 2
-                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options)?.asImageBitmap() }
-                }
-            } else null
-        }.getOrNull() }
+        value = null
+        value = withContext(Dispatchers.IO) {
+            try { LocalImagePreview.avatar(context, avatar, 256)?.asImageBitmap() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { null }
+        }
     }
-    Box(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+    val interaction = if (previewOnClick && bitmap != null && avatar != null)
+        Modifier.clickable(onClickLabel = "View profile photo of $name") { showPhoto = true } else Modifier
+    Box(modifier.then(interaction).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
         if (bitmap != null) Image(bitmap!!, "Profile photo of $name", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         else Text(name.take(1).uppercase().ifEmpty { "?" }, color = MaterialTheme.colorScheme.onPrimaryContainer,
             style = MaterialTheme.typography.titleLarge)
     }
+    if (showPhoto && avatar != null) ProfilePhotoViewer(name, avatar) { showPhoto = false }
 }

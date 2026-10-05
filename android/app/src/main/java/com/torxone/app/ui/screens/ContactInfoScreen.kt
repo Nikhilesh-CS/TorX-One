@@ -98,7 +98,7 @@ fun ContactInfoScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            com.torxone.app.ui.components.ProfileAvatar(contactName, contact?.avatarHash, Modifier.size(96.dp))
+            com.torxone.app.ui.components.ProfileAvatar(contactName, contact?.avatarHash, Modifier.size(96.dp), previewOnClick = true)
             if (!contact?.about.isNullOrBlank()) Text(contact!!.about)
 
             // Contact Name

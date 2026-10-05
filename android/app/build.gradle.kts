@@ -27,8 +27,8 @@ android {
         applicationId = "com.torxone.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.0"
+        versionCode = 4
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "TORX_STUN_URLS", buildConfigString("TORX_STUN_URLS"))
         buildConfigField("String", "TORX_TURN_URLS", buildConfigString("TORX_TURN_URLS"))
@@ -104,6 +104,7 @@ dependencies {
     // ── AndroidX core ──
     implementation("androidx.core:core-ktx:1.18.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.fragment:fragment-ktx:1.9.1")

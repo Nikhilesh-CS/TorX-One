@@ -74,7 +74,8 @@ fun SettingsScreen(
     themeSource: String = "TORX",
     accentId: String = "SAGE",
     fontSize: String = "MEDIUM",
-    onChatDefaultsClick: (() -> Unit)? = null
+    onChatDefaultsClick: (() -> Unit)? = null,
+    onUpdatesClick: (() -> Unit)? = null
 ) {
     var page by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
     var showAbout by rememberSaveable { mutableStateOf(false) }
@@ -144,8 +145,11 @@ fun SettingsScreen(
                         if (relayOnlyCalls) "Calls and files use relay only. A working TURN relay is required. Applies to new sessions."
                         else "Direct calls and files can reveal your network address to your contact. Applies to new sessions.",
                         relayOnlyCalls) { onPrivacyChange("relayOnlyCalls", it) }
-                    SettingsPage.ABOUT -> SettingsNavigationRow("TorX One", "Version ${com.torxone.app.BuildConfig.VERSION_NAME}", Icons.Default.Info) {
-                        onAboutClick?.invoke() ?: run { showAbout = true }
+                    SettingsPage.ABOUT -> {
+                        SettingsNavigationRow("TorX One", "Version ${com.torxone.app.BuildConfig.VERSION_NAME} (${com.torxone.app.BuildConfig.VERSION_CODE})", Icons.Default.Info) {
+                            onAboutClick?.invoke() ?: run { showAbout = true }
+                        }
+                        onUpdatesClick?.let { updates -> SettingsNavigationRow("App updates", "Stable releases from GitHub", Icons.Default.SystemUpdate, updates) }
                     }
                 }
             }
