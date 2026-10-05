@@ -16,6 +16,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.torxone.app.ui.components.rememberUiActionState
+import com.torxone.app.ui.components.temporaryMuteUntil
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,7 +34,7 @@ import com.torxone.app.identity.IdentityCrypto
 import com.torxone.app.notifications.NotificationPolicy
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ContactInfoScreen(
     contact: ContactEntity?,
@@ -43,15 +46,21 @@ fun ContactInfoScreen(
     modifier: Modifier = Modifier,
     onToggleVerification: ((Boolean) -> Unit)? = null,
     nickname: String? = null,
-    onSaveNickname: (suspend (String) -> Unit)? = null
+    onSaveNickname: (suspend (String) -> Unit)? = null,
+    onAudioCall: (() -> Unit)? = null,
+    onVideoCall: (() -> Unit)? = null,
+    onSearch: (() -> Unit)? = null,
+    onTheme: (() -> Unit)? = null,
+    onConnection: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
-    var showMuteDialog by remember { mutableStateOf(false) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
-    var showResetSessionConfirm by remember { mutableStateOf(false) }
-    var showSafetyNumberDialog by remember { mutableStateOf(false) }
-    var showNicknameDialog by remember { mutableStateOf(false) }
-    var nicknameInput by remember { mutableStateOf("") }
+    val actions = rememberUiActionState()
+    var showMuteDialog by rememberSaveable { mutableStateOf(false) }
+    var showDeleteConfirm by rememberSaveable { mutableStateOf(false) }
+    var showResetSessionConfirm by rememberSaveable { mutableStateOf(false) }
+    var showSafetyNumberDialog by rememberSaveable { mutableStateOf(false) }
+    var showNicknameDialog by rememberSaveable { mutableStateOf(false) }
+    var nicknameInput by rememberSaveable { mutableStateOf("") }
     var nicknameSaving by remember { mutableStateOf(false) }
     var nicknameError by remember { mutableStateOf<String?>(null) }
 
@@ -100,20 +109,30 @@ fun ContactInfoScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "TorX Direct Peer",
+                    text = if (isVerified) "Safety number verified locally" else "Contact",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (actions.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                onAudioCall?.let { OutlinedButton(onClick = it, enabled = !actions.busy) { Icon(Icons.Default.Call, null); Spacer(Modifier.width(8.dp)); Text("Audio") } }
+                onVideoCall?.let { OutlinedButton(onClick = it, enabled = !actions.busy) { Icon(Icons.Default.Videocam, null); Spacer(Modifier.width(8.dp)); Text("Video") } }
+                onSearch?.let { OutlinedButton(onClick = it) { Icon(Icons.Default.Search, null); Spacer(Modifier.width(8.dp)); Text("Search") } }
+            }
+            onTheme?.let { ListItem(headlineContent = { Text("Chat theme") }, leadingContent = { Icon(Icons.Default.Palette, null) },
+                trailingContent = { Icon(Icons.Default.ChevronRight, null) }, modifier = Modifier.clickable(onClick = it)) }
+            onConnection?.let { ListItem(headlineContent = { Text("Connection") }, leadingContent = { Icon(Icons.Default.Link, null) },
+                trailingContent = { Icon(Icons.Default.ChevronRight, null) }, modifier = Modifier.clickable(onClick = it)) }
 
             if (contact != null && onSaveNickname != null) {
                 ListItem(
                     headlineContent = { Text("Local nickname") },
                     supportingContent = { Text(nickname ?: "Choose a name visible only to you") },
                     trailingContent = { Icon(Icons.Default.Edit, contentDescription = null) },
-                    modifier = Modifier.clickable {
+                    modifier = Modifier.clickable(enabled = !actions.busy) {
                         nicknameInput = nickname.orEmpty()
                         nicknameError = null
                         showNicknameDialog = true
@@ -156,9 +175,9 @@ fun ContactInfoScreen(
                                 contentDescription = null
                             )
                         },
-                        modifier = Modifier.clickable {
+                        modifier = Modifier.clickable(enabled = !actions.busy) {
                             if (isMuted) {
-                                coroutineScope.launch {
+                                actions.run("Could not update this chat") {
                                     if (conversation != null) {
                                         chatService.setChatMuted(conversation.conversationId, null)
                                     }
@@ -202,7 +221,7 @@ fun ContactInfoScreen(
                         trailingContent = {
                             Icon(Icons.Default.ChevronRight, contentDescription = null)
                         },
-                        modifier = Modifier.clickable { showSafetyNumberDialog = true }
+                        modifier = Modifier.clickable(enabled = !actions.busy) { showSafetyNumberDialog = true }
                     )
 
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -215,7 +234,7 @@ fun ContactInfoScreen(
                         leadingContent = {
                             Icon(Icons.Default.Refresh, contentDescription = null)
                         },
-                        modifier = Modifier.clickable { showResetSessionConfirm = true }
+                        modifier = Modifier.clickable(enabled = !actions.busy) { showResetSessionConfirm = true }
                     )
                 }
             }
@@ -235,7 +254,7 @@ fun ContactInfoScreen(
                     leadingContent = {
                         Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                     },
-                    modifier = Modifier.clickable { showDeleteConfirm = true }
+                    modifier = Modifier.clickable(enabled = !actions.busy) { showDeleteConfirm = true }
                 )
             }
         }
@@ -276,15 +295,17 @@ fun ContactInfoScreen(
     // Mute Dialog
     if (showMuteDialog && conversation != null) {
         AlertDialog(
-            onDismissRequest = { showMuteDialog = false },
+            onDismissRequest = { if (!actions.busy) showMuteDialog = false },
             title = { Text("Mute notifications for...") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     TextButton(
+                        enabled = !actions.busy,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
-                            coroutineScope.launch {
-                                chatService.setChatMuted(conversation.conversationId, 8 * 3600_000L)
+                            actions.run("Could not update this chat") {
+                                chatService.setChatMuted(conversation.conversationId, temporaryMuteUntil(System.currentTimeMillis(), 8 * 3600_000L))
                                 showMuteDialog = false
                             }
                         }
@@ -292,10 +313,11 @@ fun ContactInfoScreen(
                         Text("8 hours", modifier = Modifier.weight(1f))
                     }
                     TextButton(
+                        enabled = !actions.busy,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
-                            coroutineScope.launch {
-                                chatService.setChatMuted(conversation.conversationId, 7 * 24 * 3600_000L)
+                            actions.run("Could not update this chat") {
+                                chatService.setChatMuted(conversation.conversationId, temporaryMuteUntil(System.currentTimeMillis(), 7 * 24 * 3600_000L))
                                 showMuteDialog = false
                             }
                         }
@@ -303,9 +325,10 @@ fun ContactInfoScreen(
                         Text("1 week", modifier = Modifier.weight(1f))
                     }
                     TextButton(
+                        enabled = !actions.busy,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = {
-                            coroutineScope.launch {
+                            actions.run("Could not update this chat") {
                                 chatService.setChatMuted(conversation.conversationId, Long.MAX_VALUE)
                                 showMuteDialog = false
                             }
@@ -327,15 +350,16 @@ fun ContactInfoScreen(
     // Delete Chat Confirmation
     if (showDeleteConfirm && conversation != null) {
         AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
+            onDismissRequest = { if (!actions.busy) showDeleteConfirm = false },
             title = { Text("Delete this chat?") },
             text = {
-                Text("Messages will be deleted from this device only. The contact and secure key exchange will remain saved.")
+                Column { Text("Messages will be deleted from this device only. The contact and secure key exchange will remain saved."); actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
             },
             confirmButton = {
                 TextButton(
+                    enabled = !actions.busy,
                     onClick = {
-                        coroutineScope.launch {
+                        actions.run("Could not update this chat") {
                             chatService.deleteChatLocally(conversation.conversationId)
                             showDeleteConfirm = false
                             onChatDeleted()
@@ -356,15 +380,16 @@ fun ContactInfoScreen(
     // Reset Session Confirmation
     if (showResetSessionConfirm && contact != null) {
         AlertDialog(
-            onDismissRequest = { showResetSessionConfirm = false },
+            onDismissRequest = { if (!actions.busy) showResetSessionConfirm = false },
             title = { Text("Reset secure session?") },
             text = {
-                Text("This deletes the current Double Ratchet session keys for this contact. Use this to recover from key-desync or decryption errors.")
+                Column { Text("This replaces the saved secure session. Only use this to recover from repeated decryption or sync errors."); actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) } }
             },
             confirmButton = {
                 TextButton(
+                    enabled = !actions.busy,
                     onClick = {
-                        coroutineScope.launch {
+                        actions.run("Could not update this chat") {
                             chatService.resetSession(contact.relationshipId)
                             showResetSessionConfirm = false
                         }
@@ -435,6 +460,7 @@ fun ContactInfoScreen(
             },
             confirmButton = {
                 Button(
+                    enabled = onToggleVerification != null,
                     onClick = {
                         val newVerified = !isVerified
                         onToggleVerification?.invoke(newVerified)

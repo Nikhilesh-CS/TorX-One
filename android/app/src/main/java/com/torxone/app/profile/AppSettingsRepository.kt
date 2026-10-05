@@ -7,6 +7,9 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import com.torxone.app.ui.theme.TorXThemeSource
+import com.torxone.app.ui.theme.TorXAccent
+import com.torxone.app.ui.theme.TorXTypographyScale
 
 /**
  * Central settings & profile state layer using Jetpack DataStore.
@@ -68,6 +71,8 @@ class AppSettingsRepository(context: Context) {
     private object AppearanceKeys {
         val THEME_MODE = stringPreferencesKey("appearance_theme") // SYSTEM | DARK | LIGHT
         val DYNAMIC_COLORS = booleanPreferencesKey("appearance_dynamic_colors")
+        val THEME_SOURCE = stringPreferencesKey("appearance_theme_source")
+        val ACCENT_ID = stringPreferencesKey("appearance_accent_id")
         val FONT_SIZE = stringPreferencesKey("appearance_font_size") // SMALL | MEDIUM | LARGE
     }
 
@@ -261,27 +266,46 @@ class AppSettingsRepository(context: Context) {
     // =========================================================================
 
     val themeMode: Flow<String> = store.data.map { prefs ->
-        prefs[AppearanceKeys.THEME_MODE] ?: "SYSTEM"
+        prefs[AppearanceKeys.THEME_MODE]?.takeIf { it in setOf("SYSTEM", "LIGHT", "DARK") } ?: "SYSTEM"
     }
 
-    val dynamicColorsEnabled: Flow<Boolean> = store.data.map { prefs ->
-        prefs[AppearanceKeys.DYNAMIC_COLORS] ?: true
+    val themeSource: Flow<String> = store.data.map { prefs ->
+        TorXThemeSource.resolve(prefs[AppearanceKeys.THEME_SOURCE], prefs[AppearanceKeys.DYNAMIC_COLORS]).name
     }
+
+    val accentId: Flow<String> = store.data.map { prefs ->
+        TorXAccent.resolve(prefs[AppearanceKeys.ACCENT_ID]).name
+    }
+
+    // Compatibility alias for old screen/test callers; source is now authoritative.
+    val dynamicColorsEnabled: Flow<Boolean> = themeSource.map { it == "SYSTEM" }
 
     val fontSize: Flow<String> = store.data.map { prefs ->
-        prefs[AppearanceKeys.FONT_SIZE] ?: "MEDIUM"
+        TorXTypographyScale.storageValue(prefs[AppearanceKeys.FONT_SIZE])
     }
 
     suspend fun setThemeMode(mode: String) {
-        store.edit { it[AppearanceKeys.THEME_MODE] = mode }
+        store.edit { it[AppearanceKeys.THEME_MODE] = mode.takeIf { value -> value in setOf("SYSTEM", "LIGHT", "DARK") } ?: "SYSTEM" }
     }
 
     suspend fun setDynamicColorsEnabled(enabled: Boolean) {
-        store.edit { it[AppearanceKeys.DYNAMIC_COLORS] = enabled }
+        setThemeSource(if (enabled) "SYSTEM" else "TORX")
+    }
+
+    suspend fun setThemeSource(source: String) {
+        val resolved = TorXThemeSource.resolve(source)
+        store.edit {
+            it[AppearanceKeys.THEME_SOURCE] = resolved.name
+            it[AppearanceKeys.DYNAMIC_COLORS] = resolved == TorXThemeSource.SYSTEM
+        }
+    }
+
+    suspend fun setAccentId(accent: String) {
+        store.edit { it[AppearanceKeys.ACCENT_ID] = TorXAccent.resolve(accent).name }
     }
 
     suspend fun setFontSize(size: String) {
-        store.edit { it[AppearanceKeys.FONT_SIZE] = size }
+        store.edit { it[AppearanceKeys.FONT_SIZE] = TorXTypographyScale.storageValue(size) }
     }
 
     // =========================================================================

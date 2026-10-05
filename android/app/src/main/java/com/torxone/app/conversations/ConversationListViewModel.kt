@@ -54,7 +54,7 @@ class ConversationListViewModel(
                 }
                 .combine(featureDao?.observeDrafts() ?: flowOf(emptyList())) { list, drafts ->
                     mapToUiModels(list).map { row -> drafts.find { it.conversationId == row.conversationId && it.text.isNotBlank() }
-                        ?.let { row.copy(preview = "Draft: ${it.text.take(100)}", isLastMessageOutgoing = false, lastMessageStatus = null) } ?: row }
+                        ?.let { row.copy(preview = "Draft: ${it.text.take(100)}", draftText = it.text.take(100), isLastMessageOutgoing = false, lastMessageStatus = null) } ?: row }
                 }
                 .combine(localNames) { rows, names -> rows.map { row -> names[row.conversationId]?.let { row.copy(title = it) } ?: row } }
                 .collect { uiModels ->

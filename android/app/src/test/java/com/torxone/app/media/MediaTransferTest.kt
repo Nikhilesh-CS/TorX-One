@@ -785,7 +785,9 @@ class MediaTransferTest {
 
     @Test
     fun receiverReconciliationStopsAfterBoundedRoundsAndVerifiedRecoveryRestartsIt() = runBlocking {
-        val (alice, bob) = setupPair(dedicatedMedia = true, recoveryIdleMs = 80)
+        val authenticatedResumes = java.util.concurrent.atomic.AtomicInteger()
+        val (alice, bob) = setupPair(dedicatedMedia = true, recoveryIdleMs = 80,
+            onMissingChunks = { authenticatedResumes.incrementAndGet() })
         val dropChunks = java.util.concurrent.atomic.AtomicBoolean(true)
         val chunkWrites = java.util.concurrent.atomic.AtomicInteger()
         alice.router.registerTransport(object : Transport {
@@ -806,6 +808,16 @@ class MediaTransferTest {
             withTimeout(10_000) {
                 while (bob.mediaTransferDao.transfers.values.none { it.status == TransferStatus.QUEUED.name }) delay(10)
             }
+            // QUEUED is the receiver's budget boundary, not a sender-job completion signal.
+            // Drain the last authenticated resume and its one-chunk replay before sampling quietness.
+            withTimeout(10_000) {
+                while (bob.outboxDao.getPending().isNotEmpty() ||
+                    chunkWrites.get() < 1 + authenticatedResumes.get()) delay(10)
+            }
+            assertTrue("Authenticated resume requests must remain within the recovery budget",
+                authenticatedResumes.get() <= MediaService.DEFAULT_RECOVERY_ROUNDS)
+            assertTrue("Chunk replay must be bounded by the initial write plus recovery requests",
+                chunkWrites.get() <= 1 + MediaService.DEFAULT_RECOVERY_ROUNDS)
             val stoppedWrites = chunkWrites.get()
             delay(350)
             assertEquals("Quiet transfer must not keep replaying accepted bytes", stoppedWrites, chunkWrites.get())

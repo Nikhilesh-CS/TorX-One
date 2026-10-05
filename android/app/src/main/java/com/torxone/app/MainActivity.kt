@@ -38,6 +38,7 @@ import com.torxone.app.ui.security.AppLockOverlay
 import com.torxone.app.ui.theme.TorXOneTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 
@@ -52,16 +53,28 @@ class MainActivity : FragmentActivity() {
         setContent {
             val app = applicationContext as TorXOneApplication
             val themeMode by app.settingsRepository.themeMode.collectAsState(initial = "SYSTEM")
-            val dynamicColorsEnabled by app.settingsRepository.dynamicColorsEnabled.collectAsState(initial = true)
+            val themeSource by app.settingsRepository.themeSource.collectAsState(initial = "TORX")
+            val accentId by app.settingsRepository.accentId.collectAsState(initial = "SAGE")
+            val fontSize by app.settingsRepository.fontSize.collectAsState(initial = "MEDIUM")
             val isDark = when (themeMode) {
                 "DARK" -> true
                 "LIGHT" -> false
                 else -> isSystemInDarkTheme()
             }
 
+            DisposableEffect(isDark) {
+                androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = !isDark
+                    isAppearanceLightNavigationBars = !isDark
+                }
+                onDispose { }
+            }
+
             TorXOneTheme(
                 darkTheme = isDark,
-                dynamicColor = dynamicColorsEnabled
+                dynamicColor = themeSource == "SYSTEM",
+                accentId = accentId,
+                fontSize = fontSize
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -149,6 +162,14 @@ fun TorXOneApp() {
         }
     }
     var showInviteDialog by remember { mutableStateOf(false) }
+    val appearanceRepository = remember(context) { com.torxone.app.ui.appearance.ChatAppearanceRepository(context) }
+    LaunchedEffect(appearanceRepository) {
+        try { appearanceRepository.cleanUnusedAssets() }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { android.util.Log.w("MainActivity", "Wallpaper cleanup deferred") }
+    }
+    var showAppearanceEditor by remember { mutableStateOf(false) }
+    var appearanceConversationId by remember { mutableStateOf<String?>(null) }
     var clearScheduledSource by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // Ensure identity exists on startup (only when past onboarding)
@@ -463,11 +484,12 @@ fun TorXOneApp() {
         return
     }
 
+    val thumbnailReader = remember(app.database) { app.database.chatTimelineDao()::observeThumbnail }
+    CompositionLocalProvider(com.torxone.app.ui.components.LocalChatThumbnailReader provides thumbnailReader) {
     when (val screen = currentScreen) {
         is Screen.Landing -> {
             LandingScreen(
                 onComplete = { displayName ->
-                    coroutineScope.launch {
                         // Durably create the authoritative identity before marking onboarding complete.
                         app.identityRepository.createAndPublishIdentity(displayName)
                         app.settingsRepository.updateProfile(displayName = displayName)
@@ -475,7 +497,6 @@ fun TorXOneApp() {
 
                         screenStack = emptyList()
                         currentScreen = Screen.ConversationList
-                    }
                 }
             )
         }
@@ -565,20 +586,47 @@ fun TorXOneApp() {
                 app.database.featureDao().observeAppearance(screen.conversationId)
             }.collectAsState(initial = null)
             val chatAppearance = appearance ?: com.torxone.app.data.entity.ConversationAppearanceEntity(screen.conversationId)
+            val resolvedAppearance by remember(screen.conversationId) {
+                appearanceRepository.observeConversation(screen.conversationId,
+                    app.database.featureDao().observeAppearance(screen.conversationId))
+                    .map { it as com.torxone.app.ui.appearance.ResolvedChatAppearance? }
+            }.collectAsState(initial = null)
+            var entryUnreadMessageId by remember(screen.conversationId) { mutableStateOf<String?>(null) }
+            var entryUnreadCount by remember(screen.conversationId) { mutableIntStateOf(0) }
+            var isLoadingEntrySnapshot by remember(screen.conversationId) { mutableStateOf(true) }
             // Track active conversation for notification suppression and unread counts
-            DisposableEffect(screen.conversationId) {
-                app.activeConversationTracker.setActiveConversation(screen.conversationId)
-                app.notificationManager.cancelForConversation(screen.conversationId)
+            DisposableEffect(screen.conversationId, lifecycleOwner) {
+                fun syncActive() {
+                    if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                        app.activeConversationTracker.setActiveConversation(screen.conversationId)
+                        app.notificationManager.cancelForConversation(screen.conversationId)
+                    } else if (app.activeConversationTracker.getActiveConversationId() == screen.conversationId) {
+                        app.activeConversationTracker.clearActiveConversation()
+                    }
+                }
+                val observer = LifecycleEventObserver { _, _ -> syncActive() }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                syncActive()
                 coroutineScope.launch {
+                    try {
+                        val entry = app.database.chatTimelineDao().unreadEntry(screen.conversationId)
+                        entryUnreadMessageId = entry.firstMessageId
+                        entryUnreadCount = entry.count
+                    } catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        android.util.Log.w("MainActivity", "Unread context could not be loaded")
+                    } finally { isLoadingEntrySnapshot = false }
                     val conv = app.database.conversationDao().getById(screen.conversationId)
-                    if (conv?.type == ConversationType.GROUP) {
-                        app.groupService.markGroupRead(screen.conversationId)
-                    } else {
-                        app.chatService.markConversationRead(screen.conversationId)
+                    if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
+                        app.activeConversationTracker.getActiveConversationId() == screen.conversationId) {
+                        if (conv?.type == ConversationType.GROUP) app.groupService.markGroupRead(screen.conversationId)
+                        else app.chatService.markConversationRead(screen.conversationId)
                     }
                 }
                 onDispose {
-                    app.activeConversationTracker.clearActiveConversation()
+                    lifecycleOwner.lifecycle.removeObserver(observer)
+                    if (app.activeConversationTracker.getActiveConversationId() == screen.conversationId)
+                        app.activeConversationTracker.clearActiveConversation()
                 }
             }
 
@@ -598,7 +646,7 @@ fun TorXOneApp() {
                 isLoadingIdentity = false
             }
 
-            if (isLoadingConversation || isLoadingIdentity) {
+            if (isLoadingConversation || isLoadingIdentity || isLoadingEntrySnapshot || resolvedAppearance == null) {
                 // Loading spinner while conversation entity and identity are loading (M40)
                 Scaffold(
                     topBar = {
@@ -622,9 +670,42 @@ fun TorXOneApp() {
                     }
                 }
             } else if (conversation != null && localIdentity != null) {
+                val timeline = remember(screen.conversationId) {
+                    com.torxone.app.ui.timeline.ChatTimelineRepository(app.database.chatTimelineDao(),
+                        screen.conversationId, screen.messageId ?: entryUnreadMessageId)
+                }
+                DisposableEffect(timeline, lifecycleOwner) {
+                    fun syncVisibility() { timeline.setVisible(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) }
+                    val observer = LifecycleEventObserver { _, _ -> syncVisibility() }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    syncVisibility()
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer); timeline.setVisible(false) }
+                }
+                // Chat presentation models belong to the visible screen, not the whole activity.
+                // Disposal stops database listeners and background auto-read for chats that were closed.
+                val chatStore = remember(screen.conversationId) { androidx.lifecycle.ViewModelStore() }
+                val chatOwner = remember(chatStore) { object : androidx.lifecycle.ViewModelStoreOwner {
+                    override val viewModelStore = chatStore
+                } }
+                var flushClosingDraft by remember(chatStore) { mutableStateOf<(suspend () -> Unit)?>(null) }
+                var stopClosingPresentation by remember(chatStore) { mutableStateOf<(() -> Unit)?>(null) }
+                DisposableEffect(chatStore) { onDispose {
+                    val flush = flushClosingDraft
+                    stopClosingPresentation?.invoke()
+                    app.applicationScope.launch {
+                        try { flush?.invoke() }
+                        catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            android.util.Log.w("MainActivity", "Closing chat draft could not be saved")
+                        } finally {
+                            withContext(Dispatchers.Main.immediate) { chatStore.clear() }
+                        }
+                    }
+                } }
                 if (conversation!!.type == ConversationType.GROUP) {
                     val groupVoiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
                     val groupViewModel: com.torxone.app.groups.GroupChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                        viewModelStoreOwner = chatOwner,
                         key = "group_${screen.conversationId}"
                     ) {
                         com.torxone.app.groups.GroupChatViewModel(
@@ -642,12 +723,24 @@ fun TorXOneApp() {
                             mediaService = app.mediaService,
                             localMessageStateDao = app.database.localMessageStateDao(),
                             voiceNoteRecorder = groupVoiceRecorder,
-                            productivity = app.productivityService
+                            productivity = app.productivityService,
+                            timeline = timeline
                         )
                     }
 
+                    SideEffect {
+                        stopClosingPresentation = groupViewModel::stopPresentation
+                        flushClosingDraft = {
+                            groupViewModel.awaitPendingActionsOnClose()
+                            groupViewModel.persistPendingDraftOnClose()
+                        }
+                    }
                     ChatScreen(
                         viewModel = groupViewModel,
+                        chatAppearance = resolvedAppearance?.config,
+                        entryUnreadMessageId = entryUnreadMessageId,
+                        entryUnreadCount = entryUnreadCount,
+                        onEditAppearance = { appearanceConversationId = screen.conversationId; showAppearanceEditor = true },
                         initialMessageId = screen.messageId,
                         appearance = chatAppearance,
                         onSaveAppearance = app.productivityService::saveAppearance,
@@ -750,6 +843,7 @@ fun TorXOneApp() {
                             val voiceRecorder = remember(context) { RealVoiceNoteRecorder(context) }
                             val peerNetworkIdentity = contact!!.remoteIdentityId
                             val viewModel: com.torxone.app.chat.ChatViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+                                viewModelStoreOwner = chatOwner,
                                 key = "chat_${screen.conversationId}_${contact!!.relationshipId}"
                             ) {
                                 com.torxone.app.chat.ChatViewModel(
@@ -762,12 +856,24 @@ fun TorXOneApp() {
                                     presenceService = app.presenceService,
                                     mediaService = app.mediaService,
                                     voiceNoteRecorder = voiceRecorder,
-                                    productivity = app.productivityService
+                                    productivity = app.productivityService,
+                                    timeline = timeline
                                 )
                             }
 
+                        SideEffect {
+                            stopClosingPresentation = viewModel::stopPresentation
+                            flushClosingDraft = {
+                                viewModel.awaitPendingActionsOnClose()
+                                viewModel.persistPendingDraftOnClose()
+                            }
+                        }
                         ChatScreen(
                             viewModel = viewModel,
+                            chatAppearance = resolvedAppearance?.config,
+                            entryUnreadMessageId = entryUnreadMessageId,
+                            entryUnreadCount = entryUnreadCount,
+                            onEditAppearance = { appearanceConversationId = screen.conversationId; showAppearanceEditor = true },
                             initialMessageId = screen.messageId,
                         appearance = chatAppearance,
                         onSaveAppearance = app.productivityService::saveAppearance,
@@ -775,6 +881,7 @@ fun TorXOneApp() {
                         onOpenConnection = { showConnection = true },
                         onDisappearing = { showDisappearing = true },
                         onRequestMessageInfo = { infoMessageId = it.logicalMessageId },
+                        onRetryDelivery = { app.agent.triggerImmediateRetry(screen.conversationId) },
                         onSchedule = { text, reply ->
                             clearScheduledSource = if (text.isBlank()) null else { { viewModel.clearScheduledComposer(text, reply) } }
                             navigateTo(Screen.Scheduled(screen.conversationId, text, reply))
@@ -893,6 +1000,9 @@ fun TorXOneApp() {
         }
 
         is Screen.ContactInfo -> {
+            var showContactConnection by remember(screen.conversationId) { mutableStateOf(false) }
+            var callBusy by remember(screen.conversationId) { mutableStateOf(false) }
+            var callError by remember(screen.conversationId) { mutableStateOf<String?>(null) }
             val contactState = produceState<ContactEntity?>(initialValue = null, screen.conversationId) {
                 app.database.contactDao().observeAll().collect { contacts ->
                     value = app.database.contactDao().getByConversationId(screen.conversationId)
@@ -900,6 +1010,43 @@ fun TorXOneApp() {
             }
             val conversationState = produceState<ConversationEntity?>(initialValue = null, screen.conversationId) {
                 app.database.conversationDao().observeById(screen.conversationId).collect { value = it }
+            }
+            fun placeContactCall(type: com.torxone.app.calls.CallType) {
+                if (callBusy) return
+                val peer = contactState.value ?: return
+                if (!peer.isRemoteIdentityKnown) return
+                callBusy = true
+                coroutineScope.launch {
+                    try {
+                        val started = app.callManager.startOutgoingCall(screen.conversationId,
+                            peer.relationshipId, peer.remoteIdentityId, type)
+                        if (started != null && app.callManager.activeCall.value?.callId == started.callId)
+                            navigateTo(Screen.ActiveCall)
+                        else callError = "Call could not start. Check this contact or finish the active call."
+                    } catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        callError = error.message ?: "Unable to start call. Try again."
+                    } finally { callBusy = false }
+                }
+            }
+            callError?.let { message -> AlertDialog(onDismissRequest = { callError = null },
+                title = { Text("Call unavailable") }, text = { Text(message) },
+                confirmButton = { TextButton(onClick = { callError = null }) { Text("Close") } }) }
+            if (showContactConnection) {
+                val flow = remember(screen.conversationId) {
+                    com.torxone.app.ui.connection.ConnectionUxReader(app.database, app.transportRouter,
+                        app.torController.state, app.nearbyTransport, context,
+                        isSendingPaused = { it in app.settingsRepository.pausedConversations.first() }).observe(screen.conversationId)
+                }
+                val snapshot by flow.collectAsState(initial = com.torxone.app.ui.connection.ConnectionUxSnapshot())
+                com.torxone.app.ui.components.ConnectionDashboardDialog(snapshot,
+                    onDismiss = { showContactConnection = false },
+                    onRetry = { app.agent.triggerImmediateRetry(screen.conversationId) },
+                    onRetryTor = { app.torBootstrapManager.retry() },
+                    onToggleSendingPaused = { coroutineScope.launch {
+                        app.settingsRepository.setConversationSendingPaused(screen.conversationId, !snapshot.sendingPaused)
+                        if (snapshot.sendingPaused) app.agent.triggerImmediateRetry(screen.conversationId)
+                    } }, onVerifyIdentity = { showContactConnection = false })
             }
 
             com.torxone.app.ui.screens.ContactInfoScreen(
@@ -912,6 +1059,11 @@ fun TorXOneApp() {
                     app.productivityService.saveNickname(peer.contactId, nickname)
                 },
                 onOpenMedia = { navigateTo(Screen.SharedMedia(screen.conversationId)) },
+                onAudioCall = if (contactState.value?.isRemoteIdentityKnown == true) ({ placeContactCall(com.torxone.app.calls.CallType.VOICE) }) else null,
+                onVideoCall = if (contactState.value?.isRemoteIdentityKnown == true) ({ placeContactCall(com.torxone.app.calls.CallType.VIDEO) }) else null,
+                onSearch = { navigateTo(Screen.Search(screen.conversationId)) },
+                onTheme = { appearanceConversationId = screen.conversationId; showAppearanceEditor = true },
+                onConnection = { showContactConnection = true },
                 onBackClick = {
                     navigateBack()
                 },
@@ -993,11 +1145,15 @@ fun TorXOneApp() {
                 haLowState = haLowState,
                 themeMode = currentSettingsState.themeMode,
                 dynamicColorsEnabled = currentSettingsState.dynamicColorsEnabled,
+                themeSource = currentSettingsState.themeSource,
+                accentId = currentSettingsState.accentId,
+                fontSize = currentSettingsState.fontSize,
                 autoDownloadMedia = currentSettingsState.autoDownloadMedia,
                 onBackClick = { navigateBack() },
                 onProfileClick = { navigateTo(Screen.Profile) },
                 onSavedMessages = { navigateTo(Screen.SavedMessages) },
                 onSearchMessages = { navigateTo(Screen.Search(null)) },
+                onChatDefaultsClick = { appearanceConversationId = null; showAppearanceEditor = true },
                 onPrivacyChange = { field, value -> settingsViewModel.setPrivacy(field, value) },
                 onNotificationChange = { field, value -> settingsViewModel.setNotification(field, value) },
                 onSecurityChange = { field, value ->
@@ -1069,7 +1225,9 @@ fun TorXOneApp() {
             val messages = messageSnapshots.map { it.first }
             val hidden by app.database.localMessageStateDao().observeHiddenMessageIds(screen.conversationId).collectAsState(initial = emptyList())
             val visible = messages.filter { it.deletedAt == null && it.logicalMessageId !in hidden }
-            com.torxone.app.ui.screens.SharedMediaScreen(media.filter { item -> visible.any { it.logicalMessageId == item.messageId } }, visible,
+            val visibleIds = remember(visible) { visible.map { it.logicalMessageId }.toHashSet() }
+            val visibleMedia = remember(media, visibleIds) { media.filter { it.messageId in visibleIds } }
+            com.torxone.app.ui.screens.SharedMediaScreen(visibleMedia, visible,
                 cachedLinks = cachedLinks,
                 onBack = { navigateBack() }, onDownload = { mediaId -> coroutineScope.launch {
                     runCatching { app.mediaService.resumeTransfer(mediaId) }.onFailure {
@@ -1123,6 +1281,16 @@ fun TorXOneApp() {
         }
     }
 
+    }
+    if (showAppearanceEditor) {
+        val legacyFlow = remember(appearanceConversationId) {
+            appearanceConversationId?.let { app.database.featureDao().observeAppearance(it) }
+                ?: kotlinx.coroutines.flow.flowOf<com.torxone.app.data.entity.ConversationAppearanceEntity?>(null)
+        }
+        com.torxone.app.ui.components.ChatAppearanceSheet(appearanceRepository,
+            conversationId = appearanceConversationId, legacyFlow = legacyFlow,
+            onDismiss = { showAppearanceEditor = false })
+    }
     if (showInviteDialog) {
         ContactInviteDialog(
             viewModel = contactsViewModel,

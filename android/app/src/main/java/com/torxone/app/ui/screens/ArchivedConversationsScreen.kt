@@ -46,11 +46,8 @@ fun ArchivedConversationsScreen(
                     .padding(padding),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "No archived chats",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                com.torxone.app.ui.components.TorXEmptyState("No archived chats", Icons.Default.Unarchive,
+                    message = "Archived conversations will appear here.")
             }
         } else {
             LazyColumn(
@@ -60,20 +57,14 @@ fun ArchivedConversationsScreen(
                 contentPadding = PaddingValues(vertical = 4.dp)
             ) {
                 items(archivedList, key = { it.conversationId }) { item ->
-                    ListItem(
-                        headlineContent = { Text(item.title) },
-                        supportingContent = {
-                            if (item.preview != null) {
-                                Text(item.preview, maxLines = 1)
-                            }
-                        },
-                        trailingContent = {
+                    com.torxone.app.ui.components.ConversationRow(item,
+                        onClick = { onConversationClick(item.conversationId) },
+                        onLongClick = null,
+                        trailingActions = {
                             IconButton(onClick = { viewModel.toggleArchive(item) }) {
-                                Icon(Icons.Default.Unarchive, contentDescription = "Unarchive")
+                                Icon(Icons.Default.Unarchive, "Unarchive ${item.title}")
                             }
-                        },
-                        modifier = Modifier.clickable { onConversationClick(item.conversationId) }
-                    )
+                        })
                 }
             }
         }

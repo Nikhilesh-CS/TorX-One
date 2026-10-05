@@ -88,6 +88,8 @@ class UiInteractionTest {
         show { MaterialTheme { ChatScreen("Alice", messages = messages, composerText = "",
             onSetStarred = { ids, enabled -> if (enabled) selected = ids }) } }
         compose.onNodeWithText("select-0").performTouchInput { longClick() }
+        compose.onNodeWithText("More actions").performClick()
+        compose.onNodeWithText("Select message").performClick()
         compose.onNodeWithText("select-1").performClick()
         compose.onNodeWithText("2 selected").assertIsDisplayed()
         compose.onNodeWithContentDescription("Selection actions").performClick()
@@ -170,7 +172,7 @@ class UiInteractionTest {
     @Test fun sharedGalleryShowsTruthfulEmptyStateAndBackAction() {
         var wentBack = false
         show { MaterialTheme { SharedMediaScreen(emptyList(), emptyList()) { wentBack = true } } }
-        compose.onNodeWithText("No shared media or links yet").assertIsDisplayed()
+        compose.onNodeWithText("Nothing shared yet").assertIsDisplayed()
         compose.onNodeWithContentDescription("Back").performClick()
         compose.runOnIdle { assertEquals(true, wentBack) }
     }
@@ -194,6 +196,7 @@ class UiInteractionTest {
             onBackClick = {}, onProfileClick = {}, onPrivacyChange = { _, _ -> }, onNotificationChange = { _, _ -> },
             onSecurityChange = { _, _ -> }, onConnectionChange = { _, _ -> }, onPairRadio = {}, onPairHaLow = {},
             onAppearanceChange = { _, _ -> }, onDataChange = { _, _ -> }) } }
+        compose.onNodeWithText("About").performScrollTo().performClick()
         compose.onNodeWithText("TorX One").performScrollTo().performClick()
         compose.onNodeWithText("Close").assertIsDisplayed().performClick()
         compose.onNodeWithText("Close").assertDoesNotExist()

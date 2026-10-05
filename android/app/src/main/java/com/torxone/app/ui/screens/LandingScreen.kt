@@ -12,6 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.torxone.app.ui.components.rememberUiActionState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -34,10 +36,11 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 fun LandingScreen(
-    onComplete: (displayName: String) -> Unit
+    onComplete: suspend (displayName: String) -> Unit
 ) {
-    var currentPage by remember { mutableIntStateOf(0) }
-    var nameInput by remember { mutableStateOf("") }
+    var currentPage by rememberSaveable { mutableIntStateOf(0) }
+    var nameInput by rememberSaveable { mutableStateOf("") }
+    val completion = rememberUiActionState()
 
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
@@ -175,13 +178,15 @@ fun LandingScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Action buttons
+            completion.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (completion.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (currentPage < pages.size) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     if (currentPage > 0) {
-                        TextButton(onClick = { currentPage-- }) {
+                        TextButton(enabled = !completion.busy, onClick = { currentPage-- }) {
                             Text("Back")
                         }
                     } else {
@@ -190,6 +195,7 @@ fun LandingScreen(
 
                     Button(
                         onClick = { currentPage++ },
+                        enabled = !completion.busy,
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
@@ -204,25 +210,25 @@ fun LandingScreen(
                 Button(
                     onClick = {
                         val name = nameInput.trim().ifEmpty { "Me" }
-                        onComplete(name)
+                        completion.run("Could not finish setup. Please try again.") { onComplete(name) }
                     },
                     shape = RoundedCornerShape(24.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp),
-                    enabled = nameInput.trim().isNotEmpty(),
+                    enabled = nameInput.trim().isNotEmpty() && !completion.busy,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
                     )
                 ) {
                     Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Get Started", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (completion.busy) "Setting up…" else "Get Started", style = MaterialTheme.typography.labelLarge)
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                TextButton(onClick = { currentPage-- }) {
+                TextButton(enabled = !completion.busy, onClick = { currentPage-- }) {
                     Text("Back")
                 }
             }

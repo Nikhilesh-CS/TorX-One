@@ -17,6 +17,8 @@ import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.torxone.app.ui.components.rememberUiActionState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,7 +60,7 @@ fun GroupInfoScreen(
     onGroupLeft: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val coroutineScope = rememberCoroutineScope()
+    val actions = rememberUiActionState()
     val context = LocalContext.current
 
     val group by database.groupDao().observeById(groupId).collectAsState(initial = null)
@@ -80,16 +82,16 @@ fun GroupInfoScreen(
     val canManage = selfRole == GroupMemberRole.OWNER || selfRole == GroupMemberRole.ADMIN
     val isOwner = selfRole == GroupMemberRole.OWNER
 
-    var showEditTitleDialog by remember { mutableStateOf(false) }
-    var editTitleText by remember { mutableStateOf("") }
-    var showAddMemberSheet by remember { mutableStateOf(false) }
+    var showEditTitleDialog by rememberSaveable { mutableStateOf(false) }
+    var editTitleText by rememberSaveable { mutableStateOf("") }
+    var showAddMemberSheet by rememberSaveable { mutableStateOf(false) }
     var selectedMemberForAction by remember { mutableStateOf<GroupMemberEntity?>(null) }
-    var showLeaveConfirmDialog by remember { mutableStateOf(false) }
-    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    var showMuteDialog by remember { mutableStateOf(false) }
+    var showLeaveConfirmDialog by rememberSaveable { mutableStateOf(false) }
+    var showDeleteConfirmDialog by rememberSaveable { mutableStateOf(false) }
+    var showMuteDialog by rememberSaveable { mutableStateOf(false) }
     var avatarError by remember { mutableStateOf<String?>(null) }
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null && canManage) coroutineScope.launch {
+        if (uri != null && canManage) actions.run("Could not update this group") {
             runCatching {
                 val bytes = withContext(Dispatchers.IO) {
                     context.contentResolver.openInputStream(uri)?.use { input ->
@@ -106,14 +108,10 @@ fun GroupInfoScreen(
                 }
                 val hash = GroupAvatarStorage.save(context, bytes)
                 check(groupService.updateGroupAvatar(groupId, hash)) { "Only an owner or admin can change the group image" }
-            }.onFailure { avatarError = it.message ?: "Unable to change group image" }
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; avatarError = it.message ?: "Unable to change group image" }
                 .onSuccess { avatarError = null }
         }
     }
-    val avatarBitmap = remember(group?.avatarHash) {
-        GroupAvatarStorage.resolve(context, group?.avatarHash)?.let { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }
-    }
-
     val isMuted = NotificationPolicy.isConversationMuted(conversation?.mutedUntil)
 
     Scaffold(
@@ -146,6 +144,10 @@ fun GroupInfoScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            item {
+                actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                if (actions.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
             // Header: Avatar + Title + Metadata
             item {
                 Column(
@@ -157,28 +159,18 @@ fun GroupInfoScreen(
                         modifier = Modifier
                             .size(96.dp)
                             .clip(CircleShape)
-                            .clickable(enabled = canManage) { avatarPicker.launch("image/*") }
+                            .clickable(enabled = canManage && !actions.busy) { avatarPicker.launch("image/*") }
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (avatarBitmap != null) Image(
-                            bitmap = avatarBitmap,
-                            contentDescription = "Group image",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        ) else Icon(
-                            imageVector = Icons.Default.Groups,
-                            contentDescription = "Group",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(54.dp)
-                        )
+                        com.torxone.app.ui.components.ProfileAvatar(group?.title ?: "Group", group?.avatarHash, Modifier.fillMaxSize())
                     }
 
                     if (canManage) {
                         Row {
                             TextButton(onClick = { avatarPicker.launch("image/*") }) { Text("Change image") }
                             if (group?.avatarHash != null) TextButton(onClick = {
-                                coroutineScope.launch {
+                                actions.run("Could not update this group") {
                                     if (!groupService.updateGroupAvatar(groupId, null)) avatarError = "Unable to remove group image"
                                 }
                             }) { Text("Remove") }
@@ -253,7 +245,7 @@ fun GroupInfoScreen(
                                     contentDescription = null
                                 )
                             },
-                            modifier = Modifier.clickable { showMuteDialog = true }
+                            modifier = Modifier.clickable(enabled = !actions.busy) { showMuteDialog = true }
                         )
 
                         if (canManage) {
@@ -264,7 +256,7 @@ fun GroupInfoScreen(
                                 leadingContent = {
                                     Icon(Icons.Default.PersonAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                 },
-                                modifier = Modifier.clickable { showAddMemberSheet = true }
+                                modifier = Modifier.clickable(enabled = !actions.busy) { showAddMemberSheet = true }
                             )
                         }
                     }
@@ -388,7 +380,7 @@ fun GroupInfoScreen(
                                 Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            modifier = Modifier.clickable { showLeaveConfirmDialog = true }
+                            modifier = Modifier.clickable(enabled = !actions.busy) { showLeaveConfirmDialog = true }
                         )
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
@@ -400,7 +392,7 @@ fun GroupInfoScreen(
                                 Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            modifier = Modifier.clickable { showDeleteConfirmDialog = true }
+                            modifier = Modifier.clickable(enabled = !actions.busy) { showDeleteConfirmDialog = true }
                         )
                     }
                 }
@@ -413,27 +405,31 @@ fun GroupInfoScreen(
         AlertDialog(
             onDismissRequest = { showEditTitleDialog = false },
             title = { Text("Edit group name") },
-            text = {
+            text = { Column {
+                actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 OutlinedTextField(
+                    enabled = !actions.busy,
                     value = editTitleText,
                     onValueChange = { if (it.length <= 64) editTitleText = it },
                     label = { Text("Group name") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-            },
+
+ actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+ } },
             confirmButton = {
                 TextButton(
                     onClick = {
                         val newTitle = editTitleText.trim()
                         if (newTitle.isNotBlank()) {
-                            showEditTitleDialog = false
-                            coroutineScope.launch {
-                                groupService.updateGroupTitle(groupId, newTitle)
+                            actions.run("Could not update this group") {
+                                check(groupService.updateGroupTitle(groupId, newTitle)) { "Unable to update the group name. Try again after pending changes finish." }
+                                showEditTitleDialog = false
                             }
                         }
                     },
-                    enabled = editTitleText.isNotBlank()
+                    enabled = editTitleText.isNotBlank() && !actions.busy
                 ) {
                     Text("Save")
                 }
@@ -461,6 +457,7 @@ fun GroupInfoScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
+                actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text(
                     text = targetName,
                     style = MaterialTheme.typography.titleMedium,
@@ -474,11 +471,11 @@ fun GroupInfoScreen(
                         ListItem(
                             headlineContent = { Text("Make group admin") },
                             leadingContent = { Icon(Icons.Default.AdminPanelSettings, contentDescription = null) },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.clickable(enabled = !actions.busy) {
                                 val id = target.memberIdentityId
-                                selectedMemberForAction = null
-                                coroutineScope.launch {
-                                    groupService.changeRole(groupId, id, GroupMemberRole.ADMIN)
+                                actions.run("Could not update this group") {
+                                    check(groupService.changeRole(groupId, id, GroupMemberRole.ADMIN)) { "Unable to change this member’s role" }
+                                    selectedMemberForAction = null
                                 }
                             }
                         )
@@ -486,11 +483,11 @@ fun GroupInfoScreen(
                         ListItem(
                             headlineContent = { Text("Dismiss as admin") },
                             leadingContent = { Icon(Icons.Default.Person, contentDescription = null) },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.clickable(enabled = !actions.busy) {
                                 val id = target.memberIdentityId
-                                selectedMemberForAction = null
-                                coroutineScope.launch {
-                                    groupService.changeRole(groupId, id, GroupMemberRole.MEMBER)
+                                actions.run("Could not update this group") {
+                                    check(groupService.changeRole(groupId, id, GroupMemberRole.MEMBER)) { "Unable to change this member’s role" }
+                                    selectedMemberForAction = null
                                 }
                             }
                         )
@@ -503,11 +500,11 @@ fun GroupInfoScreen(
                     ListItem(
                         headlineContent = { Text("Remove from group", color = MaterialTheme.colorScheme.error) },
                         leadingContent = { Icon(Icons.Default.PersonRemove, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                        modifier = Modifier.clickable {
+                        modifier = Modifier.clickable(enabled = !actions.busy) {
                             val id = target.memberIdentityId
-                            selectedMemberForAction = null
-                            coroutineScope.launch {
-                                groupService.removeMember(groupId, id)
+                            actions.run("Could not update this group") {
+                                check(groupService.removeMember(groupId, id)) { "Unable to remove this member" }
+                                selectedMemberForAction = null
                             }
                         }
                     )
@@ -533,6 +530,7 @@ fun GroupInfoScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
+                actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 Text(
                     text = "Add participants",
                     style = MaterialTheme.typography.titleMedium,
@@ -574,10 +572,10 @@ fun GroupInfoScreen(
                                         )
                                     }
                                 },
-                                modifier = Modifier.clickable {
-                                    showAddMemberSheet = false
-                                    coroutineScope.launch {
-                                        groupService.addMember(groupId, contact)
+                                modifier = Modifier.clickable(enabled = !actions.busy) {
+                                    actions.run("Could not update this group") {
+                                        check(groupService.addMember(groupId, contact)) { "Unable to add this contact" }
+                                        showAddMemberSheet = false
                                     }
                                 }
                             )
@@ -594,23 +592,25 @@ fun GroupInfoScreen(
         AlertDialog(
             onDismissRequest = { showLeaveConfirmDialog = false },
             title = { Text("Leave \"${group?.title ?: "Group"}\"?") },
-            text = {
+            text = { Column {
                 Text(
                     if (isOwner)
                         "You are the owner of this group. If you leave, you will lose owner control over the group and will no longer receive new messages."
                     else
                         "You will no longer receive new messages or participate in group discussions."
                 )
-            },
+
+ actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+ } },
             confirmButton = {
                 TextButton(
+                    enabled = !actions.busy,
                     onClick = {
-                        showLeaveConfirmDialog = false
-                        coroutineScope.launch {
+                        actions.run("Could not update this group") {
                             val success = groupService.leaveGroup(groupId)
-                            if (success) {
-                                onGroupLeft()
-                            }
+                            check(success) { "Unable to leave this group. Try again after pending changes finish." }
+                            showLeaveConfirmDialog = false
+                            onGroupLeft()
                         }
                     }
                 ) {
@@ -630,15 +630,18 @@ fun GroupInfoScreen(
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
             title = { Text("Clear chat history?") },
-            text = {
+            text = { Column {
                 Text("Messages will be permanently deleted from this device only. You will remain a member of the group.")
-            },
+
+ actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+ } },
             confirmButton = {
                 TextButton(
+                    enabled = !actions.busy,
                     onClick = {
-                        showDeleteConfirmDialog = false
-                        coroutineScope.launch {
+                        actions.run("Could not update this group") {
                             chatService.deleteChatLocally(groupId)
+                            showDeleteConfirmDialog = false
                         }
                     }
                 ) {
@@ -665,12 +668,12 @@ fun GroupInfoScreen(
         AlertDialog(
             onDismissRequest = { showMuteDialog = false },
             title = { Text("Mute notifications") },
-            text = {
+            text = { Column {
                 Column {
                     if (isMuted) {
                         TextButton(
                             onClick = {
-                                coroutineScope.launch {
+                                actions.run("Could not update this group") {
                                     chatService.setChatMuted(groupId, null)
                                     showMuteDialog = false
                                 }
@@ -683,7 +686,7 @@ fun GroupInfoScreen(
                     options.forEach { (label, until) ->
                         TextButton(
                             onClick = {
-                                coroutineScope.launch {
+                                actions.run("Could not update this group") {
                                     chatService.setChatMuted(groupId, until)
                                     showMuteDialog = false
                                 }
@@ -694,7 +697,9 @@ fun GroupInfoScreen(
                         }
                     }
                 }
-            },
+
+ actions.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+ } },
             confirmButton = {},
             dismissButton = {
                 TextButton(onClick = { showMuteDialog = false }) {

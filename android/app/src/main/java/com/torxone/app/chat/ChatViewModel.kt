@@ -51,7 +51,10 @@ data class ChatUiState(
     val isSending: Boolean = false,
     val voiceRecording: VoiceRecordingState = VoiceRecordingState(),
     val error: String? = null,
-    val starredIds: Set<String> = emptySet()
+    val starredIds: Set<String> = emptySet(),
+    val hasEarlierMessages: Boolean = false,
+    val isLatestWindow: Boolean = true,
+    val newerMessageCount: Int = 0
 )
 
 /**
@@ -77,7 +80,8 @@ class ChatViewModel(
     private val presenceService: PresenceService? = null,
     private val mediaService: MediaService? = null,
     private val voiceNoteRecorder: VoiceNoteRecorder? = null,
-    private val productivity: ChatProductivityService? = null
+    private val productivity: ChatProductivityService? = null,
+    private val timeline: com.torxone.app.ui.timeline.ChatTimelineRepository? = null
 ) : ViewModel() {
 
     companion object {
@@ -97,9 +101,31 @@ class ChatViewModel(
     private var restoredReplyId: String? = null
     private var composerBeforeEdit: Pair<String, MessageUiModel?>? = null
 
+    private var presentationClosed = false
+    private val presentationJobs = mutableListOf<kotlinx.coroutines.Job>()
+    private fun observeUi(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) =
+        viewModelScope.launch {
+            try { block() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { _uiState.update { it.copy(error = "Couldn't load chat updates. Reopen this chat to try again.") } }
+        }.also { presentationJobs += it }
+
+    fun stopPresentation() {
+        presentationClosed = true
+        presentationJobs.forEach { it.cancel() }
+        recordingTimerJob?.cancel()
+        draftJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
+    }
+
+    suspend fun awaitPendingActionsOnClose() {
+        // A navigation event must not cancel an already accepted Send/Edit/React intent.
+        viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.children?.toList()?.forEach { it.join() }
+    }
+
     init {
         productivity?.let { service ->
-            viewModelScope.launch {
+            observeUi {
                 service.dao.draft(conversationId)?.let { draft ->
                     if (!draftChanged) {
                         restoredReplyId = draft.replyToMessageId
@@ -108,25 +134,29 @@ class ChatViewModel(
                     }
                 }
             }
-            viewModelScope.launch { service.dao.observeStars(conversationId).collect { ids ->
+            observeUi { service.dao.observeStars(conversationId).collect { ids ->
                 _uiState.update { it.copy(starredIds = ids.toSet()) }
             } }
         }
         // 1. Observe messages, reactions, local hidden state, and media attachments
-        viewModelScope.launch {
-            val mediaFlow: Flow<List<MediaEntity>> = mediaService?.observeMediaForConversation(conversationId)
+        observeUi {
+            timeline?.initialize()
+            val mediaFlow: Flow<List<MediaEntity>> = timeline?.media ?: mediaService?.observeMediaForConversation(conversationId)
                 ?: flowOf(emptyList())
+            val messageFlow = if (timeline != null) combine(timeline.messages, timeline.references) { rows, references -> rows to references }
+                else chatService.observeMessages(conversationId).map { it to emptyList<MessageEntity>() }
 
             combine(
-                chatService.observeMessages(conversationId),
-                chatService.observeReactions(conversationId),
-                chatService.observeHiddenMessageIds(conversationId),
+                messageFlow,
+                timeline?.reactions ?: chatService.observeReactions(conversationId),
+                if (timeline != null) flowOf(emptyList()) else chatService.observeHiddenMessageIds(conversationId),
                 mediaFlow
-            ) { msgEntities, reactionEntities, hiddenIds, mediaEntities ->
+            ) { messageData, reactionEntities, hiddenIds, mediaEntities ->
+                val (msgEntities, referencedEntities) = messageData
                 currentReactionEntities = reactionEntities
                 val hiddenSet = hiddenIds.toSet()
                 val visibleEntities = msgEntities.filter { !hiddenSet.contains(it.logicalMessageId) }
-                mapToUiModels(visibleEntities, reactionEntities, mediaEntities)
+                mapToUiModels(visibleEntities, reactionEntities, mediaEntities, referencedEntities)
             }.collect { uiModels ->
                 _uiState.update { it.copy(messages = uiModels, replyingTo = it.replyingTo ?: uiModels.find { message -> message.logicalMessageId == restoredReplyId }) }
 
@@ -135,9 +165,15 @@ class ChatViewModel(
             }
         }
 
+        timeline?.let { repository -> observeUi {
+            repository.info.collect { window -> _uiState.update { it.copy(
+                hasEarlierMessages = window.hasEarlier, isLatestWindow = window.isLatest,
+                newerMessageCount = window.newerIncoming) } }
+        } }
+
         // 2. Observe pairwise presence (Online / Offline / Typing)
         if (presenceService != null) {
-            viewModelScope.launch {
+            observeUi {
                 presenceService.observePresence(relationshipId).collect { presence ->
                     _uiState.update {
                         it.copy(
@@ -154,9 +190,10 @@ class ChatViewModel(
     private fun mapToUiModels(
         entities: List<MessageEntity>,
         reactions: List<ReactionEntity>,
-        mediaEntities: List<MediaEntity>
+        mediaEntities: List<MediaEntity>,
+        referencedEntities: List<MessageEntity> = emptyList()
     ): List<MessageUiModel> {
-        val entityMap = entities.associateBy { it.logicalMessageId }
+        val entityMap = (referencedEntities + entities).associateBy { it.logicalMessageId }
         val reactionsByMessage = reactions.groupBy { it.messageId }
         val mediaByMessage = mediaEntities.associateBy { it.messageId }
 
@@ -631,6 +668,7 @@ class ChatViewModel(
 
     fun markConversationRead() {
         viewModelScope.launch {
+            if (presentationClosed || timeline?.isVisible == false) return@launch
             try {
                 chatService.markConversationRead(
                     conversationId = conversationId,
@@ -639,13 +677,39 @@ class ChatViewModel(
                     recipientId = recipientId
                 )
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "Failed to mark conversation read")
+                _uiState.update { it.copy(error = "Couldn't update read status. Reopen this chat to try again.") }
             }
         }
     }
 
     fun clearError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    fun loadEarlierMessages() = readTimeline { loadEarlier() }
+    fun openTimelineMessage(messageId: String) = readTimeline { openMessage(messageId) }
+    fun jumpToLatestMessages() = readTimeline { jumpToLatest() }
+    private fun readTimeline(action: suspend com.torxone.app.ui.timeline.ChatTimelineRepository.() -> Unit) {
+        val repository = timeline ?: return
+        viewModelScope.launch {
+            try { repository.action() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Could not load this part of the conversation. Try again.") }
+            }
+        }
+    }
+
+    suspend fun persistPendingDraftOnClose() {
+        if (!draftChanged) return
+        val service = productivity ?: return
+        val snapshot = _uiState.value
+        val original = composerBeforeEdit
+        val text = original?.first ?: snapshot.composerText
+        val reply = original?.second?.logicalMessageId ?: snapshot.replyingTo?.logicalMessageId ?: restoredReplyId
+        service.saveDraft(conversationId, text, reply)
     }
 
     override fun onCleared() {

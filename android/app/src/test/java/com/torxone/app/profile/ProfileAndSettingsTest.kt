@@ -125,7 +125,10 @@ class ProfileAndSettingsTest {
 
         // Appearance defaults
         assertEquals("SYSTEM", state.themeMode)
-        assertTrue(state.dynamicColorsEnabled)
+        assertFalse(state.dynamicColorsEnabled)
+        assertEquals("TORX", state.themeSource)
+        assertEquals("SAGE", state.accentId)
+        assertEquals("MEDIUM", state.fontSize)
 
         // Data defaults
         assertTrue(state.autoDownloadMedia)

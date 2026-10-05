@@ -19,7 +19,8 @@ data class ConversationUiModel(
     val avatarHash: String? = null,
     val isLastMessageOutgoing: Boolean = false,
     val lastMessageStatus: DeliveryStatus? = null,
-    val type: ConversationType = ConversationType.DIRECT
+    val type: ConversationType = ConversationType.DIRECT,
+    val draftText: String? = null
 ) {
     companion object {
         fun from(

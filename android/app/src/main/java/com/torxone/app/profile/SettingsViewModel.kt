@@ -45,12 +45,13 @@ class SettingsViewModel(
             PartialState3(appLock, lockTimeout, screenSec, autoNearby, lowBw)
         },
         combine(
-            settingsRepo.themeMode,
-            settingsRepo.dynamicColorsEnabled,
+            combine(settingsRepo.themeMode, settingsRepo.themeSource, settingsRepo.accentId, settingsRepo.fontSize) { theme, source, accent, font ->
+                AppearanceState(theme, source, accent, font)
+            },
             settingsRepo.autoDownloadMedia,
             settingsRepo.relayOnlyCalls
-        ) { theme, dynamic, autoDownload, relayOnly ->
-            PartialState4(theme, dynamic, autoDownload, relayOnly)
+        ) { appearance, autoDownload, relayOnly ->
+            PartialState4(appearance, autoDownload, relayOnly)
         }
     ) { p1, p2, p3, p4 ->
         SettingsUiState(
@@ -69,8 +70,11 @@ class SettingsViewModel(
             screenSecurityEnabled = p3.screenSecurityEnabled,
             autoConnectNearby = p3.autoConnectNearby,
             lowBandwidthMode = p3.lowBandwidthMode,
-            themeMode = p4.themeMode,
-            dynamicColorsEnabled = p4.dynamicColorsEnabled,
+            themeMode = p4.appearance.themeMode,
+            themeSource = p4.appearance.themeSource,
+            accentId = p4.appearance.accentId,
+            fontSize = p4.appearance.fontSize,
+            dynamicColorsEnabled = p4.appearance.themeSource == "SYSTEM",
             autoDownloadMedia = p4.autoDownloadMedia,
             relayOnlyCalls = p4.relayOnlyCalls
         )
@@ -126,6 +130,9 @@ class SettingsViewModel(
             when (field) {
                 "theme" -> settingsRepo.setThemeMode(value as String)
                 "dynamicColors" -> settingsRepo.setDynamicColorsEnabled(value as Boolean)
+                "themeSource" -> settingsRepo.setThemeSource(value as String)
+                "accentId" -> settingsRepo.setAccentId(value as String)
+                "fontSize" -> settingsRepo.setFontSize(value as String)
             }
         }
     }
@@ -173,7 +180,10 @@ data class SettingsUiState(
     val autoConnectNearby: Boolean = true,
     val lowBandwidthMode: Boolean = false,
     val themeMode: String = "SYSTEM",
-    val dynamicColorsEnabled: Boolean = true,
+    val dynamicColorsEnabled: Boolean = false,
+    val themeSource: String = "TORX",
+    val accentId: String = "SAGE",
+    val fontSize: String = "MEDIUM",
     val autoDownloadMedia: Boolean = true
 )
 
@@ -202,9 +212,15 @@ private data class PartialState3(
     val lowBandwidthMode: Boolean
 )
 
-private data class PartialState4(
+private data class AppearanceState(
     val themeMode: String,
-    val dynamicColorsEnabled: Boolean,
+    val themeSource: String,
+    val accentId: String,
+    val fontSize: String
+)
+
+private data class PartialState4(
+    val appearance: AppearanceState,
     val autoDownloadMedia: Boolean,
     val relayOnlyCalls: Boolean
 )

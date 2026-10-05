@@ -33,10 +33,10 @@ data class MediaUiModel(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is MediaUiModel) return false
-        return mediaId == other.mediaId &&
-                status == other.status &&
-                progress == other.progress &&
-                localPath == other.localPath
+        return mediaId == other.mediaId && type == other.type && fileName == other.fileName &&
+                mimeType == other.mimeType && fileSize == other.fileSize && durationMs == other.durationMs &&
+                thumbnailData.contentEquals(other.thumbnailData) && waveformData.contentEquals(other.waveformData) &&
+                status == other.status && progress == other.progress && localPath == other.localPath
     }
 
     override fun hashCode(): Int = mediaId.hashCode()

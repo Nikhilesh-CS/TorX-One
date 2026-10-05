@@ -43,7 +43,8 @@ class GroupChatViewModel(
     private val mediaService: MediaService? = null,
     private val localMessageStateDao: LocalMessageStateDao? = null,
     private val voiceNoteRecorder: VoiceNoteRecorder? = null,
-    private val productivity: ChatProductivityService? = null
+    private val productivity: ChatProductivityService? = null,
+    private val timeline: com.torxone.app.ui.timeline.ChatTimelineRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -61,9 +62,31 @@ class GroupChatViewModel(
     private var restoredReplyId: String? = null
     private var composerBeforeEdit: Pair<String, MessageUiModel?>? = null
 
+    private var presentationClosed = false
+    private val presentationJobs = mutableListOf<kotlinx.coroutines.Job>()
+    private fun observeUi(block: suspend kotlinx.coroutines.CoroutineScope.() -> Unit) =
+        viewModelScope.launch {
+            try { block() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { _uiState.update { it.copy(error = "Couldn't load chat updates. Reopen this chat to try again.") } }
+        }.also { presentationJobs += it }
+
+    fun stopPresentation() {
+        presentationClosed = true
+        presentationJobs.forEach { it.cancel() }
+        recordingTimerJob?.cancel()
+        draftJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
+    }
+
+    suspend fun awaitPendingActionsOnClose() {
+        // A navigation event must not cancel an already accepted Send/Edit/React intent.
+        viewModelScope.coroutineContext[kotlinx.coroutines.Job]?.children?.toList()?.forEach { it.join() }
+    }
+
     init {
         productivity?.let { service ->
-            viewModelScope.launch {
+            observeUi {
                 service.dao.draft(conversationId)?.let { draft ->
                     if (!draftChanged) {
                         restoredReplyId = draft.replyToMessageId
@@ -72,12 +95,12 @@ class GroupChatViewModel(
                     }
                 }
             }
-            viewModelScope.launch { service.dao.observeStars(conversationId).collect { ids ->
+            observeUi { service.dao.observeStars(conversationId).collect { ids ->
                 _uiState.update { it.copy(starredIds = ids.toSet()) }
             } }
         }
         // 1. Observe Group Entity & Title
-        viewModelScope.launch {
+        observeUi {
             groupDao.observeById(groupId).filterNotNull().collect { group ->
                 _uiState.update { current ->
                     current.copy(
@@ -88,7 +111,7 @@ class GroupChatViewModel(
         }
 
         // 2. Observe Members & Local Participant State
-        viewModelScope.launch {
+        observeUi {
             groupMemberDao.observeMembers(groupId).collect { members ->
                 val activeCount = members.count { it.state == GroupMemberState.ACTIVE.name }
                 val self = members.find { it.memberIdentityId == localIdentityId }
@@ -106,17 +129,22 @@ class GroupChatViewModel(
         }
 
         // 3. Observe Messages, Reactions, and Contacts to produce MessageUiModel
-        viewModelScope.launch {
+        observeUi {
+            timeline?.initialize()
+            val messageFlow = if (timeline != null) combine(timeline.messages, timeline.references) { rows, references -> rows to references }
+                else messageDao.observeByConversation(conversationId).map { it to emptyList<MessageEntity>() }
             combine(
-                messageDao.observeByConversation(conversationId),
-                reactionDao.observeForConversation(conversationId),
+                messageFlow,
+                timeline?.reactions ?: reactionDao.observeForConversation(conversationId),
                 combine(contactDao.observeAll(), productivity?.dao?.observeAliases() ?: flowOf(emptyList())) { contacts, aliases ->
                     val names = aliases.associate { it.contactId to it.alias }
                     contacts.map { peer -> names[peer.contactId]?.let { peer.copy(displayName = it) } ?: peer }
                 },
-                localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList()),
-                mediaDao?.observeForConversation(conversationId) ?: flowOf(emptyList())
-            ) { messages, reactions, contacts, hiddenMessageIds, mediaItems ->
+                if (timeline != null) flowOf(emptyList()) else localMessageStateDao?.observeHiddenMessageIds(conversationId) ?: flowOf(emptyList()),
+                timeline?.media ?: mediaDao?.observeForConversation(conversationId) ?: flowOf(emptyList())
+            ) { messageData, reactions, contacts, hiddenMessageIds, mediaItems ->
+                val (messages, referenceMessages) = messageData
+                val quoteMessages = (referenceMessages + messages).associateBy { it.logicalMessageId }
                 val hidden = hiddenMessageIds.toHashSet()
                 val contactsMap = contacts.associateBy { it.remoteIdentityId }
                 val reactionsByMessage = reactions.groupBy { it.messageId }
@@ -142,14 +170,14 @@ class GroupChatViewModel(
 
                     // Quoted snippet (if replying)
                     val quoted = msg.replyToMessageId?.let { replyId ->
-                        val targetMsg = messages.find { it.logicalMessageId == replyId }
+                        val targetMsg = quoteMessages[replyId]
                         if (targetMsg != null) {
                             val authorName = if (targetMsg.senderId == localIdentityId) "You"
                             else contactsMap[targetMsg.senderId]?.displayName ?: targetMsg.senderId.take(8)
                             QuotedMessageUiModel(
                                 messageId = replyId,
                                 senderName = authorName,
-                                previewText = targetMsg.body ?: "Attachment"
+                                previewText = if (targetMsg.deletedAt != null) "This message was deleted" else targetMsg.body ?: "Attachment"
                             )
                         } else {
                             QuotedMessageUiModel(
@@ -209,6 +237,12 @@ class GroupChatViewModel(
                     replyingTo = it.replyingTo ?: messageList.find { message -> message.logicalMessageId == restoredReplyId }) }
             }
         }
+
+        timeline?.let { repository -> observeUi {
+            repository.info.collect { window -> _uiState.update { it.copy(
+                hasEarlierMessages = window.hasEarlier, isLatestWindow = window.isLatest,
+                newerMessageCount = window.newerIncoming) } }
+        } }
 
         // 4. Mark group read upon opening
         markConversationRead()
@@ -327,6 +361,36 @@ class GroupChatViewModel(
     }
 
     fun clearError() { _uiState.update { it.copy(error = null) } }
+
+    fun loadEarlierMessages() = readTimeline { loadEarlier() }
+    fun openTimelineMessage(messageId: String) = readTimeline { openMessage(messageId) }
+    fun jumpToLatestMessages() = readTimeline { jumpToLatest() }
+    private fun readTimeline(action: suspend com.torxone.app.ui.timeline.ChatTimelineRepository.() -> Unit) {
+        val repository = timeline ?: return
+        viewModelScope.launch {
+            try { repository.action() }
+            catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _uiState.update { it.copy(error = "Could not load this part of the conversation. Try again.") }
+            }
+        }
+    }
+
+    suspend fun persistPendingDraftOnClose() {
+        if (!draftChanged) return
+        val service = productivity ?: return
+        val snapshot = _uiState.value
+        val original = composerBeforeEdit
+        service.saveDraft(conversationId, original?.first ?: snapshot.composerText,
+            original?.second?.logicalMessageId ?: snapshot.replyingTo?.logicalMessageId ?: restoredReplyId)
+    }
+
+    override fun onCleared() {
+        recordingTimerJob?.cancel()
+        draftJob?.cancel()
+        voiceNoteRecorder?.cancelRecording()
+        super.onCleared()
+    }
 
     fun clearScheduledComposer(text: String, replyId: String?) {
         val current = _uiState.value
@@ -506,7 +570,10 @@ class GroupChatViewModel(
 
     fun markConversationRead() {
         viewModelScope.launch {
-            groupService.markGroupRead(groupId)
+            if (presentationClosed || timeline?.isVisible == false) return@launch
+            try { groupService.markGroupRead(groupId) }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { _uiState.update { it.copy(error = "Couldn't update read status. Reopen this chat to try again.") } }
         }
     }
 

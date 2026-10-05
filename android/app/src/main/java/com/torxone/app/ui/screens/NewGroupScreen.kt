@@ -20,6 +20,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,15 +58,17 @@ fun NewGroupScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var step by remember { mutableStateOf(NewGroupStep.SELECT_MEMBERS) }
-    val selectedContactIds = remember { mutableStateListOf<String>() }
-    var searchQuery by remember { mutableStateOf("") }
-    var groupTitle by remember { mutableStateOf("") }
+    var step by rememberSaveable { mutableStateOf(NewGroupStep.SELECT_MEMBERS) }
+    val selectedContactIds = rememberSaveable(saver = listSaver(
+        save = { it.toList() }, restore = { it.toMutableStateList() })) { mutableStateListOf<String>() }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var groupTitle by rememberSaveable { mutableStateOf("") }
     var isCreating by remember { mutableStateOf(false) }
-    var avatarHash by remember { mutableStateOf<String?>(null) }
+    var avatarHash by rememberSaveable { mutableStateOf<String?>(null) }
     var avatarError by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    BackHandler(enabled = step == NewGroupStep.ENTER_DETAILS && !isCreating) { step = NewGroupStep.SELECT_MEMBERS }
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch {
             runCatching {
@@ -84,13 +89,9 @@ fun NewGroupScreen(
             }.onSuccess {
                 avatarHash = it
                 avatarError = null
-            }.onFailure { avatarError = it.message ?: "Unable to use selected image" }
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; avatarError = it.message ?: "Unable to use selected image" }
         }
     }
-    val avatarBitmap = remember(avatarHash) {
-        GroupAvatarStorage.resolve(context, avatarHash)?.let { BitmapFactory.decodeFile(it.absolutePath)?.asImageBitmap() }
-    }
-
     val filteredContacts = remember(contacts, searchQuery) {
         val query = searchQuery.trim().lowercase()
         if (query.isEmpty()) {
@@ -340,27 +341,17 @@ fun NewGroupScreen(
                         modifier = Modifier
                             .size(64.dp)
                             .clip(CircleShape)
-                            .clickable { avatarPicker.launch("image/*") }
+                            .clickable(enabled = !isCreating) { avatarPicker.launch("image/*") }
                             .background(MaterialTheme.colorScheme.secondaryContainer),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (avatarBitmap != null) {
-                            androidx.compose.foundation.Image(
-                                bitmap = avatarBitmap,
-                                contentDescription = "Group image",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        } else Icon(
-                            imageVector = Icons.Default.AddAPhoto,
-                            contentDescription = "Choose group image",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        if (avatarHash != null) com.torxone.app.ui.components.ProfileAvatar(groupTitle.ifBlank { "Group" }, avatarHash, Modifier.fillMaxSize())
+                        else Icon(Icons.Default.AddAPhoto, "Choose group image", tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(32.dp))
                     }
 
                     OutlinedTextField(
                         value = groupTitle,
+                        enabled = !isCreating,
                         onValueChange = { if (it.length <= 64) groupTitle = it },
                         label = { Text("Group name") },
                         placeholder = { Text("e.g. Project Alpha") },
@@ -371,13 +362,13 @@ fun NewGroupScreen(
                 }
 
                 Text(
-                    text = "Provide a group subject and optional group icon. Messages are end-to-end encrypted across all members.",
+                    text = "Choose a name and an optional group photo.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 avatarError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (avatarHash != null) {
-                    TextButton(onClick = { avatarHash = null }) { Text("Remove group image") }
+                    TextButton(enabled = !isCreating, onClick = { avatarHash = null }) { Text("Remove group image") }
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))

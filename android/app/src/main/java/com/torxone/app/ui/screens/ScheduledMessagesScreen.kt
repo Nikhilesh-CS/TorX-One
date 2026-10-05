@@ -5,6 +5,8 @@ import android.app.TimePickerDialog
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import com.torxone.app.ui.components.TorXEmptyState
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -41,13 +43,13 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
         editing = null; text = ""; reply = null; at = System.currentTimeMillis() + 60 * 60 * 1000; editorOpen = true
     }) { Text("New") } }) }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            Text("Messages queue when due and your identity is unlocked. Android battery saving may delay sending.",
+            Text("Messages send when due and your identity is unlocked. Battery saving may delay them.",
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(16.dp))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp)) }
-            if (rows.isEmpty()) Text("No scheduled messages", modifier = Modifier.padding(16.dp))
+            if (rows.isEmpty()) TorXEmptyState("No scheduled messages", Icons.Default.Schedule, actionLabel = "Schedule a message", onAction = { editing = null; text = ""; reply = null; editorOpen = true })
             LazyColumn(Modifier.weight(1f)) {
                 items(rows, key = { it.scheduleId }) { row ->
-                    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                         Column(Modifier.padding(12.dp)) {
                             Text(formatter.format(Date(row.scheduledAt)))
                             Text(when (row.state) {
@@ -61,11 +63,11 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
                             row.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                             if (row.state in listOf(ScheduledMessageState.PENDING, ScheduledMessageState.FAILED)) {
                                 Row {
-                                    TextButton(enabled = !busy, onClick = {
+                                    TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy, onClick = {
                                         editing = row; text = row.draftPayload; reply = row.replyToMessageId
                                         at = maxOf(row.scheduledAt, System.currentTimeMillis() + 60_000); editorOpen = true
                                     }) { Text(if (row.state == ScheduledMessageState.FAILED) "Edit / retry" else "Edit") }
-                                    TextButton(enabled = !busy, onClick = {
+                                    TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy, onClick = {
                                         busy = true; error = null
                                         scope.launch {
                                             try { service.cancel(row.scheduleId, row.generation) }
@@ -89,7 +91,7 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
                 OutlinedTextField(text, { text = it }, label = { Text("Message") }, enabled = !busy, minLines = 3)
                 Text(formatter.format(Date(at)), modifier = Modifier.padding(top = 12.dp))
                 Row {
-                    TextButton(enabled = !busy, onClick = {
+                    TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy, onClick = {
                         val selected = Calendar.getInstance().apply { timeInMillis = at }
                         DatePickerDialog(context, { _, year, month, day ->
                             at = Calendar.getInstance().apply {
@@ -97,7 +99,7 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
                             }.timeInMillis
                         }, selected.get(Calendar.YEAR), selected.get(Calendar.MONTH), selected.get(Calendar.DAY_OF_MONTH)).show()
                     }) { Text("Date") }
-                    TextButton(enabled = !busy, onClick = {
+                    TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy, onClick = {
                         val selected = Calendar.getInstance().apply { timeInMillis = at }
                         TimePickerDialog(context, { _, hour, minute ->
                             at = Calendar.getInstance().apply {
@@ -109,7 +111,7 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
-        }, confirmButton = { TextButton(enabled = !busy && text.isNotBlank(), onClick = {
+        }, confirmButton = { TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy && text.isNotBlank(), onClick = {
             busy = true; error = null
             val current = editing
             scope.launch {
@@ -125,6 +127,6 @@ fun ScheduledMessagesScreen(service: ScheduledMessageService, conversationId: St
                 finally { busy = false }
             }
         }) { Text(if (busy) "Saving…" else "Save") } }, dismissButton = {
-            TextButton(enabled = !busy, onClick = { editorOpen = false }) { Text("Close") }
+            TextButton(modifier = Modifier.heightIn(min = 48.dp), enabled = !busy, onClick = { editorOpen = false }) { Text("Close") }
         })
 }

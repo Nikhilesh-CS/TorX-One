@@ -1,11 +1,13 @@
 package com.torxone.app.ui.screens
 
-import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -14,13 +16,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.torxone.app.transport.lora.RadioConnectionState
 import com.torxone.app.transport.halow.HaLowConnectionState
 
@@ -73,265 +70,107 @@ fun SettingsScreen(
     onDataChange: (field: String, value: Boolean) -> Unit,
     onAboutClick: (() -> Unit)? = null,
     onSavedMessages: (() -> Unit)? = null,
-    onSearchMessages: (() -> Unit)? = null
+    onSearchMessages: (() -> Unit)? = null,
+    themeSource: String = "TORX",
+    accentId: String = "SAGE",
+    fontSize: String = "MEDIUM",
+    onChatDefaultsClick: (() -> Unit)? = null
 ) {
-    var showAbout by remember { mutableStateOf(false) }
+    var page by rememberSaveable { mutableStateOf(SettingsPage.ROOT) }
+    var showAbout by rememberSaveable { mutableStateOf(false) }
+    val pages = rememberSaveableStateHolder()
+    val back = { if (page == SettingsPage.ROOT) onBackClick() else page = SettingsPage.ROOT }
+    BackHandler(enabled = page != SettingsPage.ROOT) { page = SettingsPage.ROOT }
     if (showAbout) AlertDialog(onDismissRequest = { showAbout = false }, title = { Text("TorX One") },
-        text = { Text("Secure messaging with encrypted identities and Tor transport. Nearby connections are available when supported. Calls use WebRTC; direct calls can expose network addresses to your peer. Maximum Call Privacy requires a TURN relay.") },
+        text = { Text("Private messaging over Tor. Messages are end-to-end encrypted. Direct calls can expose your network address to your contact. Maximum Call Privacy requires a working TURN relay.") },
         confirmButton = { TextButton(onClick = { showAbout = false }) { Text("Close") } })
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onBackClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-        ) {
-            // ─── Profile Banner ──────────────────────────────────────
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-                    .clickable(onClick = onProfileClick),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    com.torxone.app.ui.components.ProfileAvatar(displayName, avatarUri, Modifier.size(56.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = displayName.ifEmpty { "Set up your profile" },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        if (about.isNotEmpty()) {
-                            Text(
-                                text = about,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
+    Scaffold(topBar = { TopAppBar(title = { Text(page.title) }, navigationIcon = {
+        IconButton(onClick = back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+    }) }) { padding ->
+        pages.SaveableStateProvider(page.name) {
+            Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+                when (page) {
+                    SettingsPage.ROOT -> {
+                        Row(Modifier.fillMaxWidth().heightIn(min = 80.dp).clickable(onClick = onProfileClick).padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            com.torxone.app.ui.components.ProfileAvatar(displayName, avatarUri, Modifier.size(56.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(displayName.ifEmpty { "Set up your profile" }, style = MaterialTheme.typography.titleMedium)
+                                Text(about.ifBlank { "Profile and TorX identity" }, style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                            }
+                            Icon(Icons.Default.ChevronRight, null)
+                        }
+                        SettingsDivider()
+                        SettingsPage.entries.filter { it != SettingsPage.ROOT }.forEach { destination ->
+                            SettingsNavigationRow(destination.title, destination.subtitle, destination.icon) { page = destination }
                         }
                     }
-                    Icon(
-                        Icons.Filled.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                    )
+                    SettingsPage.PRIVACY -> {
+                        SettingsToggle("Last seen", if (lastSeenVisible) "Visible to contacts" else "Hidden", lastSeenVisible) { onPrivacyChange("lastSeen", it) }
+                        SettingsToggle("Online status", if (onlineVisible) "Shown when active" else "Hidden", onlineVisible) { onPrivacyChange("online", it) }
+                        SettingsToggle("Read receipts", "Let contacts know when you read messages", readReceiptsEnabled) { onPrivacyChange("readReceipts", it) }
+                    }
+                    SettingsPage.SECURITY -> {
+                        SettingsToggle("App lock", "Require device authentication to open", appLockEnabled) { onSecurityChange("appLock", it) }
+                        SettingsToggle("Screen security", "Block screenshots and hide content in recents", screenSecurityEnabled) { onSecurityChange("screenSecurity", it) }
+                    }
+                    SettingsPage.CHATS -> {
+                        onSavedMessages?.let { SettingsNavigationRow("Starred messages", "Messages you want to keep handy", Icons.Default.Star, it) }
+                        onSearchMessages?.let { SettingsNavigationRow("Search messages", "Find text, links and attachments", Icons.Default.Search, it) }
+                        onChatDefaultsClick?.let { SettingsNavigationRow("Default chat theme", "Wallpaper and bubbles for your chats", Icons.Default.Wallpaper, it) }
+                    }
+                    SettingsPage.APPEARANCE -> {
+                        SettingsThemeRow(themeMode) { onAppearanceChange("theme", it) }
+                        com.torxone.app.ui.components.SettingsAppearanceControls(themeSource, accentId, fontSize,
+                            onAppearanceChange, Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                        onChatDefaultsClick?.let { SettingsNavigationRow("Default chat theme", "Wallpaper and bubbles for your chats", Icons.Default.Wallpaper, it) }
+                    }
+                    SettingsPage.NOTIFICATIONS -> {
+                        SettingsToggle("Message notifications", "Alerts for new messages", notificationsEnabled) { onNotificationChange("enabled", it) }
+                        SettingsToggle("Sound", "Play a sound for new messages", soundEnabled) { onNotificationChange("sound", it) }
+                        SettingsToggle("Vibration", "Vibrate for new messages", vibrationEnabled) { onNotificationChange("vibration", it) }
+                        SettingsPreviewModeRow(notificationPreviewMode) { onNotificationChange("previewMode", it) }
+                    }
+                    SettingsPage.STORAGE -> SettingsToggle("Auto-download media", "Download incoming media automatically", autoDownloadMedia) { onDataChange("autoDownload", it) }
+                    SettingsPage.CONNECTIONS -> {
+                        SettingsToggle("Nearby connections", "Automatically discover nearby peers", autoConnectNearby) { onConnectionChange("autoNearby", it) }
+                        SettingsToggle("Low bandwidth mode", "Reduce data usage", lowBandwidthMode) { onConnectionChange("lowBandwidth", it) }
+                        SettingsDivider()
+                        TorXRadioRow(radioState, onPairRadio)
+                        HaLowGatewayRow(haLowState, onPairHaLow)
+                    }
+                    SettingsPage.CALLS -> SettingsToggle("Maximum Call Privacy",
+                        if (relayOnlyCalls) "Calls and files use relay only. A working TURN relay is required. Applies to new sessions."
+                        else "Direct calls and files can reveal your network address to your contact. Applies to new sessions.",
+                        relayOnlyCalls) { onPrivacyChange("relayOnlyCalls", it) }
+                    SettingsPage.ABOUT -> SettingsNavigationRow("TorX One", "Version ${com.torxone.app.BuildConfig.VERSION_NAME}", Icons.Default.Info) {
+                        onAboutClick?.invoke() ?: run { showAbout = true }
+                    }
                 }
             }
-
-            onSavedMessages?.let { ListItem(headlineContent = { Text("Starred messages") },
-                leadingContent = { Icon(Icons.Default.Star, null) }, modifier = Modifier.clickable(onClick = it)) }
-            onSearchMessages?.let { ListItem(headlineContent = { Text("Search messages") },
-                leadingContent = { Icon(Icons.Default.Search, null) }, modifier = Modifier.clickable(onClick = it)) }
-            // ─── Privacy ─────────────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Lock,
-                title = "Privacy",
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            SettingsToggle(
-                title = "Last Seen & Online",
-                subtitle = if (lastSeenVisible) "Visible to contacts" else "Hidden",
-                checked = lastSeenVisible,
-                onCheckedChange = { onPrivacyChange("lastSeen", it) }
-            )
-
-            SettingsToggle(
-                title = "Online Status",
-                subtitle = if (onlineVisible) "Shown when active" else "Hidden",
-                checked = onlineVisible,
-                onCheckedChange = { onPrivacyChange("online", it) }
-            )
-
-            SettingsToggle(
-                title = "Read Receipts",
-                subtitle = if (readReceiptsEnabled) "Contacts see when you read" else "Disabled",
-                checked = readReceiptsEnabled,
-                onCheckedChange = { onPrivacyChange("readReceipts", it) }
-            )
-
-            SettingsToggle(
-                title = "Maximum Call Privacy",
-                subtitle = if (relayOnlyCalls) "Relay only for calls and files; requires working TURN. Applies to new sessions."
-                    else "Standard: LAN, STUN and optional TURN. Peers can learn your network address. Applies to new sessions.",
-                checked = relayOnlyCalls,
-                onCheckedChange = { onPrivacyChange("relayOnlyCalls", it) }
-            )
-
-            SettingsDivider()
-
-            // ─── Notifications ───────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Notifications,
-                title = "Notifications",
-                color = MaterialTheme.colorScheme.secondary
-            )
-
-            SettingsToggle(
-                title = "Message Notifications",
-                subtitle = if (notificationsEnabled) "On" else "Off",
-                checked = notificationsEnabled,
-                onCheckedChange = { onNotificationChange("enabled", it) }
-            )
-
-            SettingsToggle(
-                title = "Sound",
-                subtitle = if (soundEnabled) "On" else "Off",
-                checked = soundEnabled,
-                onCheckedChange = { onNotificationChange("sound", it) }
-            )
-
-            SettingsToggle(
-                title = "Vibration",
-                subtitle = if (vibrationEnabled) "On" else "Off",
-                checked = vibrationEnabled,
-                onCheckedChange = { onNotificationChange("vibration", it) }
-            )
-
-            // Preview mode selector
-            SettingsPreviewModeRow(
-                currentMode = notificationPreviewMode,
-                onModeChange = { onNotificationChange("previewMode", it) }
-            )
-
-            SettingsDivider()
-
-            // ─── Security ────────────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Security,
-                title = "Security",
-                color = MaterialTheme.colorScheme.tertiary
-            )
-
-            SettingsToggle(
-                title = "App Lock",
-                subtitle = if (appLockEnabled) "Require biometric to open" else "Disabled",
-                checked = appLockEnabled,
-                onCheckedChange = { onSecurityChange("appLock", it) }
-            )
-
-            SettingsToggle(
-                title = "Screen Security",
-                subtitle = if (screenSecurityEnabled) "Block screenshots & recents" else "Off",
-                checked = screenSecurityEnabled,
-                onCheckedChange = { onSecurityChange("screenSecurity", it) }
-            )
-
-            SettingsDivider()
-
-            // ─── Connection ──────────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.WifiTethering,
-                title = "Connection",
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            SettingsToggle(
-                title = "Auto-Connect Nearby",
-                subtitle = if (autoConnectNearby) "Automatically discover nearby peers" else "Manual only",
-                checked = autoConnectNearby,
-                onCheckedChange = { onConnectionChange("autoNearby", it) }
-            )
-
-            SettingsToggle(
-                title = "Low Bandwidth Mode",
-                subtitle = if (lowBandwidthMode) "Reduced data usage" else "Normal",
-                checked = lowBandwidthMode,
-                onCheckedChange = { onConnectionChange("lowBandwidth", it) }
-            )
-
-            TorXRadioRow(radioState = radioState, onPairRadio = onPairRadio)
-            HaLowGatewayRow(haLowState = haLowState, onPairHaLow = onPairHaLow)
-
-            SettingsDivider()
-
-            // ─── Appearance ──────────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Palette,
-                title = "Appearance",
-                color = MaterialTheme.colorScheme.secondary
-            )
-
-            SettingsThemeRow(
-                currentTheme = themeMode,
-                onThemeChange = { onAppearanceChange("theme", it) }
-            )
-
-            SettingsToggle(
-                title = "Dynamic Colors",
-                subtitle = if (dynamicColorsEnabled) "Material You colors from wallpaper" else "Use default palette",
-                checked = dynamicColorsEnabled,
-                onCheckedChange = { onAppearanceChange("dynamicColors", it) }
-            )
-
-            SettingsDivider()
-
-            // ─── Data & Storage ──────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Storage,
-                title = "Data & Storage",
-                color = MaterialTheme.colorScheme.error
-            )
-
-            SettingsToggle(
-                title = "Auto-Download Media",
-                subtitle = if (autoDownloadMedia) "Download media automatically" else "Tap to download",
-                checked = autoDownloadMedia,
-                onCheckedChange = { onDataChange("autoDownload", it) }
-            )
-
-            SettingsDivider()
-
-            // ─── About ──────────────────────────────────────────────
-            SettingsSectionHeader(
-                icon = Icons.Filled.Info,
-                title = "About",
-                color = MaterialTheme.colorScheme.outline
-            )
-
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = { onAboutClick?.invoke() ?: run { showAbout = true } })
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                color = Color.Transparent
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = "TorX One",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        text = "Version ${com.torxone.app.BuildConfig.VERSION_NAME} · Secure messaging over Tor",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(32.dp))
         }
     }
+}
+
+private enum class SettingsPage(val title: String, val subtitle: String, val icon: ImageVector) {
+    ROOT("Settings", "", Icons.Default.Settings),
+    PRIVACY("Privacy", "Visibility and read receipts", Icons.Default.Lock),
+    SECURITY("Security", "App lock and screen protection", Icons.Default.Security),
+    CHATS("Chats", "Starred messages and search", Icons.Default.Chat),
+    APPEARANCE("Appearance", "Theme, accent and text size", Icons.Default.Palette),
+    NOTIFICATIONS("Notifications", "Sounds and message previews", Icons.Default.Notifications),
+    STORAGE("Storage & data", "Media downloads", Icons.Default.Storage),
+    CONNECTIONS("Connections", "Nearby and external hardware", Icons.Default.WifiTethering),
+    CALLS("Calls", "Privacy for calls and files", Icons.Default.Call),
+    ABOUT("About", "Version and privacy information", Icons.Default.Info)
+}
+
+@Composable
+private fun SettingsNavigationRow(title: String, subtitle: String, icon: ImageVector, onClick: () -> Unit) {
+    ListItem(headlineContent = { Text(title) }, supportingContent = { Text(subtitle) },
+        leadingContent = { Icon(icon, null) }, trailingContent = { Icon(Icons.Default.ChevronRight, null) },
+        modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(onClickLabel = "Open $title", onClick = onClick))
 }
 
 @Composable
@@ -392,34 +231,6 @@ private fun HaLowGatewayRow(haLowState: HaLowConnectionState, onPairHaLow: () ->
 // ═════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SettingsSectionHeader(
-    icon: ImageVector,
-    title: String,
-    color: Color
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = title,
-            tint = color,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = color
-        )
-    }
-}
-
-@Composable
 private fun SettingsToggle(
     title: String,
     subtitle: String,
@@ -429,7 +240,8 @@ private fun SettingsToggle(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .heightIn(min = 64.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
             .padding(horizontal = 32.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -441,12 +253,12 @@ private fun SettingsToggle(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = MaterialTheme.colorScheme.primary,
                 checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
@@ -463,6 +275,7 @@ private fun SettingsDivider() {
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsPreviewModeRow(
     currentMode: String,
@@ -482,18 +295,20 @@ private fun SettingsPreviewModeRow(
         Text(
             text = "Content shown in notification",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             modes.forEach { (value, label) ->
                 FilterChip(
                     selected = currentMode == value,
                     onClick = { onModeChange(value) },
-                    label = { Text(label, fontSize = 12.sp) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    label = { Text(label, style = MaterialTheme.typography.labelLarge) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                         selectedLabelColor = MaterialTheme.colorScheme.primary
@@ -504,6 +319,7 @@ private fun SettingsPreviewModeRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsThemeRow(
     currentTheme: String,
@@ -521,15 +337,17 @@ private fun SettingsThemeRow(
             style = MaterialTheme.typography.bodyLarge
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             themes.forEach { (value, label) ->
                 FilterChip(
                     selected = currentTheme == value,
                     onClick = { onThemeChange(value) },
-                    label = { Text(label, fontSize = 12.sp) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    label = { Text(label, style = MaterialTheme.typography.labelLarge) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                         selectedLabelColor = MaterialTheme.colorScheme.primary

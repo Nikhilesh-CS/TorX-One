@@ -36,8 +36,13 @@ fun ProfileAvatar(name: String, avatar: String?, modifier: Modifier = Modifier) 
                 BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
             }
             else if (avatar?.startsWith("file:") == true || avatar?.startsWith("content:") == true) {
-                context.contentResolver.openInputStream(Uri.parse(avatar))?.use { input ->
-                    BitmapFactory.decodeStream(input, null, BitmapFactory.Options().apply { inSampleSize = 2 })?.asImageBitmap()
+                val uri = Uri.parse(avatar)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
+                    val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+                    while (bounds.outWidth / options.inSampleSize > 256 || bounds.outHeight / options.inSampleSize > 256) options.inSampleSize *= 2
+                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options)?.asImageBitmap() }
                 }
             } else null
         }.getOrNull() }

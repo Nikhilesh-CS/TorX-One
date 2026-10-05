@@ -95,20 +95,6 @@ fun CallScreen(
     }
 
     // Auto-dismiss screen shortly after call ends
-    LaunchedEffect(uiState.state) {
-        if (uiState.state in setOf(
-                CallState.ENDED,
-                CallState.DECLINED,
-                CallState.BUSY,
-                CallState.MISSED,
-                CallState.FAILED
-            )
-        ) {
-            kotlinx.coroutines.delay(1800)
-            onBackClick()
-        }
-    }
-
     val isVideo = uiState.callType == CallType.VIDEO || uiState.isCameraOn
 
     Box(
@@ -117,9 +103,9 @@ fun CallScreen(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF0F172A),
-                        Color(0xFF090D16),
-                        Color(0xFF020617)
+                        Color(0xFF191C20),
+                        Color(0xFF171A1D),
+                        Color(0xFF141619)
                     )
                 )
             )
@@ -212,7 +198,7 @@ private fun VoiceCallLayout(
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = "End-to-End Secured",
-                        fontSize = 11.sp,
+                        style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -243,7 +229,7 @@ private fun VoiceCallLayout(
 
             Text(
                 text = uiState.peerName.ifEmpty { "Unknown" },
-                fontSize = 28.sp,
+                style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
                 textAlign = TextAlign.Center
@@ -259,14 +245,16 @@ private fun VoiceCallLayout(
 
             Text(
                 text = displayStatus,
-                fontSize = 16.sp,
-                color = if (uiState.state == CallState.CONNECTED) Color(0xFF94A3B8) else Color(0xFF38BDF8),
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (uiState.state == CallState.CONNECTED) Color(0xFFBDC2C8) else androidx.compose.ui.graphics.lerp(MaterialTheme.colorScheme.primary, Color.White, 0.4f),
                 fontWeight = FontWeight.Medium
             )
         }
 
         // Bottom Controls: Incoming (Accept/Decline) vs Active (Mute/Speaker/Video/Hangup)
-        if (uiState.state == CallState.INCOMING_RINGING) {
+        if (uiState.state in setOf(CallState.ENDED, CallState.DECLINED, CallState.BUSY, CallState.MISSED, CallState.FAILED)) {
+            TextButton(onClick = onBackClick, modifier = Modifier.heightIn(min = 48.dp)) { Text("Back to chat") }
+        } else if (uiState.state == CallState.INCOMING_RINGING) {
             IncomingCallControls(
                 onAccept = { viewModel.acceptCall() },
                 onDecline = { viewModel.declineCall() }
@@ -325,7 +313,7 @@ private fun VideoCallLayout(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0F172A).copy(alpha = 0.9f)),
+                    .background(Color(0xFF191C20).copy(alpha = 0.9f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -418,7 +406,7 @@ private fun VideoCallLayout(
                         )
                         Text(
                             text = uiState.durationText.ifEmpty { "Connected" },
-                            fontSize = 13.sp,
+                            style = MaterialTheme.typography.labelMedium,
                             color = Color.White.copy(alpha = 0.7f)
                         )
                     }
@@ -442,32 +430,37 @@ private fun VideoCallLayout(
 
 @Composable
 private fun CallAvatar(name: String, isPulsing: Boolean, avatarHash: String? = null) {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val scale by infiniteTransition.animateFloat(
+    val motion = com.torxone.app.ui.appearance.rememberDepthMotion(com.torxone.app.ui.appearance.ChatAppearance())
+    val pulsing = isPulsing && !motion.reduced.value
+    val scale = if (pulsing) {
+        val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+        val animated by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (isPulsing) 1.15f else 1f,
+        targetValue = 1.04f,
         animationSpec = infiniteRepeatable(
             animation = tween(1200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "avatarScale"
-    )
+        )
+        animated
+    } else 1f
 
     Box(contentAlignment = Alignment.Center) {
-        if (isPulsing) {
+        if (pulsing) {
             Box(
                 modifier = Modifier
                     .size(170.dp)
                     .scale(scale)
                     .clip(CircleShape)
-                    .background(Color(0xFF38BDF8).copy(alpha = 0.12f))
+                    .background(androidx.compose.ui.graphics.lerp(MaterialTheme.colorScheme.primary, Color.White, 0.4f).copy(alpha = 0.12f))
             )
             Box(
                 modifier = Modifier
                     .size(150.dp)
                     .scale(scale * 0.95f)
                     .clip(CircleShape)
-                    .background(Color(0xFF38BDF8).copy(alpha = 0.2f))
+                    .background(androidx.compose.ui.graphics.lerp(MaterialTheme.colorScheme.primary, Color.White, 0.4f).copy(alpha = 0.2f))
             )
         }
 
@@ -478,9 +471,9 @@ private fun CallAvatar(name: String, isPulsing: Boolean, avatarHash: String? = n
                 .background(
                     Brush.radialGradient(
                         colors = listOf(
-                            Color(0xFF2563EB),
-                            Color(0xFF1D4ED8),
-                            Color(0xFF1E3A8A)
+                            Color(0xFF31483B),
+                            Color(0xFF27372E),
+                            Color(0xFF202A24)
                         )
                     )
                 )
@@ -513,7 +506,7 @@ private fun IncomingCallControls(
                 modifier = Modifier
                     .size(68.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFEF4444))
+                    .background(Color(0xFFAE4149))
             ) {
                 Icon(
                     Icons.Default.CallEnd,
@@ -523,7 +516,7 @@ private fun IncomingCallControls(
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Decline", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+            Text("Decline", color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium)
         }
 
         // Accept button
@@ -533,7 +526,7 @@ private fun IncomingCallControls(
                 modifier = Modifier
                     .size(68.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF10B981))
+                    .background(Color(0xFF48765B))
             ) {
                 Icon(
                     Icons.Default.Call,
@@ -543,7 +536,7 @@ private fun IncomingCallControls(
                 )
             }
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Accept", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+            Text("Accept", color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium)
         }
     }
 }
@@ -560,7 +553,7 @@ private fun ActiveCallControls(
 ) {
     Surface(
         shape = RoundedCornerShape(32.dp),
-        color = Color(0xFF1E293B).copy(alpha = 0.85f),
+        color = Color(0xFF292D32).copy(alpha = 0.85f),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
         modifier = Modifier
             .fillMaxWidth()
@@ -578,7 +571,7 @@ private fun ActiveCallControls(
                 icon = if (uiState.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                 label = if (uiState.isMuted) "Unmute" else "Mute",
                 isActive = uiState.isMuted,
-                activeColor = Color(0xFFEF4444),
+                activeColor = Color(0xFFAE4149),
                 onClick = onToggleMute
             )
 
@@ -606,7 +599,7 @@ private fun ActiveCallControls(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFEF4444))
+                    .background(Color(0xFFAE4149))
             ) {
                 Icon(
                     Icons.Default.CallEnd,
@@ -632,7 +625,7 @@ private fun VideoCallControls(
 ) {
     Surface(
         shape = RoundedCornerShape(32.dp),
-        color = Color(0xFF0F172A).copy(alpha = 0.8f),
+        color = Color(0xFF191C20).copy(alpha = 0.8f),
         border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
         modifier = Modifier
             .fillMaxWidth()
@@ -658,7 +651,7 @@ private fun VideoCallControls(
                 icon = if (uiState.isCameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
                 label = "Camera",
                 isActive = !uiState.isCameraOn,
-                activeColor = Color(0xFFEF4444),
+                activeColor = Color(0xFFAE4149),
                 onClick = onToggleCamera
             )
 
@@ -667,7 +660,7 @@ private fun VideoCallControls(
                 icon = if (uiState.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
                 label = if (uiState.isMuted) "Unmute" else "Mute",
                 isActive = uiState.isMuted,
-                activeColor = Color(0xFFEF4444),
+                activeColor = Color(0xFFAE4149),
                 onClick = onToggleMute
             )
 
@@ -685,7 +678,7 @@ private fun VideoCallControls(
                 modifier = Modifier
                     .size(52.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFFEF4444))
+                    .background(Color(0xFFAE4149))
             ) {
                 Icon(
                     Icons.Default.CallEnd,
@@ -705,7 +698,7 @@ private fun CallControlButton(
     icon: ImageVector,
     label: String,
     isActive: Boolean,
-    activeColor: Color = Color(0xFF38BDF8),
+    activeColor: Color = Color(0xFFA9CBB6),
     onClick: () -> Unit
 ) {
     Column(
@@ -737,7 +730,7 @@ private fun CallControlButton(
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = label,
-            fontSize = 11.sp,
+            style = MaterialTheme.typography.labelSmall,
             color = Color.White.copy(alpha = 0.7f)
         )
     }

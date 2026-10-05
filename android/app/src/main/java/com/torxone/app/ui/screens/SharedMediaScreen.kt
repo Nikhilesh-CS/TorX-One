@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.filled.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
@@ -34,23 +36,23 @@ fun SharedMediaScreen(media: List<MediaEntity>, messages: List<MessageEntity>, o
     cachedLinks: List<MessageLinkEntity>? = null, onBack: () -> Unit) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf<MediaUiModel?>(null) }
-    var tab by remember { mutableIntStateOf(0) }
-    var linkQuery by remember { mutableStateOf("") }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var linkQuery by rememberSaveable { mutableStateOf("") }
     val tabs = listOf("Media", "Links", "Docs", "Voice")
-    val itemsForTab = media.filter { when (tab) {
+    val itemsForTab = remember(media, tab) { media.filter { when (tab) {
         0 -> it.mediaType in setOf("IMAGE", "VIDEO")
         2 -> it.mediaType == "DOCUMENT"
         3 -> it.mediaType in setOf("VOICE_NOTE", "AUDIO")
         else -> false
-    } }.sortedByDescending { it.createdAt }
+    } }.sortedByDescending { it.createdAt } }
     fun open(item: MediaEntity) {
         val model = item.toUi()
         if (model.localPath?.let { java.io.File(it).isFile } == true && model.type in setOf(MediaType.IMAGE, MediaType.VIDEO)) selected = model
         else openMedia(context, model, onDownload?.let { { it(model.mediaId) } })
     }
-    val links = cachedLinks?.map { it.url to it.host }?.distinct()
-        ?: messages.filter { it.deletedAt == null }.flatMap { com.torxone.app.chat.MessageLinks.extract(it.body.orEmpty()) }.distinct()
-    val shownLinks = links.filter { (url, host) -> url.contains(linkQuery, ignoreCase = true) || host.contains(linkQuery, ignoreCase = true) }
+    val links = remember(cachedLinks, messages) { cachedLinks?.map { it.url to it.host }?.distinct()
+        ?: messages.filter { it.deletedAt == null }.flatMap { com.torxone.app.chat.MessageLinks.extract(it.body.orEmpty()) }.distinct() }
+    val shownLinks = remember(links, linkQuery) { links.filter { (url, host) -> url.contains(linkQuery, ignoreCase = true) || host.contains(linkQuery, ignoreCase = true) } }
     Scaffold(topBar = { TopAppBar(title = { Text("Media, links and docs") }, navigationIcon = {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
     }) }) { padding ->
@@ -58,26 +60,26 @@ fun SharedMediaScreen(media: List<MediaEntity>, messages: List<MessageEntity>, o
         TabRow(tab) { tabs.forEachIndexed { index, name -> Tab(tab == index, { tab = index }, text = { Text(name) }) } }
         if (tab == 1) OutlinedTextField(linkQuery, { linkQuery = it.take(256) }, Modifier.fillMaxWidth().padding(8.dp),
             label = { Text("Search saved links") }, singleLine = true)
-        if (media.isEmpty() && links.isEmpty()) Text("No shared media or links yet", Modifier.padding(16.dp))
-        else if (tab == 0) LazyVerticalGrid(GridCells.Fixed(3), contentPadding = PaddingValues(8.dp),
+        if (media.isEmpty() && links.isEmpty()) TorXEmptyState("Nothing shared yet", Icons.Default.PermMedia, message = "Photos, files and links will appear here.")
+        else if (tab == 0) LazyVerticalGrid(GridCells.Adaptive(112.dp), contentPadding = PaddingValues(8.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(itemsForTab, key = { it.mediaId }) { item -> Card(Modifier.clickable { open(item) }) {
                 MediaThumbnail(item)
                 Text(item.fileName, Modifier.padding(4.dp), maxLines = 1, style = MaterialTheme.typography.labelSmall)
-                Text(item.status.lowercase(), Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.labelSmall)
+                Text(mediaStateLabel(item.status), Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.labelSmall)
             } }
-            if (itemsForTab.isEmpty()) item { Text("No shared photos or videos yet", Modifier.padding(16.dp)) }
+            if (itemsForTab.isEmpty()) item { TorXEmptyState("No photos or videos", Icons.Default.PhotoLibrary) }
         }
         else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
-            if (tab != 1 && itemsForTab.isEmpty()) item { Text("No shared ${tabs[tab].lowercase()} yet") }
+            if (tab != 1 && itemsForTab.isEmpty()) item { TorXEmptyState("No shared ${tabs[tab].lowercase()} yet", Icons.Default.FolderOpen) }
             items(itemsForTab, key = { it.mediaId }) { item ->
                 val model = item.toUi()
                 if (model.type == MediaType.AUDIO || model.type == MediaType.VOICE_NOTE) AudioPlayback(model, onDownload = onDownload?.let { { it(model.mediaId) } })
-                else ListItem(headlineContent = { Text(model.fileName) }, supportingContent = { Text("${model.fileSize / 1024} KB • ${java.text.DateFormat.getDateInstance().format(java.util.Date(item.createdAt))} • ${model.status.name.lowercase()}") },
+                else ListItem(headlineContent = { Text(model.fileName) }, supportingContent = { Text("${model.fileSize / 1024} KB • ${java.text.DateFormat.getDateInstance().format(java.util.Date(item.createdAt))} • ${mediaStateLabel(model.status.name)}") },
                     modifier = Modifier.clickable { open(item) })
                 HorizontalDivider()
             }
-            if (tab == 1 && shownLinks.isEmpty()) item { Text(if (linkQuery.isBlank()) "No shared links yet" else "No matching links") }
+            if (tab == 1 && shownLinks.isEmpty()) item { TorXEmptyState(if (linkQuery.isBlank()) "No shared links yet" else "No matching links", Icons.Default.Link) }
             if (tab == 1) items(shownLinks) { (url, host) -> TextButton(onClick = {
                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                     .onFailure { android.widget.Toast.makeText(context, "No browser available", android.widget.Toast.LENGTH_SHORT).show() }
@@ -114,4 +116,14 @@ private fun MediaThumbnail(item: MediaEntity) {
         bitmap?.let { Image(it.asImageBitmap(), item.fileName, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
             ?: Text(if (item.mediaType == "VIDEO") "Video" else "Image")
     }
+}
+
+private fun mediaStateLabel(status: String): String = when (status) {
+    "COMPLETED", "AVAILABLE" -> "Ready"
+    "FAILED" -> "Needs attention"
+    "PAUSED" -> "Paused"
+    "CANCELED" -> "Canceled"
+    "DOWNLOADING", "UPLOADING", "TRANSFERRING", "IN_PROGRESS" -> "Transferring…"
+    "PENDING", "QUEUED" -> "Waiting"
+    else -> status.lowercase().replaceFirstChar(Char::uppercase)
 }

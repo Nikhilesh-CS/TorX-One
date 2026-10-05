@@ -23,6 +23,15 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
+import com.torxone.app.ui.components.*
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,9 +46,10 @@ import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import com.torxone.app.media.VoiceNoteHelper
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -58,7 +68,6 @@ import com.torxone.app.data.entity.ConversationAppearanceEntity
 import com.torxone.app.data.entity.MessageDirection
 import com.torxone.app.media.MediaStatus
 import com.torxone.app.media.MediaType
-import com.torxone.app.media.VoiceNoteHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,19 +92,25 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
+    entryUnreadMessageId: String? = null,
+    entryUnreadCount: Int = 0,
+    hasEarlierMessages: Boolean = false,
+    onLoadEarlierMessages: (() -> Unit)? = null,
+    onJumpToMessage: ((String) -> Unit)? = null,
+    onJumpToLatest: (() -> Unit)? = null,
+    isLatestWindow: Boolean = true,
+    newerMessageCount: Int = 0,
+    onEditAppearance: (() -> Unit)? = null,
+    chatAppearance: com.torxone.app.ui.appearance.ChatAppearance? = null,
+    onRetryDelivery: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    LaunchedEffect(uiState.error) {
-        uiState.error?.let {
-            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-            viewModel.clearError()
-        }
-    }
+    var localPermissionError by remember { mutableStateOf<String?>(null) }
     val recordAudioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) viewModel.startVoiceRecording()
-        else android.widget.Toast.makeText(context, "Microphone permission is required for voice notes", android.widget.Toast.LENGTH_SHORT).show()
+        else localPermissionError = "Microphone permission is required for voice notes"
     }
     var infoMessageId by remember { mutableStateOf<String?>(null) }
     var deliverySummary by remember { mutableStateOf<com.torxone.app.groups.GroupMessageDeliverySummary?>(null) }
@@ -146,6 +161,20 @@ fun ChatScreen(
         initialMessageId = initialMessageId,
         appearance = appearance,
         onSaveAppearance = onSaveAppearance,
+        entryUnreadMessageId = entryUnreadMessageId,
+        entryUnreadCount = entryUnreadCount,
+        onEditAppearance = onEditAppearance,
+        chatAppearance = chatAppearance,
+        onRetryDelivery = onRetryDelivery,
+        hasEarlierMessages = uiState.hasEarlierMessages || hasEarlierMessages,
+        onLoadEarlierMessages = onLoadEarlierMessages ?: viewModel::loadEarlierMessages,
+        onJumpToMessage = onJumpToMessage ?: viewModel::openTimelineMessage,
+        onJumpToLatest = onJumpToLatest ?: viewModel::jumpToLatestMessages,
+        isLatestWindow = uiState.isLatestWindow && isLatestWindow,
+        newerMessageCount = maxOf(uiState.newerMessageCount, newerMessageCount),
+        uiError = uiState.error ?: localPermissionError,
+        onDismissUiError = { localPermissionError = null; viewModel.clearError() },
+        isSending = uiState.isSending,
         onSendImage = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendVideo = { name, bytes, mime -> viewModel.sendImage(name, bytes, mime) },
         onSendDocument = { name, bytes, mime -> viewModel.sendDocument(name, bytes, mime) },
@@ -193,32 +222,36 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
+    entryUnreadMessageId: String? = null,
+    entryUnreadCount: Int = 0,
+    hasEarlierMessages: Boolean = false,
+    onLoadEarlierMessages: (() -> Unit)? = null,
+    onJumpToMessage: ((String) -> Unit)? = null,
+    onJumpToLatest: (() -> Unit)? = null,
+    isLatestWindow: Boolean = true,
+    newerMessageCount: Int = 0,
+    onEditAppearance: (() -> Unit)? = null,
+    chatAppearance: com.torxone.app.ui.appearance.ChatAppearance? = null,
+    onRetryDelivery: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    LaunchedEffect(uiState.error) {
-        uiState.error?.let {
-            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
-            viewModel.clearError()
-        }
-    }
+    var localPermissionError by remember { mutableStateOf<String?>(null) }
 
     val recordAudioLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
             viewModel.startVoiceRecording()
-        }
+        } else localPermissionError = "Microphone permission is required for voice notes"
     }
 
     var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val callNotificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) android.widget.Toast.makeText(context,
-            "Calls cannot ring in the background while notifications are disabled.",
-            android.widget.Toast.LENGTH_LONG).show()
+        if (!granted) localPermissionError = "Calls cannot ring in the background while notifications are disabled."
         pendingCallAction?.invoke()
         pendingCallAction = null
     }
@@ -229,9 +262,7 @@ fun ChatScreen(
             callNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
             if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-                android.widget.Toast.makeText(context,
-                    "Calls cannot ring in the background while notifications are disabled.",
-                    android.widget.Toast.LENGTH_LONG).show()
+                localPermissionError = "Calls cannot ring in the background while notifications are disabled."
             }
             action()
         }
@@ -242,7 +273,7 @@ fun ChatScreen(
     ) { granted ->
         if (granted) {
             onStartVoiceCall?.let { startWithCallNotificationSetup(it) }
-        }
+        } else localPermissionError = "Microphone permission is required for calls."
     }
 
     val videoCallPermissionsLauncher = rememberLauncherForActivityResult(
@@ -250,7 +281,7 @@ fun ChatScreen(
     ) { results ->
         if (results.values.all { it }) {
             onStartVideoCall?.let { startWithCallNotificationSetup(it) }
-        }
+        } else localPermissionError = "Camera and microphone permissions are required for video calls."
     }
 
     ChatScreen(
@@ -288,6 +319,20 @@ fun ChatScreen(
         initialMessageId = initialMessageId,
         appearance = appearance,
         onSaveAppearance = onSaveAppearance,
+        entryUnreadMessageId = entryUnreadMessageId,
+        entryUnreadCount = entryUnreadCount,
+        onEditAppearance = onEditAppearance,
+        chatAppearance = chatAppearance,
+        onRetryDelivery = onRetryDelivery,
+        hasEarlierMessages = uiState.hasEarlierMessages || hasEarlierMessages,
+        onLoadEarlierMessages = onLoadEarlierMessages ?: viewModel::loadEarlierMessages,
+        onJumpToMessage = onJumpToMessage ?: viewModel::openTimelineMessage,
+        onJumpToLatest = onJumpToLatest ?: viewModel::jumpToLatestMessages,
+        isLatestWindow = uiState.isLatestWindow && isLatestWindow,
+        newerMessageCount = maxOf(uiState.newerMessageCount, newerMessageCount),
+        uiError = uiState.error ?: localPermissionError,
+        onDismissUiError = { localPermissionError = null; viewModel.clearError() },
+        isSending = uiState.isSending,
         onStartVoiceRecording = {
             if (com.torxone.app.ui.permissions.PermissionHelper.isRecordAudioGranted(context)) {
                 viewModel.startVoiceRecording()
@@ -332,7 +377,7 @@ fun ChatScreen(
 /**
  * ChatScreen — Unified presentation view for Direct and Group conversations.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     contactName: String,
@@ -383,7 +428,21 @@ fun ChatScreen(
     onDisappearing: (() -> Unit)? = null,
     initialMessageId: String? = null,
     appearance: ConversationAppearanceEntity? = null,
-    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null
+    onSaveAppearance: (suspend (ConversationAppearanceEntity) -> Unit)? = null,
+    entryUnreadMessageId: String? = null,
+    entryUnreadCount: Int = 0,
+    hasEarlierMessages: Boolean = false,
+    onLoadEarlierMessages: (() -> Unit)? = null,
+    onJumpToMessage: ((String) -> Unit)? = null,
+    onJumpToLatest: (() -> Unit)? = null,
+    isLatestWindow: Boolean = true,
+    newerMessageCount: Int = 0,
+    onEditAppearance: (() -> Unit)? = null,
+    chatAppearance: com.torxone.app.ui.appearance.ChatAppearance? = null,
+    onRetryDelivery: (() -> Unit)? = null,
+    uiError: String? = null,
+    onDismissUiError: () -> Unit = {},
+    isSending: Boolean = false
 ) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -399,115 +458,148 @@ fun ChatScreen(
     var chatOptionsOpen by remember { mutableStateOf(false) }
     var showAppearance by remember { mutableStateOf(false) }
     var jumpApplied by remember(initialMessageId) { mutableStateOf(false) }
+    var requestedJumpId by remember(initialMessageId) { mutableStateOf<String?>(null) }
+    var pendingQuoteJumpId by remember { mutableStateOf<String?>(null) }
+    var latestRequested by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
+    var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
+    var preparingAttachment by remember { mutableStateOf(false) }
+    var attachmentError by remember { mutableStateOf<String?>(null) }
+    var permissionError by remember { mutableStateOf<String?>(null) }
+    fun stageAttachment(uri: android.net.Uri?, type: MediaType, fallback: String, forcedMime: String? = null) {
         if (uri != null) {
-            val fileName = resolveMediaFileName(context, uri, "photo_${System.currentTimeMillis()}.jpg")
-            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-            coroutineScope.launch {
-                val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes, mimeType)
-            }
+            attachmentError = null
+            pendingAttachment = PendingAttachment(resolveMediaFileName(context, uri, fallback),
+                forcedMime ?: context.contentResolver.getType(uri) ?: "application/octet-stream", type, uri = uri)
         }
     }
-
-    val videoPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            val fileName = resolveMediaFileName(context, uri, "video_${System.currentTimeMillis()}.mp4")
-            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-            coroutineScope.launch {
-                val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendVideo(fileName, bytes, mimeType)
-            }
-        }
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        stageAttachment(it, MediaType.IMAGE, "photo.jpg")
     }
-
-    val docPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            val fileName = resolveMediaFileName(context, uri, "document_${System.currentTimeMillis()}.pdf")
-            val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
-            coroutineScope.launch {
-                val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendDocument(fileName, bytes, mimeType)
-            }
-        }
+    val videoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        stageAttachment(it, MediaType.VIDEO, "video.mp4")
     }
-
-    val cameraCaptureLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        if (bitmap != null) {
-            coroutineScope.launch {
-                val bytes = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    java.io.ByteArrayOutputStream().use { output ->
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, output)
-                        output.toByteArray()
-                    }
+    val docPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        stageAttachment(it, MediaType.DOCUMENT, "document")
+    }
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) pendingAttachment = PendingAttachment("camera_${System.currentTimeMillis()}.jpg",
+            "image/jpeg", MediaType.IMAGE, cameraBitmap = bitmap)
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) cameraCaptureLauncher.launch(null) else permissionError = "Camera permission is required to take a photo."
+    }
+    fun takePhoto() {
+        if (com.torxone.app.ui.permissions.PermissionHelper.isCameraGranted(context)) cameraCaptureLauncher.launch(null)
+        else cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+    }
+    val gifPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) {
+        stageAttachment(it, MediaType.IMAGE, "animation.gif", "image/gif")
+    }
+    pendingAttachment?.let { attachment ->
+        AttachmentPreview(attachment, preparingAttachment, attachmentError,
+            onCancel = { pendingAttachment = null; attachmentError = null }, onSend = {
+                if (!preparingAttachment) coroutineScope.launch {
+                    preparingAttachment = true
+                    attachmentError = null
+                    try {
+                        val bytes = if (attachment.cameraBitmap != null) withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            java.io.ByteArrayOutputStream().use { output ->
+                                attachment.cameraBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, output)
+                                output.toByteArray()
+                            }
+                        } else attachment.uri?.let { readUriWithLimit(context, it) { error -> attachmentError = error } }
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            when (attachment.type) {
+                                MediaType.IMAGE -> onSendImage(attachment.name, bytes, attachment.mimeType)
+                                MediaType.VIDEO -> onSendVideo(attachment.name, bytes, attachment.mimeType)
+                                else -> onSendDocument(attachment.name, bytes, attachment.mimeType)
+                            }
+                            pendingAttachment = null
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (failure: Exception) { attachmentError = failure.message ?: "Unable to prepare attachment" }
+                    finally { preparingAttachment = false }
                 }
-                onSendImage("camera_${System.currentTimeMillis()}.jpg", bytes, "image/jpeg")
-            }
-        }
-    }
-
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) cameraCaptureLauncher.launch(null)
-        else android.widget.Toast.makeText(
-            context,
-            "Camera permission is required to take a photo.",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
-    }
-
-    val gifPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            val fileName = resolveMediaFileName(context, uri, "animation_${System.currentTimeMillis()}.gif")
-            coroutineScope.launch {
-                val bytes = readUriWithLimit(context, uri)
-                if (bytes != null && bytes.isNotEmpty()) onSendImage(fileName, bytes, "image/gif")
-            }
-        }
+            })
     }
 
     var followLatest by remember { mutableStateOf(true) }
     var previousCount by remember { mutableIntStateOf(0) }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-            if (!scrolling && listState.layoutInfo.totalItemsCount > 0) {
-                val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                followLatest = last >= listState.layoutInfo.totalItemsCount - 2
+    var lastKnownMessageId by remember { mutableStateOf<String?>(null) }
+    var unreadSinceScroll by remember { mutableIntStateOf(0) }
+    var calendarRevision by remember { mutableIntStateOf(0) }
+    DisposableEffect(context) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) { calendarRevision++ }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_DATE_CHANGED)
+            addAction(android.content.Intent.ACTION_TIME_CHANGED)
+            addAction(android.content.Intent.ACTION_TIMEZONE_CHANGED)
+        }
+        androidx.core.content.ContextCompat.registerReceiver(context, receiver, filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    val timeline = remember(messages, entryUnreadMessageId, entryUnreadCount, calendarRevision) {
+        chatTimeline(messages, entryUnreadMessageId, entryUnreadCount)
+    }
+    val messageIndices = remember(messages) { messages.mapIndexed { index, message -> message.logicalMessageId to index }.toMap() }
+    LaunchedEffect(listState, isLatestWindow) {
+        snapshotFlow { Triple(listState.isScrollInProgress, listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index,
+            listState.layoutInfo.totalItemsCount) }.collect { (scrolling, last, total) ->
+            if (!scrolling && total > 0) {
+                followLatest = isLatestWindow && (last ?: 0) >= total - 2
+                if (followLatest) unreadSinceScroll = 0
             }
         }
     }
-    LaunchedEffect(messages.lastOrNull()?.logicalMessageId, messages.size) {
+    LaunchedEffect(messages.lastOrNull()?.logicalMessageId, messages.size, isLatestWindow) {
         if (messages.isNotEmpty()) {
-            val outgoing = messages.size > previousCount && messages.last().direction == MessageDirection.OUTGOING
-            if (previousCount == 0 || followLatest || outgoing) {
+            val oldLastIndex = lastKnownMessageId?.let(messageIndices::get)
+            val appended = if (oldLastIndex != null) messages.drop(oldLastIndex + 1) else emptyList()
+            val outgoing = appended.any { it.direction == MessageDirection.OUTGOING }
+            val firstOpen = previousCount == 0
+            val entryIndex = entryUnreadMessageId?.let(messageIndices::get)
+            if (latestRequested && isLatestWindow) {
+                listState.scrollToItem(messages.lastIndex)
+                followLatest = true; unreadSinceScroll = 0; latestRequested = false
+            } else if (firstOpen && initialMessageId == null && entryIndex != null) {
+                listState.scrollToItem(entryIndex)
+                followLatest = false
+            } else if ((initialMessageId == null || jumpApplied) && isLatestWindow && (firstOpen || followLatest || outgoing)) {
                 listState.scrollToItem(messages.lastIndex)
                 followLatest = true
-            }
+                unreadSinceScroll = 0
+            } else if (!followLatest) unreadSinceScroll += appended.count { it.direction == MessageDirection.INCOMING }
             previousCount = messages.size
+            lastKnownMessageId = messages.last().logicalMessageId
         }
     }
-    LaunchedEffect(initialMessageId, messages.map { it.logicalMessageId }) {
+    LaunchedEffect(initialMessageId, messageIndices) {
         if (!jumpApplied && initialMessageId != null) {
-            val index = messages.indexOfFirst { it.logicalMessageId == initialMessageId }
-            if (index >= 0) {
+            val index = messageIndices[initialMessageId]
+            if (index != null) {
                 listState.scrollToItem(index); highlightedMessageId = initialMessageId
                 followLatest = false; jumpApplied = true
+            } else if (requestedJumpId != initialMessageId && onJumpToMessage != null) {
+                requestedJumpId = initialMessageId
+                onJumpToMessage(initialMessageId)
             }
         }
         selectedIds = selectedIds.intersect(messages.filterNot { it.isDeleted }.map { it.logicalMessageId }.toSet())
+    }
+    LaunchedEffect(pendingQuoteJumpId, messageIndices) {
+        val target = pendingQuoteJumpId
+        val index = target?.let(messageIndices::get)
+        if (target != null && index != null) {
+            listState.scrollToItem(index); highlightedMessageId = target; followLatest = false
+            pendingQuoteJumpId = null
+            delay(1200)
+            if (highlightedMessageId == target) highlightedMessageId = null
+        }
     }
     androidx.activity.compose.BackHandler(selectedIds.isNotEmpty()) { selectedIds = emptySet() }
     if (confirmBulkDelete) AlertDialog(onDismissRequest = { confirmBulkDelete = false }, title = { Text("Delete ${selectedIds.size} messages locally?") },
@@ -594,11 +686,14 @@ fun ChatScreen(
                             }
                         }
                     } else {
-                    if (onSearch != null || onSaveAppearance != null || onSchedule != null || onOpenConnection != null || onDisappearing != null) Box {
+                    if (onSearch != null || onEditAppearance != null || onSaveAppearance != null || onSchedule != null || onOpenConnection != null || onDisappearing != null) Box {
                         IconButton(onClick = { chatOptionsOpen = true }) { Icon(Icons.Default.MoreVert, "Chat options") }
                         DropdownMenu(chatOptionsOpen, { chatOptionsOpen = false }) {
                             onSearch?.let { search -> DropdownMenuItem(text = { Text("Search this chat") }, onClick = { chatOptionsOpen = false; search() }) }
-                            if (onSaveAppearance != null) DropdownMenuItem(text = { Text("Chat appearance") }, onClick = { chatOptionsOpen = false; showAppearance = true })
+                            if (onEditAppearance != null || onSaveAppearance != null) DropdownMenuItem(text = { Text("Chat appearance") }, onClick = {
+                                chatOptionsOpen = false
+                                if (onEditAppearance != null) onEditAppearance() else showAppearance = true
+                            })
                             onSchedule?.let { schedule -> DropdownMenuItem(text = { Text("Scheduled messages") }, enabled = editingMessage == null,
                                 onClick = { chatOptionsOpen = false; schedule(composerText, replyingTo?.logicalMessageId) }) }
                             onDisappearing?.let { action -> DropdownMenuItem(text = { Text("Disappearing messages") }, onClick = { chatOptionsOpen = false; action() }) }
@@ -656,7 +751,7 @@ fun ChatScreen(
                     )
                 }
             } else {
-                MessageComposer(
+                ChatMessageComposer(
                     text = composerText,
                     replyingTo = replyingTo,
                     editingMessage = editingMessage,
@@ -670,7 +765,9 @@ fun ChatScreen(
                     onMicClick = onStartVoiceRecording,
                     onCancelRecording = onCancelVoiceRecording,
                     onSendRecording = onFinishVoiceRecording,
-                    showVoiceNote = true
+                    showVoiceNote = true,
+                    isSending = isSending,
+                    onCameraClick = ::takePhoto
                 )
             }
             }
@@ -684,37 +781,72 @@ fun ChatScreen(
         if (connectionSnapshot != null && onOpenConnection != null) {
             com.torxone.app.ui.components.ConnectionStatusBanner(connectionSnapshot, onOpenConnection)
         }
+        val visibleError = uiError ?: permissionError
+        if (visibleError != null) Surface(color = MaterialTheme.colorScheme.errorContainer) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(visibleError, Modifier.weight(1f), color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodyMedium)
+                IconButton(onClick = { permissionError = null; onDismissUiError() }) { Icon(Icons.Default.Close, "Dismiss error") }
+            }
+        }
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        val maximumBubbleWidth = minOf(maxWidth * 0.80f, 560.dp)
+        val effectiveAppearance = chatAppearance?.let { config ->
+            (appearance ?: ConversationAppearanceEntity("preview")).copy(
+                bubbleStyle = if (config.bubbleStyle == "COMPACT") "SQUARE" else "ROUNDED")
+        } ?: appearance
+        val outgoingColor = chatAppearance?.effectiveAccentId?.let { id ->
+            torXBrandColorScheme(MaterialTheme.colorScheme.surface.luminance() < 0.5f, TorXAccent.resolve(id)).primaryContainer
+        }
+        if (chatAppearance != null) ChatBackground(chatAppearance, Modifier.matchParentSize())
+        else Box(Modifier.matchParentSize().background(when (appearance?.wallpaper) {
+            "WARM" -> lerp(MaterialTheme.colorScheme.background, Color(0xFFC88845), 0.16f)
+            "COOL" -> lerp(MaterialTheme.colorScheme.background, Color(0xFF397A9C), 0.16f)
+            else -> MaterialTheme.colorScheme.background
+        }))
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(
-                top = 8.dp,
+                top = if (hasEarlierMessages) 48.dp else 8.dp,
                 bottom = innerPadding.calculateBottomPadding() + 8.dp,
                 start = 12.dp,
                 end = 12.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .background(when (appearance?.wallpaper) {
-                    "WARM" -> lerp(MaterialTheme.colorScheme.background, Color(0xFFC88845), 0.16f)
-                    "COOL" -> lerp(MaterialTheme.colorScheme.background, Color(0xFF397A9C), 0.16f)
-                    else -> MaterialTheme.colorScheme.background
-                })
+                .fillMaxSize()
         ) {
             itemsIndexed(
-                items = messages,
-                key = { _, msg -> msg.logicalMessageId }
-            ) { _, message ->
+                items = timeline,
+                key = { _, item -> item.message.logicalMessageId }
+            ) { _, item ->
+                val message = item.message
+                if (item.dateLabel != null) Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                        Text(item.dateLabel, Modifier.padding(horizontal = 12.dp, vertical = 5.dp), style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                if (item.unreadCount > 0) Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HorizontalDivider(Modifier.weight(1f))
+                    Text("${item.unreadCount} unread messages", style = MaterialTheme.typography.labelMedium)
+                    HorizontalDivider(Modifier.weight(1f))
+                }
+                if (item.startsGroup) Spacer(Modifier.height(5.dp))
                 MessageBubble(
+                    startsGroup = item.startsGroup,
+                    endsGroup = item.endsGroup,
+                    maximumWidth = maximumBubbleWidth,
                     message = message,
-                    appearance = appearance,
+                    appearance = effectiveAppearance,
+                    outgoingColor = outgoingColor,
                     contactName = contactName,
                     isHighlighted = message.logicalMessageId == highlightedMessageId || message.logicalMessageId in selectedIds,
                     onReply = { onReply(message) },
+                    onRetryDelivery = onRetryDelivery,
+                    onInspectFailure = { onRequestMessageInfo?.invoke(message) ?: run { selectedMessageForMenu = message } },
                     onLongClick = {
-                        if (onSetStarred != null && !message.isDeleted) selectedIds = selectedIds + message.logicalMessageId
-                        else selectedMessageForMenu = message
+                        selectedMessageForMenu = message
                     },
                     onSelectionClick = if (selectedIds.isEmpty()) null else { {
                         selectedIds = if (message.logicalMessageId in selectedIds) selectedIds - message.logicalMessageId else selectedIds + message.logicalMessageId
@@ -730,14 +862,17 @@ fun ChatScreen(
                     onResumeTransfer = onResumeMediaTransfer,
                     onQuoteClick = { targetMsgId ->
                         coroutineScope.launch {
-                            val targetIndex = messages.indexOfFirst { it.logicalMessageId == targetMsgId }
-                            if (targetIndex != -1) {
+                            val targetIndex = messageIndices[targetMsgId]
+                            if (targetIndex != null) {
                                 listState.animateScrollToItem(targetIndex)
                                 highlightedMessageId = targetMsgId
                                 delay(1200)
                                 if (highlightedMessageId == targetMsgId) {
                                     highlightedMessageId = null
                                 }
+                            } else if (onJumpToMessage != null) {
+                                pendingQuoteJumpId = targetMsgId
+                                onJumpToMessage(targetMsgId)
                             }
                         }
                     },
@@ -747,6 +882,22 @@ fun ChatScreen(
                 )
                 if (message.logicalMessageId in starredIds) Text("Starred", style = MaterialTheme.typography.labelSmall)
             }
+        }
+        if (hasEarlierMessages && onLoadEarlierMessages != null) TextButton(
+            onClick = { followLatest = false; onLoadEarlierMessages() },
+            modifier = Modifier.align(Alignment.TopCenter)) { Text("Load earlier messages") }
+        if (!followLatest || !isLatestWindow) FilledTonalButton(onClick = {
+            latestRequested = !isLatestWindow
+            onJumpToLatest?.invoke()
+            if (isLatestWindow && messages.isNotEmpty()) coroutineScope.launch {
+                listState.animateScrollToItem(messages.lastIndex); followLatest = true; unreadSinceScroll = 0
+            }
+        }, modifier = Modifier.align(Alignment.BottomEnd).padding(
+            end = 12.dp, bottom = innerPadding.calculateBottomPadding() + 12.dp)) {
+            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Scroll to latest")
+            val count = maxOf(newerMessageCount, unreadSinceScroll)
+            if (count > 0) Text(count.toString(), Modifier.padding(start = 4.dp))
+        }
         }
         }
     }
@@ -778,11 +929,7 @@ fun ChatScreen(
                         containerColor = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         showAttachmentMenu = false
-                        if (com.torxone.app.ui.permissions.PermissionHelper.isCameraGranted(context)) {
-                            cameraCaptureLauncher.launch(null)
-                        } else {
-                            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                        }
+                        takePhoto()
                     }
 
                     AttachmentOptionItem(
@@ -845,12 +992,11 @@ fun ChatScreen(
             ) {
                 // Emoji Reaction Quick Bar
                 if (!target.isDeleted) {
-                    Row(
+                    FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         val quickEmojis = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
                         for (emoji in quickEmojis) {
@@ -859,7 +1005,7 @@ fun ChatScreen(
                                 shape = CircleShape,
                                 color = if (userReacted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                                 modifier = Modifier
-                                    .size(44.dp)
+                                    .size(48.dp)
                                     .clickable {
                                         onToggleReaction(target.logicalMessageId, emoji)
                                         selectedMessageForMenu = null
@@ -874,6 +1020,10 @@ fun ChatScreen(
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 }
 
+                if (!target.isDeleted && onSetStarred != null) ListItem(
+                    headlineContent = { Text("Select message") },
+                    leadingContent = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                    modifier = Modifier.clickable { selectedIds = selectedIds + target.logicalMessageId; selectedMessageForMenu = null })
                 if (!target.isDeleted) {
                     ListItem(
                         headlineContent = { Text("Reply") },
@@ -996,14 +1146,20 @@ private fun AttachmentOptionItem(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun MessageBubble(
     message: MessageUiModel,
+    startsGroup: Boolean = true,
+    endsGroup: Boolean = true,
+    maximumWidth: androidx.compose.ui.unit.Dp = 310.dp,
+    outgoingColor: Color? = null,
     appearance: ConversationAppearanceEntity?,
     contactName: String,
     isHighlighted: Boolean,
     onReply: () -> Unit,
+    onRetryDelivery: (() -> Unit)? = null,
+    onInspectFailure: () -> Unit,
     onLongClick: () -> Unit,
     onSelectionClick: (() -> Unit)? = null,
     onMediaClick: (MediaUiModel) -> Unit,
@@ -1016,12 +1172,20 @@ private fun MessageBubble(
 ) {
     val isOutgoing = message.direction == MessageDirection.OUTGOING
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var crossedReplyThreshold by remember { mutableStateOf(false) }
+    var showReactions by remember { mutableStateOf(false) }
+    var showMoreReactions by remember { mutableStateOf(false) }
+    val haptics = LocalHapticFeedback.current
+    val threshold = with(LocalDensity.current) { 64.dp.toPx() }
+    val maximumDrag = with(LocalDensity.current) { 104.dp.toPx() }
+    val returnedOffset by animateFloatAsState(dragOffsetX, spring(), label = "replyReturn")
 
     val baseBubbleColor = if (isOutgoing)
-        when (appearance?.theme) {
-            "OCEAN" -> if (MaterialTheme.colorScheme.onPrimary.luminance() < 0.5f) Color(0xFF9DDCF1) else Color(0xFF15556D)
-            "FOREST" -> if (MaterialTheme.colorScheme.onPrimary.luminance() < 0.5f) Color(0xFFA2DEB3) else Color(0xFF215E3B)
-            else -> MaterialTheme.colorScheme.primary
+        outgoingColor ?: when (appearance?.theme) {
+            "OCEAN" -> lerp(MaterialTheme.colorScheme.surface, Color(0xFF397A9C), 0.22f)
+            "FOREST" -> lerp(MaterialTheme.colorScheme.surface, Color(0xFF43835A), 0.22f)
+            else -> MaterialTheme.colorScheme.primaryContainer
         }
     else
         MaterialTheme.colorScheme.surfaceVariant
@@ -1038,50 +1202,64 @@ private fun MessageBubble(
     )
 
     val draggableState = rememberDraggableState { delta ->
-        val newOffset = (dragOffsetX + delta).coerceIn(0f, 150f)
-        dragOffsetX = newOffset
+        dragging = true
+        val resistance = if (dragOffsetX > threshold && delta > 0) 0.35f else 1f
+        dragOffsetX = (dragOffsetX + delta * resistance).coerceIn(0f, maximumDrag)
+        if (dragOffsetX >= threshold && !crossedReplyThreshold && !message.isDeleted) {
+            crossedReplyThreshold = true
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .offset { IntOffset(dragOffsetX.roundToInt(), 0) }
+            .offset { IntOffset((if (dragging) dragOffsetX else returnedOffset).roundToInt(), 0) }
             .draggable(
                 state = draggableState,
                 orientation = Orientation.Horizontal,
                 onDragStopped = {
-                    if (dragOffsetX > 80f && !message.isDeleted) {
+                    if (dragOffsetX >= threshold && !message.isDeleted) {
                         onReply()
                     }
+                    dragging = false
+                    crossedReplyThreshold = false
                     dragOffsetX = 0f
                 }
             )
     ) {
+        if (dragOffsetX > 4f) Icon(Icons.AutoMirrored.Filled.Reply, "Reply", Modifier.align(Alignment.CenterStart).size(24.dp),
+            tint = MaterialTheme.colorScheme.primary.copy(alpha = (dragOffsetX / threshold).coerceIn(0f, 1f)))
         Column(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start
         ) {
+            Box {
             Surface(
                 modifier = Modifier
-                    .widthIn(max = 310.dp)
+                    .widthIn(max = maximumWidth)
                     .combinedClickable(
                         onClick = {
                             if (onSelectionClick != null) onSelectionClick() else message.media?.let { onMediaClick(it) }
                         },
-                        onLongClick = onLongClick
+                        onLongClick = {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (message.isDeleted) onLongClick() else showReactions = true
+                        },
+                        onLongClickLabel = "React or open message actions"
                     ),
                 shape = RoundedCornerShape(
-                    topStart = if (appearance?.bubbleStyle == "SQUARE") 4.dp else 16.dp,
-                    topEnd = if (appearance?.bubbleStyle == "SQUARE") 4.dp else 16.dp,
-                    bottomStart = if (isOutgoing && appearance?.bubbleStyle != "SQUARE") 16.dp else 4.dp,
-                    bottomEnd = if (!isOutgoing && appearance?.bubbleStyle != "SQUARE") 16.dp else 4.dp
+                    topStart = if (appearance?.bubbleStyle == "SQUARE" || (!isOutgoing && !startsGroup)) 4.dp else 16.dp,
+                    topEnd = if (appearance?.bubbleStyle == "SQUARE" || (isOutgoing && !startsGroup)) 4.dp else 16.dp,
+                    bottomStart = if (appearance?.bubbleStyle == "SQUARE" || (!isOutgoing && !endsGroup)) 4.dp else 16.dp,
+                    bottomEnd = if (appearance?.bubbleStyle == "SQUARE" || (isOutgoing && !endsGroup)) 4.dp else 16.dp
                 ),
                 color = animatedColor,
                 tonalElevation = 2.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                     // Sender display name (for group chats)
-                    if (!isOutgoing && message.senderDisplayName != null && !message.isDeleted) {
+                    if (startsGroup && !isOutgoing && message.senderDisplayName != null && !message.isDeleted) {
                         Text(
                             text = message.senderDisplayName,
                             style = MaterialTheme.typography.labelMedium,
@@ -1112,12 +1290,12 @@ private fun MessageBubble(
                                 Icons.Default.Block,
                                 contentDescription = null,
                                 modifier = Modifier.size(16.dp),
-                                tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                             Text(
                                 text = if (message.expiresAt != null) "This message expired or was deleted" else "This message was deleted",
                                 style = MaterialTheme.typography.bodyMedium.copy(fontStyle = FontStyle.Italic),
-                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         }
                     } else {
@@ -1140,7 +1318,7 @@ private fun MessageBubble(
                             Text(
                                 text = remember(message.body) { com.torxone.app.ui.components.SafeRichText.render(message.body.orEmpty()) },
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -1155,7 +1333,7 @@ private fun MessageBubble(
                             Text(
                                 text = "(edited)",
                                 style = MaterialTheme.typography.labelSmall.copy(fontStyle = FontStyle.Italic),
-                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         }
 
@@ -1164,26 +1342,64 @@ private fun MessageBubble(
                                 modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
 
-                        Text(
+                        if (endsGroup) Text(
                             text = formatMessageTime(message.createdAt),
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
 
                         if (isOutgoing && !message.isDeleted) {
                             DeliveryStatusIcon(
                                 status = message.status,
-                                tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                             )
                         }
                     }
                 }
             }
 
+            DropdownMenu(expanded = showReactions, onDismissRequest = { showReactions = false }) {
+                FlowRow(Modifier.widthIn(max = 320.dp).padding(horizontal = 4.dp)) {
+                    listOf("\uD83D\uDC4D", "\u2764\ufe0f", "\uD83D\uDE02", "\uD83D\uDE2E", "\uD83D\uDE22").forEach { emoji ->
+                        IconButton(onClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggleReaction(emoji); showReactions = false }, modifier = Modifier.size(48.dp).semantics {
+                                contentDescription = "React with ${reactionName(emoji)}"
+                            }) {
+                            Text(emoji, fontSize = 22.sp)
+                        }
+                    }
+                    IconButton(onClick = { showReactions = false; showMoreReactions = true }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Add, contentDescription = "More reactions")
+                    }
+                }
+                DropdownMenuItem(text = { Text("More actions") }, onClick = { showReactions = false; onLongClick() })
+            }
+            }
+            if (showMoreReactions) AlertDialog(
+                onDismissRequest = { showMoreReactions = false }, title = { Text("React to message") },
+                text = { FlowRow {
+                    listOf("👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "🔥", "👏", "✅", "💯", "🤔").forEach { emoji ->
+                        IconButton(onClick = { onToggleReaction(emoji); showMoreReactions = false
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress) },
+                            modifier = Modifier.size(48.dp).semantics { contentDescription = "React with ${reactionName(emoji)}" }) {
+                            Text(emoji, fontSize = 22.sp)
+                        }
+                    }
+                } }, confirmButton = { TextButton(onClick = { showMoreReactions = false }) { Text("Cancel") } }
+            )
+            if (isOutgoing && message.status == DeliveryStatus.FAILED && !message.isDeleted) {
+                TextButton(onClick = onInspectFailure, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Couldn't send. View details.", color = MaterialTheme.colorScheme.error)
+                }
+            } else if (isOutgoing && message.status in setOf(DeliveryStatus.WAITING_FOR_PEER, DeliveryStatus.RETRY_WAIT) &&
+                !message.isDeleted && onRetryDelivery != null) {
+                TextButton(onClick = onRetryDelivery, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry delivery") }
+            }
             // Emoji Reaction Pills
             if (message.reactions.isNotEmpty() && !message.isDeleted) {
-                Row(
+                FlowRow(
                     modifier = Modifier
+                        .widthIn(max = maximumWidth)
                         .offset(y = (-8).dp)
                         .padding(horizontal = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -1206,24 +1422,33 @@ private fun MessageBubble(
 
 @Composable
 private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
-    val animatedDrawable = remember(media.localPath, media.mimeType) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+    val animatedDrawable by produceState<AnimatedImageDrawable?>(null, media.localPath, media.mimeType) {
+        value = withContext(kotlinx.coroutines.Dispatchers.IO) { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
             media.mimeType.equals("image/gif", ignoreCase = true) &&
             media.localPath != null
         ) {
             runCatching {
                 ImageDecoder.decodeDrawable(
                     ImageDecoder.createSource(java.io.File(media.localPath))
-                ) as? AnimatedImageDrawable
+                ) { decoder, info, _ ->
+                    val scale = minOf(1f, 1024f / maxOf(info.size.width, info.size.height).coerceAtLeast(1))
+                    decoder.setTargetSize((info.size.width * scale).toInt().coerceAtLeast(1),
+                        (info.size.height * scale).toInt().coerceAtLeast(1))
+                } as? AnimatedImageDrawable
             }.getOrNull()
-        } else null
+        } else null }
     }
-    val imageBitmap = remember(media.thumbnailData) {
-        media.thumbnailData?.let {
-            try {
-                BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap()
-            } catch (_: Exception) { null }
+    val thumbnailReader = LocalChatThumbnailReader.current
+    val imageBitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, media.mediaId, media.thumbnailData, thumbnailReader) {
+        suspend fun decode(bytes: ByteArray?) {
+            value = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try { decodeChatThumbnail(bytes)?.asImageBitmap() }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { null }
+            }
         }
+        if (media.thumbnailData != null || thumbnailReader == null) decode(media.thumbnailData)
+        else thumbnailReader(media.mediaId).collect { decode(it) }
     }
 
     Box(
@@ -1235,10 +1460,10 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
         contentAlignment = Alignment.Center
     ) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && animatedDrawable != null) {
-            AnimatedGifView(animatedDrawable)
+            animatedDrawable?.let { AnimatedGifView(it) }
         } else if (imageBitmap != null) {
             Image(
-                bitmap = imageBitmap,
+                bitmap = imageBitmap!!,
                 contentDescription = media.fileName,
                 modifier = Modifier.fillMaxSize()
             )
@@ -1248,12 +1473,12 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
                     Icons.Default.Image,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
-                    tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+                    tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
                 )
                 Text(
                     text = "${media.fileSize / 1024} KB",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -1280,17 +1505,28 @@ private fun ImageBubbleView(media: MediaUiModel, isOutgoing: Boolean) {
 @RequiresApi(Build.VERSION_CODES.P)
 @Composable
 private fun AnimatedGifView(drawable: AnimatedImageDrawable) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(drawable, lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) drawable.stop()
+            else if (event == androidx.lifecycle.Lifecycle.Event.ON_START) drawable.start()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer); drawable.stop() }
+    }
     AndroidView(
         factory = { context ->
             ImageView(context).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 setImageDrawable(drawable)
-                drawable.start()
+                if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) drawable.start()
             }
         },
         update = { view ->
             if (view.drawable !== drawable) view.setImageDrawable(drawable)
-            if (!drawable.isRunning) drawable.start()
+            if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) {
+                if (!drawable.isRunning) drawable.start()
+            } else drawable.stop()
         },
         modifier = Modifier.fillMaxSize()
     )
@@ -1363,7 +1599,7 @@ private fun DocumentBubbleView(media: MediaUiModel, isOutgoing: Boolean, onDownl
         ) {
             Surface(
                 shape = CircleShape,
-                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(36.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -1383,19 +1619,19 @@ private fun DocumentBubbleView(media: MediaUiModel, isOutgoing: Boolean, onDownl
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     text = "${media.fileSize / 1024} KB • ${media.status.name.lowercase().replace('_', ' ')}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Icon(
                 if (media.status == MediaStatus.COMPLETE) Icons.Default.Check else Icons.Default.HourglassEmpty,
                 contentDescription = null,
-                tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                tint = if (isOutgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(20.dp)
             )
         }
@@ -1413,6 +1649,11 @@ private fun ReactionPill(
         tonalElevation = 2.dp,
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .semantics {
+                contentDescription = "${reaction.emoji}, ${reaction.count} reactions"
+                stateDescription = if (reaction.userReacted) "Your reaction; tap to remove" else "Tap to react"
+            }
             .clickable(onClick = onClick)
     ) {
         Row(
@@ -1455,7 +1696,7 @@ private fun QuotedBubbleView(
                     .width(3.dp)
                     .height(34.dp)
                     .background(
-                        if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                        if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
                         RoundedCornerShape(2.dp)
                     )
             )
@@ -1465,209 +1706,15 @@ private fun QuotedBubbleView(
                     text = quoted.senderName,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary
+                    color = if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
                 )
                 Text(
                     text = quoted.previewText,
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    color = if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isOutgoingBubble) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MessageComposer(
-    text: String,
-    replyingTo: MessageUiModel?,
-    editingMessage: MessageUiModel?,
-    voiceRecording: VoiceRecordingState,
-    contactName: String,
-    onTextChange: (String) -> Unit,
-    onCancelReply: () -> Unit,
-    onCancelEdit: () -> Unit,
-    onSend: () -> Unit,
-    onAttachClick: () -> Unit,
-    onMicClick: () -> Unit,
-    onCancelRecording: () -> Unit,
-    onSendRecording: () -> Unit,
-    showVoiceNote: Boolean = true
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 4.dp
-    ) {
-        Column {
-            // Reply Preview Banner
-            if (replyingTo != null) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .width(4.dp)
-                                .height(36.dp)
-                                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Replying to ${if (replyingTo.direction == MessageDirection.OUTGOING) "You" else contactName}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = replyingTo.body ?: "",
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        IconButton(onClick = onCancelReply) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel reply", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-
-            // Edit Preview Banner
-            if (editingMessage != null) {
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Editing",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Edit message",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = editingMessage.body ?: "",
-                                style = MaterialTheme.typography.bodySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        }
-                        IconButton(onClick = onCancelEdit) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel edit", modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-
-            // Input Bar vs Live Voice Recording Mode
-            if (voiceRecording.isRecording) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IconButton(onClick = onCancelRecording) {
-                        Icon(Icons.Default.Delete, contentDescription = "Cancel recording", tint = MaterialTheme.colorScheme.error)
-                    }
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.error, modifier = Modifier.size(10.dp)) {}
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = VoiceNoteHelper.formatDuration(voiceRecording.elapsedDurationMs),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-
-                    FilledIconButton(
-                        onClick = onSendRecording,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary)
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send voice note")
-                    }
-                }
-            } else {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    IconButton(onClick = onAttachClick) {
-                        Icon(Icons.Default.AttachFile, contentDescription = "Attach file")
-                    }
-
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = onTextChange,
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(if (editingMessage != null) "Edit message..." else "Message...")
-                        },
-                        shape = RoundedCornerShape(24.dp),
-                        maxLines = 5,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                        )
-                    )
-
-                    if (text.isNotBlank() || editingMessage != null) {
-                        FilledIconButton(
-                            onClick = onSend,
-                            enabled = text.isNotBlank()
-                        ) {
-                            Icon(
-                                if (editingMessage != null) Icons.Default.Check else Icons.AutoMirrored.Filled.Send,
-                                contentDescription = if (editingMessage != null) "Confirm edit" else "Send"
-                            )
-                        }
-                    } else if (showVoiceNote) {
-                        FilledIconButton(
-                            onClick = onMicClick,
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Icon(Icons.Default.Mic, contentDescription = "Record voice note")
-                        }
-                    } else {
-                        FilledIconButton(
-                            onClick = onSend,
-                            enabled = false
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-                        }
-                    }
-                }
             }
         }
     }
@@ -1678,19 +1725,20 @@ private fun DeliveryStatusIcon(
     status: DeliveryStatus,
     tint: Color
 ) {
-    val isRead = status == DeliveryStatus.READ
-    val icon = when (status) {
-        DeliveryStatus.CREATED, DeliveryStatus.ENCRYPTED, DeliveryStatus.QUEUED -> Icons.Default.Schedule
-        DeliveryStatus.TRANSMITTING, DeliveryStatus.TRANSPORT_ACCEPTED -> Icons.Default.Done
-        DeliveryStatus.DEVICE_RECEIVED, DeliveryStatus.DELIVERED -> Icons.Default.DoneAll
-        DeliveryStatus.READ -> Icons.Default.DoneAll
-        DeliveryStatus.FAILED -> Icons.Default.ErrorOutline
-        else -> Icons.Default.Schedule
+    val presentation = DeliveryPresentation.from(status)
+    val isRead = presentation.read
+    val icon = when (presentation.glyph) {
+        DeliveryGlyph.WAITING -> Icons.Default.Schedule
+        DeliveryGlyph.SENT -> Icons.Default.Done
+        DeliveryGlyph.RECEIVED -> Icons.Default.DoneAll
+        DeliveryGlyph.ERROR -> Icons.Default.ErrorOutline
+        DeliveryGlyph.EXPIRED -> Icons.Default.TimerOff
     }
+
 
     Icon(
         imageVector = icon,
-        contentDescription = status.name,
+        contentDescription = presentation.label,
         modifier = Modifier.size(14.dp),
         tint = if (isRead)
             MaterialTheme.colorScheme.readReceipt
@@ -1725,7 +1773,8 @@ private fun resolveMediaFileName(context: android.content.Context, uri: android.
 private suspend fun readUriWithLimit(
     context: android.content.Context,
     uri: android.net.Uri,
-    maxBytes: Int = 32 * 1024 * 1024
+    maxBytes: Int = 32 * 1024 * 1024,
+    onError: (String) -> Unit = {}
 ): ByteArray? {
     return try {
         val bytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -1745,8 +1794,14 @@ private suspend fun readUriWithLimit(
     } catch (error: Exception) {
         if (error is kotlinx.coroutines.CancellationException) throw error
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-            android.widget.Toast.makeText(context, error.message ?: "Cannot read attachment", android.widget.Toast.LENGTH_LONG).show()
+            onError(error.message ?: "Cannot read attachment")
         }
         null
     }
+}
+
+private fun reactionName(emoji: String): String = when (emoji) {
+    "👍" -> "thumbs up"; "❤️" -> "heart"; "😂" -> "laughing"; "😮" -> "surprised"
+    "😢" -> "sad"; "🙏" -> "thanks"; "🎉" -> "celebration"; "🔥" -> "fire"; "👏" -> "applause"
+    "✅" -> "check mark"; "💯" -> "hundred points"; "🤔" -> "thinking"; else -> emoji
 }

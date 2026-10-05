@@ -1,14 +1,9 @@
 package com.torxone.app.ui.screens
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -17,20 +12,13 @@ import androidx.compose.runtime.*
 import com.torxone.app.ui.theme.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.torxone.app.agent.DeliveryStatus
 import com.torxone.app.conversations.ConversationListViewModel
 import com.torxone.app.conversations.ConversationUiModel
-import java.text.SimpleDateFormat
-import java.util.*
-
 import com.torxone.app.data.entity.ConversationType
+
 
 @Composable
 fun ConversationListScreen(
@@ -133,18 +121,11 @@ fun ConversationListScreen(
             } else {
                 TopAppBar(
                     title = {
-                        Column {
-                            Text(
-                                text = "TorX One",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Private mesh messenger",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            text = "TorX One",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
                     },
                     actions = {
                         IconButton(onClick = { onToggleSearch(true) }) {
@@ -167,7 +148,15 @@ fun ConversationListScreen(
         },
         modifier = modifier
     ) { padding ->
-        if (conversations.isEmpty() && archivedCount == 0 && searchQuery.isBlank()) {
+        if (conversations.isEmpty() && searchQuery.isNotBlank()) {
+            Column(Modifier.fillMaxSize().padding(padding).padding(TorXSpacing.lg),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(TorXSpacing.sm))
+                Text("No matching chats or messages", style = MaterialTheme.typography.bodyLarge)
+                TextButton(onClick = { onSearchQueryChange("") }) { Text("Clear search") }
+            }
+        } else if (conversations.isEmpty() && archivedCount == 0 && searchQuery.isBlank()) {
             EmptyConversationsView(
                 onScanQrClick = onScanQrClick,
                 modifier = Modifier.padding(padding)
@@ -223,7 +212,7 @@ fun ConversationListScreen(
 
                 // Conversations List
                 items(conversations, key = { it.conversationId }) { conversation ->
-                    ConversationItem(
+                    com.torxone.app.ui.components.ConversationRow(
                         conversation = conversation,
                         onClick = { onConversationClick(conversation.conversationId) },
                         onLongClick = { selectedForActionSheet = conversation }
@@ -257,7 +246,7 @@ fun ConversationListScreen(
                 ListItem(
                     headlineContent = { Text(if (target.isPinned) "Unpin chat" else "Pin chat") },
                     leadingContent = {
-                        Text(text = "📌", fontSize = 20.sp)
+                        Icon(Icons.Default.PushPin, contentDescription = null)
                     },
                     modifier = Modifier.clickable {
                         onPinClick(target)
@@ -445,154 +434,6 @@ fun ConversationListScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ConversationItem(
-    conversation: ConversationUiModel,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
-            .padding(horizontal = 12.dp, vertical = 2.dp),
-        shape = RoundedCornerShape(16.dp),
-        tonalElevation = 0.dp
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            com.torxone.app.ui.components.ProfileAvatar(conversation.title, conversation.avatarHash, Modifier.size(52.dp))
-
-            // Title + Preview
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    if (conversation.type == ConversationType.GROUP) {
-                        Icon(
-                            imageVector = Icons.Default.Groups,
-                            contentDescription = "Group",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Text(
-                        text = conversation.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (conversation.isPinned) {
-                        Text(text = "📌", fontSize = 12.sp)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(2.dp))
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    // Outgoing message tick icon (if applicable)
-                    if (conversation.isLastMessageOutgoing && conversation.lastMessageStatus != null) {
-                        DeliveryStatusMiniIcon(status = conversation.lastMessageStatus)
-                    }
-
-                    val previewText = conversation.preview ?: ""
-                    val isDeleted = previewText == "This message was deleted"
-
-                    Text(
-                        text = previewText,
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontStyle = if (isDeleted) FontStyle.Italic else FontStyle.Normal
-                        ),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            // Timestamp + Mute Icon + Unread Badge
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (conversation.timestamp != null) {
-                    Text(
-                        text = formatTime(conversation.timestamp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (conversation.unreadCount > 0 || conversation.manuallyUnread)
-                            MaterialTheme.colorScheme.primary
-                        else
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (conversation.isMuted) {
-                        Icon(
-                            imageVector = Icons.Default.NotificationsOff,
-                            contentDescription = "Muted",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
-
-                    if (conversation.unreadCount > 0) {
-                        Badge {
-                            Text(
-                                text = if (conversation.unreadCount > 99) "99+"
-                                else conversation.unreadCount.toString()
-                            )
-                        }
-                    } else if (conversation.manuallyUnread) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeliveryStatusMiniIcon(status: DeliveryStatus) {
-    val isRead = status == DeliveryStatus.READ
-    val icon = when (status) {
-        DeliveryStatus.CREATED, DeliveryStatus.ENCRYPTED, DeliveryStatus.QUEUED -> Icons.Default.Schedule
-        DeliveryStatus.TRANSMITTING, DeliveryStatus.TRANSPORT_ACCEPTED -> Icons.Default.Done
-        DeliveryStatus.DEVICE_RECEIVED, DeliveryStatus.DELIVERED, DeliveryStatus.READ -> Icons.Default.DoneAll
-        else -> Icons.Default.Schedule
-    }
-
-    Icon(
-        imageVector = icon,
-        contentDescription = null,
-        modifier = Modifier.size(13.dp),
-        tint = if (isRead) MaterialTheme.colorScheme.readReceipt else MaterialTheme.colorScheme.onSurfaceVariant
-    )
-}
-
 @Composable
 private fun EmptyConversationsView(
     onScanQrClick: () -> Unit,
@@ -620,18 +461,5 @@ private fun EmptyConversationsView(
             Spacer(modifier = Modifier.width(8.dp))
             Text("Scan QR Code")
         }
-    }
-}
-
-private fun formatTime(timestamp: Long): String {
-    val now = System.currentTimeMillis()
-    val diff = now - timestamp
-
-    return when {
-        diff < 60_000 -> "Now"
-        diff < 3_600_000 -> "${diff / 60_000}m"
-        diff < 86_400_000 -> SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
-        diff < 604_800_000 -> SimpleDateFormat("EEE", Locale.getDefault()).format(Date(timestamp))
-        else -> SimpleDateFormat("dd/MM", Locale.getDefault()).format(Date(timestamp))
     }
 }

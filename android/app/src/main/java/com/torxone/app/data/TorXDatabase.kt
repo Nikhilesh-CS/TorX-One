@@ -51,6 +51,7 @@ import com.torxone.app.calls.CallHistoryDao
 abstract class TorXDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
+    abstract fun chatTimelineDao(): ChatTimelineDao
     abstract fun reactionDao(): ReactionDao
     abstract fun localMessageStateDao(): LocalMessageStateDao
     abstract fun mediaDao(): MediaDao
