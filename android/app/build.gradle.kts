@@ -115,7 +115,7 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     implementation("androidx.work:work-runtime-ktx:2.12.0")
     ksp("androidx.room:room-compiler:$roomVersion")
-    implementation("net.zetetic:sqlcipher-android:4.10.0@aar")
+    implementation("net.zetetic:sqlcipher-android:4.19.1@aar")
     implementation("androidx.sqlite:sqlite:2.7.1")
 
     // ── Security / Crypto ──
