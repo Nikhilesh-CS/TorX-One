@@ -123,7 +123,7 @@ dependencies {
     implementation("org.bouncycastle:bcprov-jdk18on:1.85")
 
     // ── Nearby Connections ──
-    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+    implementation("com.google.android.gms:play-services-nearby:19.5.1")
 
     // ── Embedded Tor runtime ──
     implementation("info.guardianproject:tor-android:0.4.9.13")
